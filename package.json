@@ -1,0 +1,33 @@
+{
+  "name": "hoklims-devkit",
+  "version": "0.1.0",
+  "description": "Install and diagnose the Hoklims developer tools for Codex and Claude Code",
+  "keywords": ["codex", "claude-code", "semctx", "assertledger", "latent-compass", "developer-tools"],
+  "author": "Hoklims",
+  "type": "module",
+  "bin": {
+    "hoklims-devkit": "./bin/hoklims-devkit.js"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hoklims/hoklims-devkit.git"
+  },
+  "homepage": "https://github.com/hoklims/hoklims-devkit#readme",
+  "bugs": { "url": "https://github.com/hoklims/hoklims-devkit/issues" },
+  "license": "Apache-2.0",
+  "publishConfig": { "access": "public" },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "README.fr.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "check": "bun test && bun build ./bin/hoklims-devkit.js --target=bun --outdir=dist"
+  }
+}

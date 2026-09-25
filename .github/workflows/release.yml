@@ -1,0 +1,79 @@
+name: Publish npm release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.15.0
+      - name: Verify release identity and local package
+        shell: bash
+        run: |
+          test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = "tag"
+          git merge-base --is-ancestor HEAD origin/main
+          test "${GITHUB_REF_NAME}" = "v$(node -p 'require("./package.json").version')"
+          bun run check
+          tarball="$(npm pack --silent)"
+          consumer="$(mktemp -d)"
+          npm install --prefix "$consumer" --ignore-scripts "$PWD/$tarball"
+          bun "$consumer/node_modules/hoklims-devkit/bin/hoklims-devkit.js" --help
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.15.0
+          registry-url: https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+      - name: Publish exact tag through npm trusted publishing
+        shell: bash
+        run: |
+          npm install --global npm@11.5.1
+          test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = "tag"
+          git merge-base --is-ancestor HEAD origin/main
+          test "${GITHUB_REF_NAME}" = "v$(node -p 'require("./package.json").version')"
+          bun run check
+          version="$(node -p 'require("./package.json").version')"
+          if npm view "hoklims-devkit@$version" version >/dev/null 2>&1; then
+            existing="$(npm view "hoklims-devkit@$version" gitHead)"
+            test -n "$existing"
+            test "$existing" = "$(git rev-parse HEAD)"
+          else
+            npm publish --access public
+          fi
+          test "$(npm view "hoklims-devkit@$version" version)" = "$version"
+          consumer="$(mktemp -d)"
+          npm install --prefix "$consumer" --ignore-scripts "hoklims-devkit@$version"
+          bun "$consumer/node_modules/hoklims-devkit/bin/hoklims-devkit.js" --help
+      - name: Create GitHub release after registry verification
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes

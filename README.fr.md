@@ -1,0 +1,48 @@
+# Hoklims Devkit
+
+Hoklims Devkit prépare un dépôt Git pour [Semctx](https://github.com/hoklims/semctx), avec [AssertLedger](https://github.com/hoklims/assertledger) et [Latent Compass](https://github.com/hoklims/latent-compass) en option. Il appelle les installateurs propres à chaque projet et conserve leurs données séparées.
+
+**État de publication :** le paquet `hoklims-devkit` n'est pas encore publié sur npm. Les commandes ci-dessous décrivent l'interface visée. Pendant le développement, utiliser `bun bin/hoklims-devkit.js` depuis ce dépôt.
+
+## Prérequis
+
+- Bun 1.4 ou plus récent et Git.
+- La CLI Codex, Claude Code, ou les deux dans le `PATH`. `--host auto` sélectionne tous les hôtes détectés.
+- Pour AssertLedger : Node 22.15 ou plus récent, npm et le gestionnaire déclaré par le dépôt (npm, pnpm, Yarn ou Bun). L'adaptateur prêt à l'emploi vise `node:test` ; d'autres frameworks peuvent demander un adaptateur fourni par l'utilisateur.
+- Pour Latent Compass : uv. Son environnement persistant utilise Python 3.13.
+
+Le lanceur n'installe pas Bun, Node ou uv à l'insu de l'utilisateur. Un prérequis manquant est signalé avant toute modification.
+
+## Première utilisation
+
+Après publication, lancer depuis un dépôt Git :
+
+```sh
+bunx hoklims-devkit@latest setup .
+```
+
+Cette commande sélectionne Semctx ainsi que les hôtes Codex et Claude détectés. `--dry-run --json` affiche le plan sans écrire. `--with assertledger`, `--with latent-compass` ou les deux activent les parcours facultatifs. `--host codex` et `--host claude` ciblent un seul hôte.
+
+```sh
+bunx hoklims-devkit@latest setup . --host codex --with assertledger,latent-compass --dry-run --json
+bunx hoklims-devkit@latest doctor . --json
+bunx hoklims-devkit@latest upgrade . --dry-run --json
+```
+
+Au premier lancement, `setup` choisit les dernières versions stables compatibles, vérifie **tous les composants sélectionnés avant la première écriture**, puis enregistre chaque installation réussie dans un état local à l'utilisateur. Une relance conserve ces versions ; `upgrade` recherche de nouvelles versions. Un échec pendant l'application est déclaré partiel et peut être repris avec la même commande.
+
+`doctor --json` distingue le paquet installé, la configuration, le chargement dans la session, la confiance accordée et l'usage observé. L'installation seule ne prouve ni le chargement ni l'approbation. Ouvrir une nouvelle tâche Codex ou recharger les plugins Claude lorsque le rapport le demande. Examiner le hook Latent Compass dans l'hôte avant de lui faire confiance.
+
+## Usage courant
+
+- Semctx sert à examiner l'impact d'un changement et les obligations associées, par exemple avec `semctx verify diff --base origin/main`.
+- AssertLedger sert à vérifier une affirmation précise sur un test de régression. Son installation n'invente ni défaut ni preuve. L'exécution locale non isolée exige toujours `--allow-unsafe-execution` donné par l'opérateur.
+- Latent Compass consigne les inconnues d'une décision importante. Ses observations locales restent consultatives et ne donnent aucune autorité d'exécution.
+
+Il n'est pas nécessaire d'utiliser les trois outils à chaque tâche.
+
+## Retrait et développement
+
+Cette version n'a pas de commande de désinstallation commune. `assertledger disconnect . --client codex|claude-code --write` retire uniquement ses fichiers encore identiques. `latent-compass host remove --project-root . --host codex|claude` retire l'inscription du projet sans toucher aux autres. Le plugin Semctx est partagé entre dépôts : ne le retirer de Codex ou Claude que lorsqu'aucun autre dépôt ne l'utilise. Les fichiers métier `.semctx` et les preuves sont conservés.
+
+Pour contribuer, lancer `bun test` puis `bun run check`. La publication utilisera un tag Git exact, des essais du paquet installé hors checkout et npm trusted publishing ; la commande publique ne sera annoncée qu'après vérification sur le registre.
