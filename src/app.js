@@ -503,7 +503,8 @@ async function applySemctx(rt, root, hosts, version, preflight) {
     if (setup.code === 1 && setupReport.setupReady !== false) {
       throw new Error(`Semctx workspace setup failed unexpectedly: ${shortError(setup)}`);
     }
-    ready = setupReport.setupReady === true && setupReport.analysisReady === true;
+    ready = setupReport.verdict === "SETUP_READY" && setupReport.setupReady === true
+      && setupReport.analysisReady === true && setupReport.check.ok === true;
   }
   const status = await rt.exec(["bunx", `semctx@${version}`, "plugin-status", "--host", hostMode, ...args], root);
   const delivery = parseJsonOutput(status);

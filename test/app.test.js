@@ -247,6 +247,21 @@ describe("public CLI", () => {
     expect(rt.writes.at(-1).inProgress).toBeDefined();
   });
 
+  test("Semctx negative verdict remains unconfigured despite true readiness flags", async () => {
+    const rt = fakeRuntime();
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv.includes("setup") && !argv.includes("--dry-run")
+      ? { code: 0, stdout: JSON.stringify({
+        schemaVersion: 1, kind: "setup", repositoryRoot: "/repo",
+        verdict: "SETUP_NOT_READY", setupReady: true, analysisReady: true, check: { ok: false },
+      }), stderr: "" }
+      : nativeExec(argv, cwd);
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.components[0]).toMatchObject({ state: "needs-attention", configured: "unknown" });
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_NOT_READY");
+  });
+
   test("setup keeps the recorded version; only upgrade resolves latest", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
     const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5", state });

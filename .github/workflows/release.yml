@@ -32,6 +32,9 @@ jobs:
         with:
           version: 0.12.5
           enable-cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6
+        with:
+          python-version: '3.13'
       - name: Install tested agent CLIs
         run: npm install --global @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229 # zizmor: ignore[adhoc-packages] exact host smoke pins
       - name: Verify release identity and local package # zizmor: ignore[adhoc-packages] exact local tarball and pinned host CLIs are the subjects under test
@@ -120,6 +123,9 @@ jobs:
         with:
           version: 0.12.5
           enable-cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6
+        with:
+          python-version: '3.13'
       - name: Install tested agent CLIs
         run: npm install --global @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229 # zizmor: ignore[adhoc-packages] exact host smoke pins
       - name: Verify public registry install and both host dry-runs # zizmor: ignore[adhoc-packages] exact public release is the subject under test
