@@ -70,7 +70,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
       if (argv[0] === "uv" && argv.includes("list")) return { code: 0, stdout: uvInstalled ? "latent-compass v0.3.0\n" : "", stderr: uvInstalled ? "" : "No tools installed\n" };
       if (argv[0] === "uv" && argv.includes("run")) return { code: 0, stdout: JSON.stringify(compassInstallReport(argv)), stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("--version")) return { code: 0, stdout: "latent-compass 0.3.0\n", stderr: "" };
-      if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ schema_version: 1, operation: "status", version: "0.3.0", hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
+      if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo", hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
       if (argv[0] === "npm" && argv.includes("exec")) return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
       if (argv[0] === "npm" && argv.includes("install")) return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
       if (argv.includes("plugin-status")) {
@@ -394,16 +394,29 @@ describe("public CLI", () => {
     const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, compassStatus: "OBSERVING" });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd) => argv[0] === executable && argv.includes("status")
-      ? { code: 0, stdout: JSON.stringify({ hosts: [{ host: "codex", status: "OBSERVING" }], states: { codex: { installed: true, configured: true } } }), stderr: "" }
+      ? { code: 0, stdout: JSON.stringify({ schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo", hosts: [{ host: "codex", status: "OBSERVING" }], states: { codex: { installed: true, configured: true } } }), stderr: "" }
       : nativeExec(argv, cwd);
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     expect(report.components.find((item) => item.name === "latent-compass")).toMatchObject({ configured: "yes", observed: "unknown" });
   });
 
+  test("doctor rejects Compass host flags without status identity", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" } });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === executable && argv.includes("status")
+      ? { code: 0, stdout: JSON.stringify({ hosts: [{ host: "codex", status: "NO_OBSERVATIONS" }], states: { codex: { installed: true, configured: true } } }), stderr: "" }
+      : nativeExec(argv, cwd);
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    expect(report.ok).toBe(false);
+    expect(report.components.find((item) => item.name === "latent-compass").configured).toBe("unknown");
+  });
+
   test("doctor rejects a rendered but unconfigured Latent Compass status", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
-    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, compassStatus: "NOT_CONFIGURED" });
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, compassStatus: "DEGRADED" });
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     const compass = report.components.find((item) => item.name === "latent-compass");
     expect(compass.configured).toBe("no");

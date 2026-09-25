@@ -206,6 +206,20 @@ function validAssertSetupReport(parsed, client, mode, statuses, artifactStates) 
     && parsed.rollback?.status === "NOT_REQUIRED";
 }
 
+function recognizableCompassStatus(rt, parsed, root, host, version) {
+  if (parsed?.schema_version !== 1 || parsed.operation !== "status" || parsed.version !== version
+    || typeof parsed.project_root !== "string" || !Array.isArray(parsed.hosts) || parsed.hosts.length !== 1
+    || parsed.hosts[0]?.host !== host
+    || !["NO_OBSERVATIONS", "OBSERVING", "DEGRADED"].includes(parsed.hosts[0].status)
+    || typeof parsed.states?.[host]?.installed !== "boolean"
+    || typeof parsed.states?.[host]?.configured !== "boolean") return false;
+  try {
+    return rt.realpath(parsed.project_root) === root;
+  } catch {
+    return false;
+  }
+}
+
 async function persistentCompassEntry(rt, root) {
   const bin = await rt.exec(["uv", "tool", "dir", "--bin"], root);
   if (bin.code !== 0) throw new Error(`uv tool dir --bin: ${shortError(bin)}`);
@@ -573,9 +587,8 @@ async function applyCompass(rt, root, hosts, version, preflight) {
     }
     const status = await rt.exec([entry.executable, "host", "status", "--project-root", root, "--host", host, "--json"], root);
     const observed = parseJsonOutput(status);
-    if (status.code !== 0 || observed?.schema_version !== 1 || observed.operation !== "status" || observed.version !== version
-      || !Array.isArray(observed.hosts) || observed.hosts.length !== 1
-      || observed.hosts[0]?.host !== host || !["NO_OBSERVATIONS", "OBSERVING"].includes(observed.hosts[0].status)
+    if (status.code !== 0 || !recognizableCompassStatus(rt, observed, root, host, version)
+      || !["NO_OBSERVATIONS", "OBSERVING"].includes(observed.hosts[0].status)
       || observed.states?.[host]?.installed !== true || observed.states?.[host]?.configured !== true) {
       throw new Error(`Latent Compass post-install status (${host}): ${shortError(status)}`);
     }
@@ -648,10 +661,7 @@ async function diagnoseCompass(rt, root, hosts, version) {
   }
   const recognizable = checks.every((item, index) => {
     const host = hosts[index];
-    return Array.isArray(item.report?.hosts)
-      && typeof item.report.hosts.find((entry) => entry.host === host)?.status === "string"
-      && typeof item.report.states?.[host]?.installed === "boolean"
-      && typeof item.report.states?.[host]?.configured === "boolean";
+    return recognizableCompassStatus(rt, item.report, root, host, version);
   });
   const healthy = recognizable && checks.every((item, index) => {
     const host = hosts[index];
