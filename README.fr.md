@@ -2,7 +2,7 @@
 
 Hoklims Devkit prépare un dépôt Git pour [Semctx](https://github.com/hoklims/semctx), avec [AssertLedger](https://github.com/hoklims/assertledger) et [Latent Compass](https://github.com/hoklims/latent-compass) en option. Il appelle les installateurs propres à chaque projet et conserve leurs données séparées.
 
-**État de publication :** le paquet `hoklims-devkit` n'est pas encore publié sur npm. Les commandes ci-dessous décrivent l'interface visée. Pendant le développement, utiliser `bun bin/hoklims-devkit.js` depuis ce dépôt.
+**Disponibilité :** vérifier `npm view hoklims-devkit@0.1.0 version` avant d'utiliser les commandes publiques ci-dessous. Une version est prête seulement après vérification de sa release et de son installation depuis npm. Pendant le développement, utiliser `bun bin/hoklims-devkit.js` depuis ce dépôt.
 
 ## Prérequis
 

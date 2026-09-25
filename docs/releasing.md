@@ -1,6 +1,6 @@
 # Release sequence
 
-The launcher must be released **after** its native integrations. At the first public release, verify that npm `semctx` has a safe `setup --dry-run` (0.3.4 or later) and that its `stable` Codex and Claude plugin manifests declare the same version. AssertLedger must publish its `setup` CLI (planned 1.2.0). Latent Compass must publish its persistent-host CLI wheel on PyPI (planned 0.3.0). These are release identities, not source-branch claims.
+The launcher must be released **after** its native integrations. At the first public release, verify that npm `semctx` has a safe `setup --dry-run` (0.3.4 or later) and that its `stable` Codex and Claude plugin manifests declare the same version. AssertLedger must have published its `setup` CLI (1.3.0 or later). Latent Compass must have published its persistent-host CLI wheel on PyPI (0.3.0 or later). These are release identities, not source-branch claims.
 
 ## One-time npm bootstrap
 
