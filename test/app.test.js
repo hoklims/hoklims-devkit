@@ -2,6 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { execute, parseArgs } from "../src/app.js";
 
+function compassInstallReport(argv, { installed = false, configured = false } = {}) {
+  const host = argv[argv.indexOf("--host") + 1];
+  return {
+    schema_version: 1, operation: "install", version: "0.3.0", dry_run: argv.includes("--dry-run"),
+    hosts: [host], files: [], conflicts: [], states: { [host]: { installed, configured } },
+  };
+}
+
 function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "setup_plan", verdict: "SETUP_PLANNED" }, setupReady = true, workspaceReady = false, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false, semctxMissing = false, semctxContentDrift = false, semctxMarketplaceMatch = true, installedSemctxVersion } = {}) {
   const calls = [];
   const writes = [];
@@ -32,7 +40,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
       if (argv[0] === "git") return { code: 0, stdout: "/repo\n", stderr: "" };
       if (argv[0] === "uv" && argv.includes("dir")) return { code: 0, stdout: "/uvbin\n", stderr: "" };
       if (argv[0] === "uv" && argv.includes("list")) return { code: 0, stdout: uvInstalled ? "latent-compass v0.3.0\n" : "", stderr: uvInstalled ? "" : "No tools installed\n" };
-      if (argv[0] === "uv" && argv.includes("run")) return { code: 0, stdout: JSON.stringify({ dry_run: true, conflicts: [], files: [] }), stderr: "" };
+      if (argv[0] === "uv" && argv.includes("run")) return { code: 0, stdout: JSON.stringify(compassInstallReport(argv)), stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("--version")) return { code: 0, stdout: "latent-compass 0.3.0\n", stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
       if (argv[0] === "npm" && argv.includes("exec")) return { code: 0, stdout: JSON.stringify({ status: "WOULD_CREATE", mode: "dry-run", artifacts: [{ owner: "init", path: "/repo/assertledger.config.json", state: "WOULD_CREATE" }], init: { requiredOperatorInputs: [] } }), stderr: "" };
@@ -349,6 +357,19 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("a Compass preview without evidence for its requested host blocks every write", async () => {
+    const rt = fakeRuntime({ tools: ["uv"], uvInstalled: false });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === "uv" && argv.includes("run")
+      ? { code: 0, stdout: JSON.stringify({ dry_run: true, conflicts: [] }), stderr: "" }
+      : nativeExec(argv, cwd);
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("optional registry failure blocks all components before preflight writes", async () => {
     const rt = fakeRuntime({ tools: ["uv"], failPyPi: true, uvInstalled: false });
     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
@@ -557,7 +578,7 @@ describe("public CLI", () => {
     const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, uvInstalled: true });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd, timeout) => argv[0] === executable && argv.includes("install")
-      ? { code: 0, stdout: JSON.stringify({ dry_run: argv.includes("--dry-run"), conflicts: [], files: [], states: { codex: { installed: true, configured: true } } }), stderr: "" }
+      ? { code: 0, stdout: JSON.stringify(compassInstallReport(argv, { installed: true, configured: true })), stderr: "" }
       : nativeExec(argv, cwd, timeout);
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(true);
@@ -573,7 +594,7 @@ describe("public CLI", () => {
     const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" } });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd, timeout) => argv[0] === executable && argv.includes("install")
-      ? { code: 0, stdout: JSON.stringify({ dry_run: argv.includes("--dry-run"), conflicts: [], files: [], states: { codex: { installed: false, configured: false } } }), stderr: "" }
+      ? { code: 0, stdout: JSON.stringify(compassInstallReport(argv)), stderr: "" }
       : nativeExec(argv, cwd, timeout);
     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
     expect(report.ok).toBe(false);

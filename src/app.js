@@ -165,6 +165,17 @@ function uvToolVersion(output, stderr = "") {
   return version;
 }
 
+function validCompassInstallReport(parsed, host, version, dryRun) {
+  return parsed?.schema_version === 1 && parsed.operation === "install" && parsed.version === version
+    && parsed.dry_run === dryRun && Array.isArray(parsed.hosts) && parsed.hosts.length === 1
+    && parsed.hosts[0] === host && Array.isArray(parsed.files)
+    && parsed.files.every((file) => typeof file?.path === "string" && file.path.length > 0
+      && ["create", "update", "delete", "unchanged"].includes(file.action))
+    && Array.isArray(parsed.conflicts) && parsed.conflicts.length === 0
+    && typeof parsed.states?.[host]?.installed === "boolean"
+    && typeof parsed.states?.[host]?.configured === "boolean";
+}
+
 async function persistentCompassEntry(rt, root) {
   const bin = await rt.exec(["uv", "tool", "dir", "--bin"], root);
   if (bin.code !== 0) throw new Error(`uv tool dir --bin: ${shortError(bin)}`);
@@ -427,7 +438,7 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
     const result = await rt.exec(commandLine, root);
     const parsed = nativeResult(result, `latent-compass host install (${host})`, report);
     if (!parsed) continue;
-    if (result.code !== 0 || parsed.dry_run !== true || !Array.isArray(parsed.conflicts) || parsed.conflicts.length > 0) {
+    if (result.code !== 0 || !validCompassInstallReport(parsed, host, version, true)) {
       problem(report, "COMPASS_HOOK_CONFLICT", JSON.stringify(parsed).slice(0, 600));
     }
     previews.push({ host, files: parsed.files ?? [], conflicts: parsed.conflicts ?? [] });
@@ -507,12 +518,12 @@ async function applyCompass(rt, root, hosts, version, preflight) {
   for (const host of hosts) {
     const preview = await rt.exec([entry.executable, "host", "install", "--project-root", root, "--host", host, "--dry-run", "--json"], root);
     const previewReport = parseJsonOutput(preview);
-    if (preview.code !== 0 || previewReport?.dry_run !== true || !Array.isArray(previewReport.conflicts) || previewReport.conflicts.length > 0) {
+    if (preview.code !== 0 || !validCompassInstallReport(previewReport, host, version, true)) {
       throw new Error(`Latent Compass persistent preflight (${host}): ${shortError(preview)}`);
     }
     const result = await rt.exec([entry.executable, "host", "install", "--project-root", root, "--host", host, "--json"], root);
     const parsed = parseJsonOutput(result);
-    if (result.code !== 0 || parsed?.dry_run !== false || !Array.isArray(parsed?.conflicts) || parsed.conflicts.length > 0
+    if (result.code !== 0 || !validCompassInstallReport(parsed, host, version, false)
       || parsed.states?.[host]?.installed !== true || parsed.states?.[host]?.configured !== true) {
       throw new Error(`Latent Compass hook install (${host}): ${shortError(result)}`);
     }
