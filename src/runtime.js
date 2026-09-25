@@ -22,6 +22,23 @@ export function validateState(state) {
       throw new Error(`Invalid devkit state component: ${name}`);
     }
   }
+  if (state.inProgress !== undefined) {
+    const plan = state.inProgress;
+    if (!plan || Array.isArray(plan) || typeof plan !== "object"
+      || !["setup", "upgrade"].includes(plan.command)
+      || !Array.isArray(plan.selected) || plan.selected[0] !== "semctx"
+      || plan.selected.some((name) => !COMPONENT_NAMES.has(name))
+      || new Set(plan.selected).size !== plan.selected.length
+      || !Array.isArray(plan.hosts) || plan.hosts.length === 0
+      || plan.hosts.some((host) => !HOST_NAMES.has(host))
+      || new Set(plan.hosts).size !== plan.hosts.length
+      || !plan.versions || Array.isArray(plan.versions) || typeof plan.versions !== "object"
+      || Object.keys(plan.versions).length !== plan.selected.length
+      || plan.selected.some((name) => typeof plan.versions[name] !== "string"
+        || !/^\d+\.\d+\.\d+$/u.test(plan.versions[name]))) {
+      throw new Error("Invalid in-progress installation plan");
+    }
+  }
   return state;
 }
 

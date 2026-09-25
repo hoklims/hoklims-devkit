@@ -178,6 +178,15 @@ async function checkSemctxChannel(rt, version) {
   }
 }
 
+function selectedComponents(options, state) {
+  const selected = new Set(["semctx", ...options.with]);
+  if (options.command !== "setup" && options.with.length === 0) {
+    for (const name of Object.keys(state?.components ?? {})) selected.add(name);
+    for (const name of state?.inProgress?.selected ?? []) selected.add(name);
+  }
+  return COMPONENTS.filter((name) => selected.has(name));
+}
+
 function semctxStatusHasHosts(status, hosts) {
   return status?.schemaVersion === 2 && status.kind === "plugin_delivery_status"
     && hosts.every((host) => status.hosts?.[host]?.requested === true
@@ -185,15 +194,28 @@ function semctxStatusHasHosts(status, hosts) {
       && Object.hasOwn(status.hosts[host].installed, "version"));
 }
 
+function semctxWorkspaceReady(doctorResult, healthResult, version) {
+  const doctor = doctorResult.report ?? parseJsonOutput(doctorResult);
+  const health = healthResult.report ?? parseJsonOutput(healthResult);
+  const doctorCode = doctorResult.exitCode ?? doctorResult.code;
+  const healthCode = healthResult.exitCode ?? healthResult.code;
+  const requiredChecks = ["cli", "workspace", "config", "index", "runtime"];
+  const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
+    && Array.isArray(doctor.checks) && requiredChecks.every((name) => doctor.checks.some((check) =>
+      check.name === name && check.ok === true && (name !== "index" || check.status === "healthy")));
+  const indexReady = healthCode === 0 && health?.schemaVersion === 1 && health.kind === "index_health"
+    && health.binding?.status === "valid" && health.freshness?.canRunHighRiskControl === true
+    && health.coverage?.status === "complete";
+  return doctorReady && indexReady;
+}
+
 async function resolveComponents(rt, options, state, root, report) {
-  const selected = new Set(["semctx", ...options.with]);
-  if (options.command !== "setup" && options.with.length === 0) {
-    for (const name of Object.keys(state?.components ?? {})) selected.add(name);
-  }
   const versions = {};
-  for (const name of COMPONENTS.filter((item) => selected.has(item))) {
+  for (const name of selectedComponents(options, state)) {
     try {
-      if (options.command !== "upgrade" && state?.components?.[name]?.version) {
+      if (state?.inProgress?.versions[name]) {
+        versions[name] = state.inProgress.versions[name];
+      } else if (options.command !== "upgrade" && state?.components?.[name]?.version) {
         versions[name] = state.components[name].version;
       } else if (name === "assertledger" && options.command === "setup" && existingAssertVersion(rt, root)) {
         versions[name] = existingAssertVersion(rt, root);
@@ -221,15 +243,7 @@ async function resolveComponents(rt, options, state, root, report) {
 async function preflightSemctx(rt, root, hosts, version, previous, command, report) {
   const hostMode = hosts.length === 2 ? "all" : hosts[0];
   const args = ["--root", root, "--json"];
-  const hostInstallNeeded = command === "upgrade" || !previous || hosts.some((host) => !previous.hosts?.includes(host));
-  if (hostInstallNeeded && previous && command !== "upgrade") {
-    try {
-      await checkSemctxChannel(rt, version);
-    } catch (error) {
-      problem(report, "RELEASE_SKEW_OR_UNAVAILABLE", `Semctx host expansion: ${String(error.message ?? error)}`, 3);
-      return null;
-    }
-  }
+  let hostInstallNeeded = command === "upgrade" || !previous || hosts.some((host) => !previous.hosts?.includes(host));
   const setup = await rt.exec(["bunx", `semctx@${version}`, "setup", "--dry-run", ...args], root);
   const setupJson = nativeResult(setup, "semctx setup --dry-run", report);
   if (!setupJson) return null;
@@ -243,12 +257,29 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     problem(report, "SEMCTX_STATUS_INVALID", `Semctx plugin-status returned incomplete or failed host evidence (exit ${status.code})`);
     return null;
   }
+  if (previous && hosts.some((host) => statusJson.hosts[host].installed.version === null)) hostInstallNeeded = true;
+  for (const host of hosts) {
+    const installed = statusJson.hosts[host].installed;
+    if (installed.version === version && installed.contentMatchesSnapshot === false) {
+      problem(report, "SEMCTX_CONTENT_DRIFT", `${host} Semctx plugin bytes differ from its marketplace snapshot; inspect or repair with the native installer`);
+    } else if (previous && installed.version === version && installed.contentMatchesSnapshot !== true) {
+      problem(report, "SEMCTX_CONTENT_UNVERIFIED", `${host} Semctx plugin content is unverified; inspect semctx plugin-status before retrying`);
+    }
+  }
   const installedVersions = hosts.map((host) => statusJson.hosts?.[host]?.installed?.version).filter((value) => isStableVersion(value));
   if (command !== "upgrade" && !previous && installedVersions.some((installed) => installed !== version)) {
     problem(report, "EXISTING_VERSION", `Semctx is already installed at ${[...new Set(installedVersions)].join(", ")}; use upgrade explicitly`);
   }
   if (previous && installedVersions.some((installed) => installed !== previous.version)) {
     problem(report, "INSTALLED_VERSION_DRIFT", `Semctx installation differs from recorded ${previous.version}`);
+  }
+  if (hostInstallNeeded && previous && command !== "upgrade") {
+    try {
+      await checkSemctxChannel(rt, version);
+    } catch (error) {
+      problem(report, "RELEASE_SKEW_OR_UNAVAILABLE", `Semctx host repair: ${String(error.message ?? error)}`, 3);
+      return null;
+    }
   }
   let hostJson = { ok: true, dryRun: true, hosts: {}, skipped: true };
   if (hostInstallNeeded) {
@@ -257,8 +288,15 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     if (!hostJson) return null;
     if (host.code !== 0 || hostJson.ok !== true || hostJson.dryRun !== true) problem(report, "SEMCTX_HOST_CONFLICT", JSON.stringify(hostJson).slice(0, 600));
   }
+  let skipSetup = false;
+  if (previous && !hostInstallNeeded && Array.isArray(setupJson.plannedChanges)
+    && setupJson.plannedChanges.length === 0 && report.conflicts.length === 0) {
+    const doctor = await rt.exec(["bunx", `semctx@${version}`, "doctor", ...args], root);
+    const health = await rt.exec(["bunx", `semctx@${version}`, "index-health", ...args], root);
+    skipSetup = semctxWorkspaceReady(doctor, health, version);
+  }
   report.plannedChanges.push({ component: "semctx", workspace: setupJson, hosts: hostJson.hosts });
-  return { setup: setupJson, host: hostJson };
+  return { setup: setupJson, host: hostJson, hostInstallNeeded, skipSetup };
 }
 
 async function preflightAssert(rt, root, hosts, version, previous, command, report) {
@@ -344,27 +382,39 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
   return { current, needsInstall, previews };
 }
 
-async function applySemctx(rt, root, hosts, version, previous, command) {
+async function applySemctx(rt, root, hosts, version, preflight) {
   const hostMode = hosts.length === 2 ? "all" : hosts[0];
   const args = ["--root", root, "--json"];
-  if (!previous || command === "upgrade" || hosts.some((host) => !previous.hosts?.includes(host))) {
+  if (preflight.hostInstallNeeded) {
     const install = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", ...args], root);
     const parsed = parseJsonOutput(install);
     if (install.code !== 0 || parsed?.ok !== true || parsed?.dryRun !== false) throw new Error(`Semctx host install: ${shortError(install)}`);
   }
-  const setup = await rt.exec(["bunx", `semctx@${version}`, "setup", ...args], root);
-  const setupReport = parseJsonOutput(setup);
-  if (setupReport?.kind !== "setup" || (setup.code !== 0 && setup.code !== 1)) {
-    throw new Error(`Semctx workspace setup: ${shortError(setup)}`);
+  let ready = true;
+  if (!preflight.skipSetup) {
+    const setup = await rt.exec(["bunx", `semctx@${version}`, "setup", ...args], root);
+    const setupReport = parseJsonOutput(setup);
+    if (setupReport?.kind !== "setup" || (setup.code !== 0 && setup.code !== 1)) {
+      throw new Error(`Semctx workspace setup: ${shortError(setup)}`);
+    }
+    if (setup.code === 1 && setupReport.setupReady !== false) {
+      throw new Error(`Semctx workspace setup failed unexpectedly: ${shortError(setup)}`);
+    }
+    ready = setupReport.setupReady === true && setupReport.analysisReady === true;
   }
-  if (setup.code === 1 && setupReport.setupReady !== false) {
-    throw new Error(`Semctx workspace setup failed unexpectedly: ${shortError(setup)}`);
+  const status = await rt.exec(["bunx", `semctx@${version}`, "plugin-status", "--host", hostMode, ...args], root);
+  const delivery = parseJsonOutput(status);
+  if (![0, 2, 3].includes(status.code) || !semctxStatusHasHosts(delivery, hosts)
+    || hosts.some((host) => delivery.hosts[host].installed.version !== version
+      || delivery.hosts[host].marketplace?.matchesSemctx !== true
+      || delivery.hosts[host].installed.contentMatchesSnapshot !== true)) {
+    throw new Error("Semctx installation could not be verified from plugin-status; inspect the native report before retrying");
   }
   return {
     activation: "unknown",
-    ready: setupReport.setupReady === true && setupReport.analysisReady === true,
-    next: setupReport.setupReady === true && setupReport.analysisReady === true
-      ? ["Open a new Codex task or reload Claude plugins; then verify tool visibility"]
+    ready,
+    next: ready
+      ? preflight.skipSetup ? [] : ["Open a new Codex task or reload Claude plugins; then verify tool visibility"]
       : ["Semctx setup reported incomplete analysis; run semctx doctor and index-health before relying on it"],
   };
 }
@@ -433,8 +483,7 @@ async function diagnoseSemctx(rt, root, hosts, version) {
     return item?.installed?.version === version && item?.marketplace?.matchesSemctx === true
       && item?.installed?.contentMatchesSnapshot === true;
   });
-  const workspaceReady = checks[1].exitCode === 0 && checks[1].report !== null
-    && checks[2].exitCode === 0 && checks[2].report !== null;
+  const workspaceReady = semctxWorkspaceReady(checks[1], checks[2], version);
   const loaded = validDelivery && hosts.every((host) => delivery.hosts[host]?.session?.status === "observed") ? "yes" : "unknown";
   const installed = validDelivery ? "yes"
     : validStatus && hosts.every((host) => delivery.hosts[host].installed.version === null) ? "no" : "unknown";
@@ -516,9 +565,9 @@ export async function execute(options, rt = createRuntime()) {
     return problem(report, "STATE_CONFLICT", String(error.message ?? error));
   }
   if (options.command === "doctor") {
-    const names = new Set(["semctx", ...options.with, ...Object.keys(state?.components ?? {})]);
+    const names = new Set(["semctx", ...options.with, ...Object.keys(state?.components ?? {}), ...(state?.inProgress?.selected ?? [])]);
     for (const name of COMPONENTS.filter((item) => names.has(item))) {
-      const version = state?.components?.[name]?.version ?? null;
+      const version = state?.components?.[name]?.version ?? state?.inProgress?.versions[name] ?? null;
       if (!version) {
         report.components.push({ name, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
         problem(report, "DOCTOR_UNMANAGED", `${name} has no devkit installation record; run setup or inspect its native CLI`, 3);
@@ -536,8 +585,17 @@ export async function execute(options, rt = createRuntime()) {
         problem(report, "DOCTOR_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
       }
     }
+    if (state?.inProgress) {
+      problem(report, "INCOMPLETE_OPERATION", `Re-run ${state.inProgress.command} with --host ${state.inProgress.hosts.length === 2 ? "all" : state.inProgress.hosts[0]}${state.inProgress.selected.length > 1 ? ` --with ${state.inProgress.selected.slice(1).join(",")}` : ""} to complete the recorded plan`, 3);
+    }
     report.ok = report.conflicts.length === 0;
     return report;
+  }
+  const selected = selectedComponents(options, state);
+  if (state?.inProgress && (state.inProgress.command !== options.command
+    || JSON.stringify(state.inProgress.hosts) !== JSON.stringify(hosts)
+    || JSON.stringify(state.inProgress.selected) !== JSON.stringify(selected))) {
+    return problem(report, "PENDING_PLAN_CONFLICT", `Complete the recorded ${state.inProgress.command} plan for ${state.inProgress.hosts.join(",")} and ${state.inProgress.selected.join(",")} before changing selectors`, 4);
   }
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) return report;
@@ -564,15 +622,32 @@ export async function execute(options, rt = createRuntime()) {
     if (JSON.stringify(currentState) !== JSON.stringify(state)) {
       return problem(report, "STATE_CHANGED", "Installation state changed during preflight. Re-run setup to recompute the plan.", 4);
     }
+    let savedState = JSON.stringify(currentState);
+    const saveStateIfChanged = () => {
+      const next = JSON.stringify(nextState);
+      if (next !== savedState) {
+        rt.writeState(statePath, nextState);
+        savedState = next;
+      }
+    };
+    if (state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name])) {
+      nextState.inProgress = {
+        command: options.command,
+        selected,
+        hosts,
+        versions: Object.fromEntries(selected.map((name) => [name, versions[name]])),
+      };
+      saveStateIfChanged();
+    }
     for (const component of report.components) {
       const { name, version } = component;
       try {
         let result;
-        if (name === "semctx") result = await applySemctx(rt, root, hosts, version, nextState.components[name], options.command);
+        if (name === "semctx") result = await applySemctx(rt, root, hosts, version, previews[name]);
         else if (name === "assertledger") result = await applyAssert(rt, root, hosts, version, previews[name]);
         else result = await applyCompass(rt, root, hosts, version, previews[name]);
         nextState.components[name] = { version, hosts: [...new Set([...(nextState.components[name]?.hosts ?? []), ...hosts])] };
-        rt.writeState(statePath, nextState);
+        saveStateIfChanged();
         component.state = result.ready === false ? "needs-attention" : "configured";
         component.installed = "yes";
         component.configured = result.ready === false ? "unknown" : "yes";
@@ -589,6 +664,10 @@ export async function execute(options, rt = createRuntime()) {
         problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. Re-run setup after resolving the error.`, 5);
         break;
       }
+    }
+    if (report.conflicts.length === 0 && nextState.inProgress) {
+      delete nextState.inProgress;
+      saveStateIfChanged();
     }
   } catch (error) {
     problem(report, "RUN_LOCKED", String(error.message ?? error), 4);

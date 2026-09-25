@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { execute, parseArgs } from "../src/app.js";
 
-function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "setup_plan", verdict: "SETUP_PLANNED" }, setupReady = true, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false } = {}) {
+function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "setup_plan", verdict: "SETUP_PLANNED" }, setupReady = true, workspaceReady = false, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false, semctxMissing = false, semctxContentDrift = false } = {}) {
   const calls = [];
   const writes = [];
+  let semctxInstalledVersion = semctxMissing ? null : state?.components?.semctx?.version ?? null;
   const rt = {
     calls,
     writes,
@@ -26,7 +27,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
     exec: async (argv) => {
       calls.push(argv);
       if (argv[0] === "bun") return { code: 0, stdout: "1.4.0\n", stderr: "" };
-      if (argv[0] === "node" && argv.includes("setup")) return { code: assertStatus === "CONFLICT" ? 4 : 0, stdout: JSON.stringify({ status: assertStatus, mode: "dry-run", artifacts: [{ state: assertStatus === "UNCHANGED" ? "UNCHANGED" : "CONFLICT" }] }), stderr: "" };
+      if (argv[0] === "node" && argv.includes("setup")) return { code: assertStatus === "CONFLICT" ? 4 : 0, stdout: JSON.stringify({ status: argv.includes("--write") ? "CREATED" : assertStatus, mode: argv.includes("--write") ? "write" : "dry-run", artifacts: [{ state: assertStatus === "UNCHANGED" ? "UNCHANGED" : "CONFLICT" }] }), stderr: "" };
       if (argv[0] === "node") return { code: 0, stdout: "v22.15.0\n", stderr: "" };
       if (argv[0] === "git") return { code: 0, stdout: "/repo\n", stderr: "" };
       if (argv[0] === "uv" && argv.includes("dir")) return { code: 0, stdout: "/uvbin\n", stderr: "" };
@@ -38,13 +39,13 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
       if (argv[0] === "npm" && argv.includes("install")) return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
       if (argv.includes("plugin-status")) {
         return {
-          code: semctxStatusCode,
+          code: semctxInstalledVersion && semctxStatusCode === 3 ? 0 : semctxStatusCode,
           stdout: JSON.stringify(semctxStatusMalformed ? { hosts: {} } : {
             schemaVersion: 2,
             kind: "plugin_delivery_status",
             hosts: {
-              codex: { requested: true, installed: { version: null, contentMatchesSnapshot: null }, marketplace: { matchesSemctx: null } },
-              claude: { requested: true, installed: { version: null, contentMatchesSnapshot: null }, marketplace: { matchesSemctx: null } },
+              codex: { requested: true, installed: { version: semctxInstalledVersion, contentMatchesSnapshot: semctxInstalledVersion ? !semctxContentDrift : null }, marketplace: { matchesSemctx: Boolean(semctxInstalledVersion) } },
+              claude: { requested: true, installed: { version: semctxInstalledVersion, contentMatchesSnapshot: semctxInstalledVersion ? !semctxContentDrift : null }, marketplace: { matchesSemctx: Boolean(semctxInstalledVersion) } },
             },
           }),
           stderr: "",
@@ -53,9 +54,17 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
       if (argv.includes("setup") && argv.includes("--dry-run")) {
         return { code: setup.kind === "setup_plan" ? 0 : 4, stdout: JSON.stringify(setup), stderr: "" };
       }
-      if (argv.includes("doctor")) return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
-      if (argv.includes("index-health")) return { code: 2, stdout: JSON.stringify({ coverage: { status: "partial" } }), stderr: "" };
-      if (argv.includes("install")) return { code: 0, stdout: JSON.stringify({ ok: true, dryRun: argv.includes("--dry-run"), hosts: { codex: { status: "planned" } } }), stderr: "" };
+      if (argv.includes("doctor")) return { code: 0, stdout: JSON.stringify(workspaceReady ? {
+        healthy: true, version,
+        checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({ name, ok: true, ...(name === "index" ? { status: "healthy" } : {}) })),
+      } : { ok: true }), stderr: "" };
+      if (argv.includes("index-health")) return workspaceReady
+        ? { code: 0, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { canRunHighRiskControl: true }, coverage: { status: "complete" } }), stderr: "" }
+        : { code: 2, stdout: JSON.stringify({ coverage: { status: "partial" } }), stderr: "" };
+      if (argv.includes("install")) {
+        if (!argv.includes("--dry-run")) semctxInstalledVersion = version;
+        return { code: 0, stdout: JSON.stringify({ ok: true, dryRun: argv.includes("--dry-run"), hosts: { codex: { status: "planned" } } }), stderr: "" };
+      }
       if (argv.includes("setup")) return { code: setupReady ? 0 : 1, stdout: JSON.stringify({ kind: "setup", setupReady, analysisReady: setupReady }), stderr: "" };
       throw new Error(`Unexpected command: ${argv.join(" ")}`);
     },
@@ -130,8 +139,10 @@ describe("public CLI", () => {
     const report = await execute(setupOptions(), rt);
     expect(report.ok).toBe(true);
     expect(report.components[0].state).toBe("configured");
-    expect(rt.writes).toHaveLength(1);
-    expect(rt.writes[0].components.semctx).toEqual({ version: "0.3.4", hosts: ["codex"] });
+    expect(rt.writes).toHaveLength(3);
+    expect(rt.writes[0].inProgress.versions.semctx).toBe("0.3.4");
+    expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.4", hosts: ["codex"] });
+    expect(rt.writes.at(-1).inProgress).toBeUndefined();
     expect(report.components[0].loaded).toBe("unknown");
   });
 
@@ -162,7 +173,7 @@ describe("public CLI", () => {
     const rt = fakeRuntime({ state });
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
-    expect(report.components[0]).toEqual(expect.objectContaining({ installed: "no", loaded: "unknown", approved: "unknown", observed: "unknown" }));
+    expect(report.components[0]).toEqual(expect.objectContaining({ installed: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" }));
     expect(report.conflicts.map((item) => item.code)).toContain("DOCTOR_NOT_READY");
   });
 
@@ -178,6 +189,17 @@ describe("public CLI", () => {
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
     expect(report.components[0]).toMatchObject({ installed: "unknown", approved: "unknown" });
+  });
+
+  test("doctor refuses zero-exit Semctx diagnostics with missing readiness fields", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv.includes("doctor") || argv.includes("index-health")
+      ? { code: 0, stdout: "{}", stderr: "" } : nativeExec(argv, cwd);
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    expect(report.ok).toBe(false);
+    expect(report.components[0].configured).toBe("no");
   });
 
   test("doctor does not claim success when the tool was never configured", async () => {
@@ -219,6 +241,16 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
     expect(rt.calls.some((args) => args.includes("setup") || args.includes("install"))).toBe(false);
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("repeating a completed setup does not rewrite devkit state", async () => {
+    const rt = fakeRuntime({ setup: { kind: "setup_plan", verdict: "SETUP_PLANNED", plannedChanges: [] }, workspaceReady: true });
+    expect((await execute(setupOptions(), rt)).ok).toBe(true);
+    const writes = rt.writes.length;
+    const setupCalls = rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run")).length;
+    expect((await execute(setupOptions(), rt)).ok).toBe(true);
+    expect(rt.writes).toHaveLength(writes);
+    expect(rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run"))).toHaveLength(setupCalls);
   });
 
   test("release skew prevents writes", async () => {
@@ -280,9 +312,58 @@ describe("public CLI", () => {
     const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
     expect(report.ok).toBe(false);
     expect(report.components.map((item) => item.state)).toEqual(["configured", "partial"]);
-    expect(rt.writes).toHaveLength(1);
-    expect(rt.writes[0].components.semctx.version).toBe("0.3.4");
-    expect(rt.writes[0].components.assertledger).toBeUndefined();
+    expect(rt.writes).toHaveLength(2);
+    expect(rt.writes[0].inProgress.versions.assertledger).toBe("1.2.0");
+    expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.4");
+    expect(rt.writes.at(-1).components.assertledger).toBeUndefined();
+  });
+
+  test("retry keeps the failed component's resolved version when registry latest advances", async () => {
+    const files = { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) };
+    const rt = fakeRuntime({ tools: ["node", "npm"], files });
+    const nativeExec = rt.exec;
+    const nativeFetch = rt.fetchJson;
+    let assertLatest = "1.2.0";
+    let failOnce = true;
+    rt.fetchJson = async (url) => url.includes("registry.npmjs.org/assertledger")
+      ? { version: assertLatest } : nativeFetch(url);
+    rt.exec = async (argv, cwd, timeout) => {
+      if (argv[0] === "npm" && argv.includes("install")) {
+        if (failOnce) { failOnce = false; return { code: 5, stdout: "", stderr: "simulated interruption" }; }
+        files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "1.2.0" });
+        files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")] = "cli";
+      }
+      return nativeExec(argv, cwd, timeout);
+    };
+    const options = { ...setupOptions(), with: ["assertledger"] };
+    const interrupted = await execute(options, rt);
+    expect(interrupted.ok).toBe(false);
+    expect(rt.writes.at(-1).inProgress.versions.assertledger).toBe("1.2.0");
+    assertLatest = "1.2.1";
+    const resumed = await execute(options, rt);
+    expect(resumed.ok).toBe(true);
+    expect(resumed.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
+    expect(rt.writes.at(-1).components.assertledger.version).toBe("1.2.0");
+    expect(rt.writes.at(-1).inProgress).toBeUndefined();
+  });
+
+  test("a missing recorded Semctx host is reinstalled instead of reported installed", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, semctxMissing: true });
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(true);
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(true);
+    expect(report.components[0].installed).toBe("yes");
+  });
+
+  test("altered Semctx plugin bytes block before workspace or host writes", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, semctxContentDrift: true });
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_DRIFT");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
   });
 
   test("concurrent host setups cannot overwrite a completed state record", async () => {
@@ -313,7 +394,7 @@ describe("public CLI", () => {
     ]);
     expect([codex, claude].filter((report) => report.ok)).toHaveLength(1);
     expect([codex, claude].find((report) => !report.ok).conflicts[0].code).toMatch(/^(RUN_LOCKED|STATE_CHANGED)$/u);
-    expect(runtimes.flatMap((rt) => rt.writes)).toHaveLength(1);
+    expect(runtimes.flatMap((rt) => rt.writes)).toHaveLength(3);
     expect(persisted.components.semctx.hosts).toHaveLength(1);
   });
 
@@ -323,6 +404,6 @@ describe("public CLI", () => {
     expect(report.ok).toBe(false);
     expect(report.components[0].state).toBe("needs-attention");
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_NOT_READY");
-    expect(rt.writes).toHaveLength(1);
+    expect(rt.writes).toHaveLength(2);
   });
 });
