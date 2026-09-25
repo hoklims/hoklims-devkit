@@ -198,7 +198,11 @@ function validAssertSetupReport(parsed, client, mode, statuses, artifactStates) 
     && parsed.artifacts.every((artifact) => ["init", "connection"].includes(artifact?.owner)
       && typeof artifact.path === "string" && artifact.path.length > 0
       && artifactStates.includes(artifact.state))
-    && typeof parsed.init?.status === "string" && typeof parsed.connection?.status === "string"
+    && (mode === "dry-run" ? ["WOULD_CREATE", "UNCHANGED"].includes(parsed.init?.status)
+      && parsed.connection?.status === "EMITTED"
+      : ["CREATED", "UNCHANGED"].includes(parsed.init?.status)
+        && ["CREATED", "UNCHANGED"].includes(parsed.connection?.status))
+    && parsed.connection?.client === client
     && parsed.rollback?.status === "NOT_REQUIRED";
 }
 
@@ -488,7 +492,10 @@ async function applySemctx(rt, root, hosts, version, preflight) {
   if (!preflight.skipSetup) {
     const setup = await rt.exec(["bunx", `semctx@${version}`, "setup", ...args], root);
     const setupReport = parseJsonOutput(setup);
-    if (setupReport?.kind !== "setup" || (setup.code !== 0 && setup.code !== 1)) {
+    if (setupReport?.schemaVersion !== 1 || setupReport.kind !== "setup" || setupReport.repositoryRoot !== root
+      || !["SETUP_READY", "SETUP_NOT_READY"].includes(setupReport.verdict)
+      || (setupReport.verdict === "SETUP_READY") !== (setupReport.setupReady === true && setupReport.analysisReady === true && setupReport.check?.ok === true)
+      || (setup.code !== 0 && setup.code !== 1)) {
       throw new Error(`Semctx workspace setup: ${shortError(setup)}`);
     }
     if (setup.code === 1 && setupReport.setupReady !== false) {
@@ -561,6 +568,12 @@ async function applyCompass(rt, root, hosts, version, preflight) {
       || parsed.states?.[host]?.installed !== true || parsed.states?.[host]?.configured !== true) {
       throw new Error(`Latent Compass hook install (${host}): ${shortError(result)}`);
     }
+    const status = await rt.exec([entry.executable, "host", "status", "--project-root", root, "--host", host, "--json"], root);
+    const observed = parseJsonOutput(status);
+    if (status.code !== 0 || observed?.operation !== "status" || observed.version !== version
+      || observed.states?.[host]?.installed !== true || observed.states?.[host]?.configured !== true) {
+      throw new Error(`Latent Compass post-install status (${host}): ${shortError(status)}`);
+    }
   }
   return { activation: "unknown", next: ["Review and trust the exact hook in Codex /hooks or the Claude hook settings; inspect latent-compass-status after use"] };
 }
@@ -606,11 +619,12 @@ async function diagnoseAssert(rt, root, hosts, version) {
     const result = await rt.exec(argv, root);
     checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result) });
   }
-  const recognizable = checks.every((item) => item.report && item.report.mode === "dry-run"
+  const recognizable = checks.every((item, index) => item.report && item.report.mode === "dry-run"
+    && item.report.client === (hosts[index] === "claude" ? "claude-code" : "codex")
     && ["UNCHANGED", "WOULD_CREATE", "BLOCKED", "CONFLICT", "PARTIAL_FAILURE"].includes(item.report.status)
-    && Array.isArray(item.report.artifacts));
+    && Array.isArray(item.report.artifacts) && item.report.artifacts.length > 0);
   const configured = recognizable && checks.every((item) => item.exitCode === 0 && item.report.status === "UNCHANGED"
-    && item.report.artifacts.every((artifact) => artifact.state === "UNCHANGED"));
+    && validAssertSetupReport(item.report, item.command.slice(6), "dry-run", ["UNCHANGED"], ["UNCHANGED"]));
   return {
     name: "assertledger", version, installed: "yes", configured: !recognizable ? "unknown" : configured ? "yes" : "no",
     loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured,
