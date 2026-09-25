@@ -10,7 +10,7 @@ Hoklims Devkit prepares a Git repository for [Semctx](https://github.com/hoklims
 
 - Bun 1.4 or later and Git.
 - Codex CLI, Claude Code CLI, or both on `PATH`. `--host auto` selects every detected host.
-- Optional AssertLedger: Node 22.15 or later, npm, and the repository's declared npm, pnpm, Yarn, or Bun package manager. Its built-in ready adapter is `node:test`; other frameworks may require an operator-supplied adapter.
+- Optional AssertLedger: Node 22.15 or later, npm, and the repository's declared npm, pnpm, or Bun package manager with a `node_modules` installation. Yarn users can run AssertLedger's native setup directly. Its built-in ready adapter is `node:test`; other frameworks may require an operator-supplied adapter.
 - Optional Latent Compass: uv. Its tool environment uses Python 3.13; `uv tool install` can obtain that interpreter.
 
 The launcher never installs Bun, Node, or uv for you. It reports a missing prerequisite before changing the repository or host configuration.
@@ -49,4 +49,4 @@ There is no umbrella uninstall command in this release. Use the native removal c
 
 ## Development and release
 
-Run `bun test` and `bun run check`. The release gate packs the npm tarball, tests it outside the checkout on Windows, Linux, and macOS, and publishes from an exact Git tag using npm trusted publishing. Publishing requires an npm trusted-publisher registration for `hoklims-devkit`; local `npm login` is not used by the workflow. The public README command becomes usable only after the registry install smoke passes.
+Run `bun test` and `bun run check`. The release gate packs the npm tarball and tests it outside the checkout on Windows, Linux, and macOS. npm requires a one-time authenticated first publication before trusted publishing can be configured; later releases use GitHub OIDC. See the [release sequence](docs/releasing.md). The public README command becomes usable only after the registry install smoke passes.

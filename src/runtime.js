@@ -3,6 +3,28 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+const COMPONENT_NAMES = new Set(["semctx", "assertledger", "latent-compass"]);
+const HOST_NAMES = new Set(["codex", "claude"]);
+
+export function validateState(state) {
+  if (state === null) return null;
+  if (!state || Array.isArray(state) || typeof state !== "object" || state.schemaVersion !== 1
+    || typeof state.projectRoot !== "string" || !state.projectRoot
+    || !state.components || Array.isArray(state.components) || typeof state.components !== "object") {
+    throw new Error("Invalid devkit state structure");
+  }
+  for (const [name, component] of Object.entries(state.components)) {
+    if (!COMPONENT_NAMES.has(name) || !component || Array.isArray(component) || typeof component !== "object"
+      || typeof component.version !== "string" || !/^\d+\.\d+\.\d+$/u.test(component.version)
+      || !Array.isArray(component.hosts) || component.hosts.length === 0
+      || component.hosts.some((host) => !HOST_NAMES.has(host))
+      || new Set(component.hosts).size !== component.hosts.length) {
+      throw new Error(`Invalid devkit state component: ${name}`);
+    }
+  }
+  return state;
+}
+
 export function createRuntime() {
   return {
     which: (name) => Bun.which(name),
@@ -47,18 +69,19 @@ export function createRuntime() {
     readState: (path) => {
       if (!existsSync(path)) return null;
       if (!lstatSync(path).isFile()) throw new Error(`Unsafe state path: ${path}`);
-      const state = JSON.parse(readFileSync(path, "utf8"));
-      if (state?.schemaVersion !== 1 || typeof state.projectRoot !== "string" || typeof state.components !== "object") {
-        throw new Error(`Invalid state file: ${path}`);
-      }
-      return state;
+      return validateState(JSON.parse(readFileSync(path, "utf8")));
     },
     writeState: (path, state) => {
+      validateState(state);
       mkdirSync(dirname(path), { recursive: true });
       if (existsSync(path) && !lstatSync(path).isFile()) throw new Error(`Unsafe state path: ${path}`);
-      const temp = `${path}.${process.pid}.tmp`;
+      const temp = `${path}.${randomUUID()}.tmp`;
       writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-      renameSync(temp, path);
+      try {
+        renameSync(temp, path);
+      } finally {
+        if (existsSync(temp)) unlinkSync(temp);
+      }
     },
     acquireLock: (statePath) => {
       mkdirSync(dirname(statePath), { recursive: true });

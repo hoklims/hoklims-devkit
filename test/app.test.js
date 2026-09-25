@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { execute, parseArgs } from "../src/app.js";
 
-function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "setup_plan", verdict: "SETUP_PLANNED" }, setupReady = true, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false } = {}) {
+function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "setup_plan", verdict: "SETUP_PLANNED" }, setupReady = true, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS" } = {}) {
   const calls = [];
   const writes = [];
   const rt = {
@@ -26,8 +26,14 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
     exec: async (argv) => {
       calls.push(argv);
       if (argv[0] === "bun") return { code: 0, stdout: "1.4.0\n", stderr: "" };
+      if (argv[0] === "node" && argv.includes("setup")) return { code: assertStatus === "CONFLICT" ? 4 : 0, stdout: JSON.stringify({ status: assertStatus, mode: "dry-run", artifacts: [{ state: assertStatus === "UNCHANGED" ? "UNCHANGED" : "CONFLICT" }] }), stderr: "" };
       if (argv[0] === "node") return { code: 0, stdout: "v22.15.0\n", stderr: "" };
       if (argv[0] === "git") return { code: 0, stdout: "/repo\n", stderr: "" };
+      if (argv[0] === "uv" && argv.includes("dir")) return { code: 0, stdout: "/uvbin\n", stderr: "" };
+      if (argv[0] === "uv" && argv.includes("list")) return { code: 0, stdout: uvInstalled ? "latent-compass v0.3.0\n" : "No tools installed\n", stderr: "" };
+      if (argv[0] === "uv" && argv.includes("run")) return { code: 0, stdout: JSON.stringify({ dry_run: true, conflicts: [], files: [] }), stderr: "" };
+      if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("--version")) return { code: 0, stdout: "latent-compass 0.3.0\n", stderr: "" };
+      if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
       if (argv[0] === "npm" && argv.includes("exec")) return { code: 0, stdout: JSON.stringify({ status: "WOULD_CREATE", mode: "dry-run", artifacts: [{ owner: "init", path: "/repo/assertledger.config.json", state: "WOULD_CREATE" }], init: { requiredOperatorInputs: [] } }), stderr: "" };
       if (argv[0] === "npm" && argv.includes("install")) return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
       if (argv.includes("plugin-status")) {
@@ -43,7 +49,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
       if (argv.includes("doctor")) return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: "" };
       if (argv.includes("index-health")) return { code: 2, stdout: JSON.stringify({ coverage: { status: "partial" } }), stderr: "" };
       if (argv.includes("install")) return { code: 0, stdout: JSON.stringify({ ok: true, dryRun: argv.includes("--dry-run"), hosts: { codex: { status: "planned" } } }), stderr: "" };
-      if (argv.includes("setup")) return { code: 0, stdout: JSON.stringify({ kind: "setup", setupReady, analysisReady: setupReady }), stderr: "" };
+      if (argv.includes("setup")) return { code: setupReady ? 0 : 1, stdout: JSON.stringify({ kind: "setup", setupReady, analysisReady: setupReady }), stderr: "" };
       throw new Error(`Unexpected command: ${argv.join(" ")}`);
     },
     exists: (path) => Object.hasOwn(files, path),
@@ -138,6 +144,39 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("DOCTOR_UNMANAGED");
   });
 
+  test("doctor rejects AssertLedger native CONFLICT even when JSON is returned", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } };
+    const files = {
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, files, assertStatus: "CONFLICT" });
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    const assertledger = report.components.find((item) => item.name === "assertledger");
+    expect(assertledger.configured).toBe("no");
+    expect(report.ok).toBe(false);
+  });
+
+  test("doctor rejects a rendered but unconfigured Latent Compass status", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, compassStatus: "NOT_CONFIGURED" });
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    const compass = report.components.find((item) => item.name === "latent-compass");
+    expect(compass.configured).toBe("no");
+    expect(compass.observed).toBe("unknown");
+    expect(report.ok).toBe(false);
+  });
+
+  test("malformed saved state blocks before running any native installer", async () => {
+    const rt = fakeRuntime({ state: { schemaVersion: 1, projectRoot: "/repo", components: [] } });
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(rt.calls.some((args) => args.includes("setup") || args.includes("install"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("release skew prevents writes", async () => {
     const rt = fakeRuntime({ version: "0.3.4", stable: "0.3.5" });
     const report = await execute(setupOptions(), rt);
@@ -161,8 +200,27 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("a declared AssertLedger version without installed executable still plans installation", async () => {
+    const rt = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" } }) },
+    });
+    const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+    expect(report.ok).toBe(true);
+    expect(report.plannedChanges.find((item) => item.component === "assertledger").installPackage).toBe(true);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a listed uv tool without its executable is planned for reinstall", async () => {
+    const rt = fakeRuntime({ tools: ["uv"] });
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"], dryRun: true }, rt);
+    expect(report.ok).toBe(true);
+    expect(report.plannedChanges.find((item) => item.component === "latent-compass").installTool).toBe(true);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("optional registry failure blocks all components before preflight writes", async () => {
-    const rt = fakeRuntime({ tools: ["uv"], failPyPi: true });
+    const rt = fakeRuntime({ tools: ["uv"], failPyPi: true, uvInstalled: false });
     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
     expect(report.conflicts.map((item) => item.code)).toContain("VERSION_UNAVAILABLE");
     expect(rt.calls.some((args) => args.includes("setup"))).toBe(false);

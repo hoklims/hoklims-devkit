@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   verify:
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -18,13 +19,22 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+          no-cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.15.0
-      - name: Verify release identity and local package
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: 0.12.5
+          enable-cache: false
+      - name: Install tested agent CLIs
+        run: npm install --global @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229 # zizmor: ignore[adhoc-packages] exact host smoke pins
+      - name: Verify release identity and local package # zizmor: ignore[adhoc-packages] exact local tarball and pinned host CLIs are the subjects under test
         shell: bash
         run: |
           test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = "tag"
@@ -33,12 +43,14 @@ jobs:
           bun run check
           tarball="$(npm pack --silent)"
           consumer="$(mktemp -d)"
-          npm install --prefix "$consumer" --ignore-scripts "$PWD/$tarball"
-          bun "$consumer/node_modules/hoklims-devkit/bin/hoklims-devkit.js" --help
+          npm install --prefix "$consumer" --ignore-scripts "$PWD/$tarball" # zizmor: ignore[adhoc-packages] test exact local tarball outside checkout
+          bun scripts/release-smoke.js "$consumer"
 
   publish:
     needs: verify
+    if: github.ref_name != 'v0.1.0'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
       id-token: write
@@ -46,17 +58,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.15.0
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.0
-      - name: Publish exact tag through npm trusted publishing
+          no-cache: true
+      - name: Publish exact tag through npm trusted publishing # zizmor: ignore[adhoc-packages] exact npm publisher pin is required for OIDC
         shell: bash
         run: |
-          npm install --global npm@11.5.1
+          npm install --global npm@11.5.1 # zizmor: ignore[adhoc-packages] exact OIDC publisher pin
           test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = "tag"
           git merge-base --is-ancestor HEAD origin/main
           test "${GITHUB_REF_NAME}" = "v$(node -p 'require("./package.json").version')"
@@ -70,9 +85,47 @@ jobs:
             npm publish --access public
           fi
           test "$(npm view "hoklims-devkit@$version" version)" = "$version"
+  public-smoke:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.15.0
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+          no-cache: true
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: 0.12.5
+          enable-cache: false
+      - name: Install tested agent CLIs
+        run: npm install --global @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229 # zizmor: ignore[adhoc-packages] exact host smoke pins
+      - name: Verify public registry install and both host dry-runs # zizmor: ignore[adhoc-packages] exact public release is the subject under test
+        shell: bash
+        run: |
+          version="$(node -p 'require("./package.json").version')"
           consumer="$(mktemp -d)"
-          npm install --prefix "$consumer" --ignore-scripts "hoklims-devkit@$version"
-          bun "$consumer/node_modules/hoklims-devkit/bin/hoklims-devkit.js" --help
+          npm install --prefix "$consumer" --ignore-scripts "hoklims-devkit@$version" # zizmor: ignore[adhoc-packages] verify exact public release
+          bun scripts/release-smoke.js "$consumer"
+
+  release:
+    needs: public-smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Create GitHub release after registry verification
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

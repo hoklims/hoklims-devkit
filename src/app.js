@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import packageJson from "../package.json" with { type: "json" };
-import { createRuntime, parseJsonOutput, shortError } from "./runtime.js";
+import { createRuntime, parseJsonOutput, shortError, validateState } from "./runtime.js";
 
 const COMPONENTS = ["semctx", "assertledger", "latent-compass"];
 const HOSTS = ["codex", "claude"];
@@ -55,7 +55,7 @@ function reportFor(options) {
 
 function problem(report, code, detail, exitCode = 4) {
   report.conflicts.push({ code, detail });
-  report.exitCode = exitCode;
+  report.exitCode = Math.max(report.exitCode ?? 0, exitCode);
   return report;
 }
 
@@ -104,35 +104,54 @@ function packageManager(rt, root) {
   const locks = [
     ["npm", ["package-lock.json", "npm-shrinkwrap.json"]],
     ["pnpm", ["pnpm-lock.yaml"]],
-    ["yarn", ["yarn.lock"]],
     ["bun", ["bun.lock", "bun.lockb"]],
   ];
   const found = new Set(locks.filter(([, paths]) => paths.some((path) => rt.exists(join(root, path)))).map(([name]) => name));
   if (declared) found.add(declared);
   if (found.size > 1) throw new Error(`Conflicting package managers: ${[...found].join(", ")}`);
   const selected = [...found][0] ?? "npm";
-  if (!["npm", "pnpm", "yarn", "bun"].includes(selected)) throw new Error(`Unsupported package manager: ${selected}`);
+  if (rt.exists(join(root, "yarn.lock"))) throw new Error("Yarn repositories must use AssertLedger's native setup until a verified Yarn adapter is available");
+  if (!["npm", "pnpm", "bun"].includes(selected)) throw new Error(`Unsupported package manager: ${selected}`);
   return selected;
 }
 
 function installPackageCommand(manager, version) {
   const spec = `assertledger@${version}`;
-  if (manager === "npm") return ["npm", "install", "--save-dev", "--save-exact", spec];
-  if (manager === "pnpm") return ["pnpm", "add", "--save-dev", "--save-exact", spec];
-  if (manager === "yarn") return ["yarn", "add", "--dev", "--exact", spec];
-  return ["bun", "add", "--dev", "--exact", spec];
+  if (manager === "npm") return ["npm", "install", "--save-dev", "--save-exact", "--ignore-scripts", spec];
+  if (manager === "pnpm") return ["pnpm", "add", "--save-dev", "--save-exact", "--ignore-scripts", spec];
+  return ["bun", "add", "--dev", "--exact", "--ignore-scripts", spec];
 }
 
-function localAssertCommand(manager, args) {
-  if (manager === "npm") return ["npm", "exec", "--no", "--", "assertledger", ...args];
-  if (manager === "pnpm") return ["pnpm", "exec", "assertledger", ...args];
-  if (manager === "yarn") return ["yarn", "assertledger", ...args];
-  return ["bunx", "--no-install", "assertledger", ...args];
+function localAssertEntry(rt, root) {
+  const packagePath = join(root, "node_modules", "assertledger", "package.json");
+  const cliPath = join(root, "node_modules", "assertledger", "dist", "cli.js");
+  if (!rt.exists(packagePath) || !rt.exists(cliPath)) return null;
+  try {
+    const version = JSON.parse(rt.readText(packagePath))?.version;
+    return isStableVersion(version) ? { version, cliPath } : null;
+  } catch {
+    return null;
+  }
+}
+
+function localAssertCommand(entry, args) {
+  if (!entry) throw new Error("The project-local AssertLedger executable is missing or invalid");
+  return ["node", entry.cliPath, ...args];
 }
 
 function uvToolVersion(output) {
   const match = output.match(/^latent-compass v(\d+\.\d+\.\d+)\s*$/mu);
   return match?.[1] ?? null;
+}
+
+async function persistentCompassEntry(rt, root) {
+  const bin = await rt.exec(["uv", "tool", "dir", "--bin"], root);
+  if (bin.code !== 0) return null;
+  const executable = join(bin.stdout.trim(), process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+  if (!rt.exists(executable)) return null;
+  const reported = await rt.exec([executable, "--version"], root);
+  const version = reported.code === 0 ? reported.stdout.trim().match(/^latent-compass (\d+\.\d+\.\d+)$/u)?.[1] : null;
+  return version ? { executable, version } : null;
 }
 
 async function resolveVersion(rt, name) {
@@ -261,10 +280,15 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     return null;
   }
   if (command !== "upgrade" && current && current !== version) problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger dependency is ${current}, expected ${version}`);
+  const localEntry = localAssertEntry(rt, root);
+  const needsInstall = current !== version || localEntry?.version !== version;
   const previews = [];
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
-    const result = await rt.exec(["npm", "exec", "--yes", `--package=assertledger@${version}`, "--", "assertledger", "setup", root, "--client", client, "--dry-run", "--json"], root);
+    const previewCommand = !needsInstall
+      ? localAssertCommand(localEntry, ["setup", root, "--client", client, "--dry-run", "--json"])
+      : ["npm", "exec", "--yes", "--ignore-scripts", `--package=assertledger@${version}`, "--", "assertledger", "setup", root, "--client", client, "--dry-run", "--json"];
+    const result = await rt.exec(previewCommand, root);
     const parsed = nativeResult(result, `assertledger setup (${client})`, report);
     if (!parsed) continue;
     if (result.code !== 0 || !["WOULD_CREATE", "UNCHANGED"].includes(parsed.status) || parsed.mode !== "dry-run") {
@@ -277,8 +301,8 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
       requiredOperatorInputs: parsed.init?.requiredOperatorInputs ?? [],
     });
   }
-  report.plannedChanges.push({ component: "assertledger", packageManager: manager, installPackage: current !== version, previews });
-  return { manager, current, previews };
+  report.plannedChanges.push({ component: "assertledger", packageManager: manager, installPackage: needsInstall, previews });
+  return { manager, current, needsInstall, previews };
 }
 
 async function preflightCompass(rt, root, hosts, version, previous, command, report) {
@@ -290,9 +314,14 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
   const current = uvToolVersion(listed.stdout);
   if (command !== "upgrade" && current && current !== version) problem(report, "EXISTING_VERSION", `Latent Compass is installed at ${current}; use upgrade explicitly`);
   if (previous && current && current !== previous.version) problem(report, "INSTALLED_VERSION_DRIFT", `Latent Compass installation differs from recorded ${previous.version}`);
+  const entry = await persistentCompassEntry(rt, root);
+  const needsInstall = current !== version || entry?.version !== version;
   const previews = [];
   for (const host of hosts) {
-    const result = await rt.exec(["uv", "tool", "run", "--from", `latent-compass==${version}`, "latent-compass", "host", "install", "--project-root", root, "--host", host, "--dry-run", "--json"], root);
+    const commandLine = !needsInstall
+      ? [entry.executable, "host", "install", "--project-root", root, "--host", host, "--dry-run", "--json"]
+      : ["uv", "tool", "run", "--from", `latent-compass==${version}`, "latent-compass", "host", "install", "--project-root", root, "--host", host, "--dry-run", "--json"];
+    const result = await rt.exec(commandLine, root);
     const parsed = nativeResult(result, `latent-compass host install (${host})`, report);
     if (!parsed) continue;
     if (result.code !== 0 || parsed.dry_run !== true || !Array.isArray(parsed.conflicts) || parsed.conflicts.length > 0) {
@@ -300,8 +329,8 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
     }
     previews.push({ host, files: parsed.files ?? [], conflicts: parsed.conflicts ?? [] });
   }
-  report.plannedChanges.push({ component: "latent-compass", installTool: current !== version, previews });
-  return { current, previews };
+  report.plannedChanges.push({ component: "latent-compass", installTool: needsInstall, previews });
+  return { current, needsInstall, previews };
 }
 
 async function applySemctx(rt, root, hosts, version, previous, command) {
@@ -314,7 +343,12 @@ async function applySemctx(rt, root, hosts, version, previous, command) {
   }
   const setup = await rt.exec(["bunx", `semctx@${version}`, "setup", ...args], root);
   const setupReport = parseJsonOutput(setup);
-  if (setup.code !== 0 || setupReport?.kind !== "setup") throw new Error(`Semctx workspace setup: ${shortError(setup)}`);
+  if (setupReport?.kind !== "setup" || (setup.code !== 0 && setup.code !== 1)) {
+    throw new Error(`Semctx workspace setup: ${shortError(setup)}`);
+  }
+  if (setup.code === 1 && setupReport.setupReady !== false) {
+    throw new Error(`Semctx workspace setup failed unexpectedly: ${shortError(setup)}`);
+  }
   return {
     activation: "unknown",
     ready: setupReport.setupReady === true && setupReport.analysisReady === true,
@@ -325,13 +359,20 @@ async function applySemctx(rt, root, hosts, version, previous, command) {
 }
 
 async function applyAssert(rt, root, hosts, version, preflight) {
-  if (preflight.current !== version) {
+  if (preflight.needsInstall) {
     const install = await rt.exec(installPackageCommand(preflight.manager, version), root, 300_000);
     if (install.code !== 0) throw new Error(`AssertLedger package install: ${shortError(install)}`);
   }
+  const entry = localAssertEntry(rt, root);
+  if (entry?.version !== version) throw new Error(`AssertLedger project executable is not the requested ${version}`);
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
-    const result = await rt.exec(localAssertCommand(preflight.manager, ["setup", root, "--client", client, "--write", "--json"]), root);
+    const preview = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
+    const previewReport = parseJsonOutput(preview);
+    if (preview.code !== 0 || !["WOULD_CREATE", "UNCHANGED"].includes(previewReport?.status)) {
+      throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
+    }
+    const result = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--write", "--json"]), root);
     const parsed = parseJsonOutput(result);
     if (result.code !== 0 || !["CREATED", "UNCHANGED"].includes(parsed?.status) || parsed?.mode !== "write") {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
@@ -341,22 +382,96 @@ async function applyAssert(rt, root, hosts, version, preflight) {
 }
 
 async function applyCompass(rt, root, hosts, version, preflight) {
-  if (preflight.current !== version) {
-    const install = await rt.exec(["uv", "tool", "install", "--python", "3.13", `latent-compass==${version}`], root, 300_000);
+  if (preflight.needsInstall) {
+    const reinstall = preflight.current === version ? ["--reinstall"] : [];
+    const install = await rt.exec(["uv", "tool", "install", ...reinstall, "--python", "3.13", `latent-compass==${version}`], root, 300_000);
     if (install.code !== 0) throw new Error(`Latent Compass tool install: ${shortError(install)}`);
   }
-  const bin = await rt.exec(["uv", "tool", "dir", "--bin"], root);
-  if (bin.code !== 0) throw new Error(`Cannot locate uv tool executables: ${shortError(bin)}`);
-  const executable = join(bin.stdout.trim(), process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
-  if (!rt.exists(executable)) throw new Error(`Latent Compass executable missing: ${executable}`);
+  const entry = await persistentCompassEntry(rt, root);
+  if (entry?.version !== version) throw new Error(`Latent Compass persistent executable is not the requested ${version}`);
   for (const host of hosts) {
-    const result = await rt.exec([executable, "host", "install", "--project-root", root, "--host", host, "--json"], root);
+    const preview = await rt.exec([entry.executable, "host", "install", "--project-root", root, "--host", host, "--dry-run", "--json"], root);
+    const previewReport = parseJsonOutput(preview);
+    if (preview.code !== 0 || previewReport?.dry_run !== true || !Array.isArray(previewReport.conflicts) || previewReport.conflicts.length > 0) {
+      throw new Error(`Latent Compass persistent preflight (${host}): ${shortError(preview)}`);
+    }
+    const result = await rt.exec([entry.executable, "host", "install", "--project-root", root, "--host", host, "--json"], root);
     const parsed = parseJsonOutput(result);
     if (result.code !== 0 || parsed?.dry_run !== false || !Array.isArray(parsed?.conflicts) || parsed.conflicts.length > 0) {
       throw new Error(`Latent Compass hook install (${host}): ${shortError(result)}`);
     }
   }
   return { activation: "unknown", next: ["Review and trust the exact hook in Codex /hooks or the Claude hook settings; inspect latent-compass-status after use"] };
+}
+
+async function diagnoseSemctx(rt, root, hosts, version) {
+  const nativeCommands = [
+    ["bunx", `semctx@${version}`, "plugin-status", "--host", hosts.length === 2 ? "all" : hosts[0], "--root", root, "--json"],
+    ["bunx", `semctx@${version}`, "doctor", "--root", root, "--json"],
+    ["bunx", `semctx@${version}`, "index-health", "--root", root, "--json"],
+  ];
+  const checks = [];
+  for (const argv of nativeCommands) {
+    const result = await rt.exec(argv, root);
+    checks.push({ command: argv[2], exitCode: result.code, report: parseJsonOutput(result) });
+  }
+  const delivery = checks[0].report;
+  const validDelivery = delivery?.hosts && checks[0].exitCode <= 2 && hosts.every((host) => {
+    const item = delivery.hosts[host];
+    return item?.installed?.version === version && item?.marketplace?.matchesSemctx === true
+      && item?.installed?.contentMatchesSnapshot !== false;
+  });
+  const workspaceReady = checks[1].exitCode === 0 && checks[1].report !== null
+    && checks[2].exitCode === 0 && checks[2].report !== null;
+  const loaded = validDelivery && hosts.every((host) => delivery.hosts[host]?.session?.status === "observed") ? "yes" : "unknown";
+  return {
+    name: "semctx", version, installed: validDelivery ? "yes" : "no",
+    configured: workspaceReady ? "yes" : "no", loaded, trusted: "unknown", observed: "unknown",
+    checks, ready: validDelivery && workspaceReady,
+  };
+}
+
+async function diagnoseAssert(rt, root, hosts, version) {
+  const entry = localAssertEntry(rt, root);
+  if (entry?.version !== version) {
+    return { name: "assertledger", version, installed: "no", configured: "unknown", loaded: "unknown", trusted: "unknown", observed: "unknown", checks: [], ready: false };
+  }
+  const checks = [];
+  for (const host of hosts) {
+    const client = host === "claude" ? "claude-code" : "codex";
+    const argv = localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]);
+    const result = await rt.exec(argv, root);
+    checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result) });
+  }
+  const configured = checks.every((item) => item.exitCode === 0 && item.report?.status === "UNCHANGED"
+    && item.report?.mode === "dry-run" && item.report.artifacts?.every((artifact) => artifact.state === "UNCHANGED"));
+  return {
+    name: "assertledger", version, installed: "yes", configured: configured ? "yes" : "no",
+    loaded: "unknown", trusted: "unknown", observed: "unknown", checks, ready: configured,
+  };
+}
+
+async function diagnoseCompass(rt, root, hosts, version) {
+  const entry = await persistentCompassEntry(rt, root);
+  if (entry?.version !== version) {
+    return { name: "latent-compass", version, installed: "no", configured: "unknown", loaded: "unknown", trusted: "unknown", observed: "unknown", checks: [], ready: false };
+  }
+  const checks = [];
+  for (const host of hosts) {
+    const result = await rt.exec([entry.executable, "host", "status", "--project-root", root, "--host", host, "--json"], root);
+    checks.push({ command: `host-status:${host}`, exitCode: result.code, report: parseJsonOutput(result) });
+  }
+  const healthy = checks.every((item, index) => {
+    const host = hosts[index];
+    const status = item.report?.hosts?.find((entry) => entry.host === host)?.status;
+    return item.exitCode === 0 && ["NO_OBSERVATIONS", "OBSERVING"].includes(status)
+      && item.report?.states?.[host]?.installed === true && item.report.states[host].configured === true;
+  });
+  const observed = healthy && checks.every((item, index) => item.report.states[hosts[index]].observed === true) ? "yes" : healthy ? "no" : "unknown";
+  return {
+    name: "latent-compass", version, installed: "yes", configured: healthy ? "yes" : "no",
+    loaded: "unknown", trusted: "unknown", observed, checks, ready: healthy,
+  };
 }
 
 export async function execute(options, rt = createRuntime()) {
@@ -381,7 +496,7 @@ export async function execute(options, rt = createRuntime()) {
   let state;
   const statePath = rt.statePath(root);
   try {
-    state = rt.readState(statePath);
+    state = validateState(rt.readState(statePath));
     if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
   } catch (error) {
     return problem(report, "STATE_CONFLICT", String(error.message ?? error));
@@ -396,38 +511,12 @@ export async function execute(options, rt = createRuntime()) {
         continue;
       }
       try {
-        const commands = name === "semctx" ? [
-          ["bunx", `semctx@${version}`, "plugin-status", "--host", hosts.length === 2 ? "all" : hosts[0], "--root", root, "--json"],
-          ["bunx", `semctx@${version}`, "doctor", "--root", root, "--json"],
-          ["bunx", `semctx@${version}`, "index-health", "--root", root, "--json"],
-        ] : name === "assertledger" ? [
-          localAssertCommand(packageManager(rt, root), ["doctor", root, "--json"]),
-        ] : [
-          ["latent-compass-status", "--project-root", root, "--json"],
-        ];
-        const checks = [];
-        for (const command of commands) {
-          const result = await rt.exec(command, root);
-          checks.push({ command: command[2] ?? command[0], exitCode: result.code, report: parseJsonOutput(result) });
-        }
-        const available = checks.some((item) => item.report !== null);
-        let installed = "unknown";
-        let configured = "unknown";
-        let loaded = "unknown";
-        let observed = "unknown";
-        if (name === "semctx" && checks[0]?.report?.hosts) {
-          installed = hosts.every((host) => isStableVersion(checks[0].report.hosts?.[host]?.installed?.version)) ? "yes" : "no";
-          loaded = hosts.every((host) => checks[0].report.hosts?.[host]?.session?.status === "observed") ? "yes" : "unknown";
-          observed = loaded;
-          configured = checks[1]?.report ? (checks[1].exitCode === 0 ? "yes" : "no") : "unknown";
-        } else if (name === "assertledger" && checks[0]?.report) {
-          const status = checks[0].report.status;
-          configured = status === "UNCHANGED" ? "yes" : status === "WOULD_CREATE" ? "no" : "unknown";
-          installed = "yes";
-        }
-        report.components.push({ name, version, installed, configured, loaded, trusted: "unknown", observed, checks });
-        if (!available) problem(report, "DOCTOR_UNAVAILABLE", `${name} did not return a machine-readable diagnostic`, 3);
-        else if (installed === "no" || configured === "no") problem(report, "DOCTOR_NOT_READY", `${name}: installed=${installed}, configured=${configured}`, 3);
+        const diagnostic = name === "semctx" ? await diagnoseSemctx(rt, root, hosts, version)
+          : name === "assertledger" ? await diagnoseAssert(rt, root, hosts, version)
+            : await diagnoseCompass(rt, root, hosts, version);
+        const { ready, ...publicDiagnostic } = diagnostic;
+        report.components.push(publicDiagnostic);
+        if (!ready) problem(report, "DOCTOR_NOT_READY", `${name}: installed=${diagnostic.installed}, configured=${diagnostic.configured}`, 3);
       } catch (error) {
         report.components.push({ name, version, installed: "unknown", configured: "unknown", loaded: "unknown", trusted: "unknown", observed: "unknown" });
         problem(report, "DOCTOR_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);

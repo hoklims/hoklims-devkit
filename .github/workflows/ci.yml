@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   package:
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -17,18 +18,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+          no-cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.15.0
+          package-manager-cache: false
       - run: bun run check
-      - name: Test packaged CLI outside checkout
+      - name: Test packaged CLI outside checkout # zizmor: ignore[adhoc-packages] exact local tarball is the subject under test
         shell: bash
         run: |
           tarball="$(npm pack --silent)"
           consumer="$(mktemp -d)"
-          npm install --prefix "$consumer" --ignore-scripts "$PWD/$tarball"
-          bun "$consumer/node_modules/hoklims-devkit/bin/hoklims-devkit.js" --help
-          test "$(bun "$consumer/node_modules/hoklims-devkit/bin/hoklims-devkit.js" --version)" = "$(node -p 'require("./package.json").version')"
+          npm install --prefix "$consumer" --ignore-scripts "$PWD/$tarball" # zizmor: ignore[adhoc-packages] test exact local tarball outside checkout
+          cd "$consumer"
+          bunx --no-install hoklims-devkit --help
+          test "$(bunx --no-install hoklims-devkit --version)" = "$(node -p 'require("./node_modules/hoklims-devkit/package.json").version')"

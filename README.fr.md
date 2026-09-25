@@ -8,7 +8,7 @@ Hoklims Devkit prépare un dépôt Git pour [Semctx](https://github.com/hoklims/
 
 - Bun 1.4 ou plus récent et Git.
 - La CLI Codex, Claude Code, ou les deux dans le `PATH`. `--host auto` sélectionne tous les hôtes détectés.
-- Pour AssertLedger : Node 22.15 ou plus récent, npm et le gestionnaire déclaré par le dépôt (npm, pnpm, Yarn ou Bun). L'adaptateur prêt à l'emploi vise `node:test` ; d'autres frameworks peuvent demander un adaptateur fourni par l'utilisateur.
+- Pour AssertLedger : Node 22.15 ou plus récent, npm et le gestionnaire déclaré par le dépôt (npm, pnpm ou Bun avec installation `node_modules`). Les dépôts Yarn peuvent utiliser directement le `setup` natif d'AssertLedger. L'adaptateur prêt à l'emploi vise `node:test` ; d'autres frameworks peuvent demander un adaptateur fourni par l'utilisateur.
 - Pour Latent Compass : uv. Son environnement persistant utilise Python 3.13.
 
 Le lanceur n'installe pas Bun, Node ou uv à l'insu de l'utilisateur. Un prérequis manquant est signalé avant toute modification.
@@ -45,4 +45,4 @@ Il n'est pas nécessaire d'utiliser les trois outils à chaque tâche.
 
 Cette version n'a pas de commande de désinstallation commune. `assertledger disconnect . --client codex|claude-code --write` retire uniquement ses fichiers encore identiques. `latent-compass host remove --project-root . --host codex|claude` retire l'inscription du projet sans toucher aux autres. Le plugin Semctx est partagé entre dépôts : ne le retirer de Codex ou Claude que lorsqu'aucun autre dépôt ne l'utilise. Les fichiers métier `.semctx` et les preuves sont conservés.
 
-Pour contribuer, lancer `bun test` puis `bun run check`. La publication utilisera un tag Git exact, des essais du paquet installé hors checkout et npm trusted publishing ; la commande publique ne sera annoncée qu'après vérification sur le registre.
+Pour contribuer, lancer `bun test` puis `bun run check`. npm impose une première publication authentifiée avant de pouvoir configurer un éditeur de confiance ; les versions suivantes utiliseront OIDC. La [procédure de publication](docs/releasing.md) lie les essais aux paquets installés hors checkout. La commande publique ne sera annoncée qu'après vérification sur le registre.
