@@ -45,6 +45,13 @@ jobs:
           consumer="$(mktemp -d)"
           npm install --prefix "$consumer" --ignore-scripts "$PWD/$tarball" # zizmor: ignore[adhoc-packages] test exact local tarball outside checkout
           bun scripts/release-smoke.js "$consumer"
+      - name: Preserve the tested Linux tarball
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tested-npm-tarball
+          path: hoklims-devkit-*.tgz
+          if-no-files-found: error
 
   publish:
     needs: verify
@@ -68,6 +75,10 @@ jobs:
         with:
           bun-version: 1.4.0
           no-cache: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tested-npm-tarball
+          path: tested-package
       - name: Publish exact tag through npm trusted publishing # zizmor: ignore[adhoc-packages] exact npm publisher pin is required for OIDC
         shell: bash
         run: |
@@ -77,12 +88,14 @@ jobs:
           test "${GITHUB_REF_NAME}" = "v$(node -p 'require("./package.json").version')"
           bun run check
           version="$(node -p 'require("./package.json").version')"
+          tarball="tested-package/hoklims-devkit-${version}.tgz"
+          test -f "$tarball"
           if npm view "hoklims-devkit@$version" version >/dev/null 2>&1; then
             existing="$(npm view "hoklims-devkit@$version" gitHead)"
             test -n "$existing"
             test "$existing" = "$(git rev-parse HEAD)"
           else
-            npm publish --access public
+            npm publish "$tarball" --access public
           fi
           test "$(npm view "hoklims-devkit@$version" version)" = "$version"
   public-smoke:

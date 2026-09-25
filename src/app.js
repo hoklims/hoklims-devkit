@@ -142,8 +142,25 @@ function localAssertCommand(entry, args) {
 }
 
 function uvToolVersion(output) {
-  const match = output.match(/^latent-compass v(\d+\.\d+\.\d+)\s*$/mu);
-  return match?.[1] ?? null;
+  const lines = output.trim().split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 1 && lines[0] === "No tools installed") return null;
+  if (lines.length === 0) throw new Error("uv tool list returned an empty inventory");
+  let version = null;
+  let sawTool = false;
+  for (const line of lines) {
+    if (/^-[ ]+\S+/u.test(line)) {
+      if (!sawTool) throw new Error("uv tool list has an executable without a tool");
+      continue;
+    }
+    const match = line.match(/^([A-Za-z0-9][A-Za-z0-9._-]*) v([^\s]+)$/u);
+    if (!match) throw new Error(`uv tool list has an unrecognized line: ${line.slice(0, 100)}`);
+    sawTool = true;
+    if (match[1] === "latent-compass") {
+      if (version || !isStableVersion(match[2])) throw new Error("uv tool list has an invalid Latent Compass version");
+      version = match[2];
+    }
+  }
+  return version;
 }
 
 async function persistentCompassEntry(rt, root) {
@@ -380,7 +397,13 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
     problem(report, "UV_TOOL_INVENTORY_FAILED", `uv tool list: ${shortError(listed)}`, 3);
     return null;
   }
-  const current = uvToolVersion(listed.stdout);
+  let current;
+  try {
+    current = uvToolVersion(listed.stdout);
+  } catch (error) {
+    problem(report, "UV_TOOL_INVENTORY_FAILED", String(error.message ?? error), 3);
+    return null;
+  }
   if (command !== "upgrade" && current && current !== version) problem(report, "EXISTING_VERSION", `Latent Compass is installed at ${current}; use upgrade explicitly`);
   if (previous && current && current !== previous.version
     && !(command === "upgrade" && (current === version || current === pendingVersion))) {
@@ -487,7 +510,8 @@ async function applyCompass(rt, root, hosts, version, preflight) {
     }
     const result = await rt.exec([entry.executable, "host", "install", "--project-root", root, "--host", host, "--json"], root);
     const parsed = parseJsonOutput(result);
-    if (result.code !== 0 || parsed?.dry_run !== false || !Array.isArray(parsed?.conflicts) || parsed.conflicts.length > 0) {
+    if (result.code !== 0 || parsed?.dry_run !== false || !Array.isArray(parsed?.conflicts) || parsed.conflicts.length > 0
+      || parsed.states?.[host]?.installed !== true || parsed.states?.[host]?.configured !== true) {
       throw new Error(`Latent Compass hook install (${host}): ${shortError(result)}`);
     }
   }

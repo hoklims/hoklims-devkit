@@ -361,6 +361,30 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("a successful but unrecognized uv inventory blocks before any native write", async () => {
+    const rt = fakeRuntime({ tools: ["uv"] });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === "uv" && argv.includes("list")
+      ? { code: 0, stdout: "latent-compass corrupted inventory\n", stderr: "" } : nativeExec(argv, cwd);
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("VERSION_UNAVAILABLE");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a malformed uv inventory also blocks a resumed pinned plan", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ tools: ["uv"], state });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === "uv" && argv.includes("list")
+      ? { code: 0, stdout: "unexpected output\n", stderr: "" } : nativeExec(argv, cwd);
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("UV_TOOL_INVENTORY_FAILED");
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("a failed uv tool directory probe blocks optional installation", async () => {
     const rt = fakeRuntime({ tools: ["uv"] });
     const nativeExec = rt.exec;
@@ -525,7 +549,7 @@ describe("public CLI", () => {
     const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, uvInstalled: true });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd, timeout) => argv[0] === executable && argv.includes("install")
-      ? { code: 0, stdout: JSON.stringify({ dry_run: argv.includes("--dry-run"), conflicts: [], files: [] }), stderr: "" }
+      ? { code: 0, stdout: JSON.stringify({ dry_run: argv.includes("--dry-run"), conflicts: [], files: [], states: { codex: { installed: true, configured: true } } }), stderr: "" }
       : nativeExec(argv, cwd, timeout);
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(true);
@@ -533,6 +557,21 @@ describe("public CLI", () => {
     expect(rt.calls.some((argv) => argv[0] === "uv" && argv.includes("install"))).toBe(false);
     expect(rt.writes.at(-1).components["latent-compass"].version).toBe("0.3.0");
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
+  });
+
+  test("a successful native write without host configuration remains partial", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" } });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => argv[0] === executable && argv.includes("install")
+      ? { code: 0, stdout: JSON.stringify({ dry_run: argv.includes("--dry-run"), conflicts: [], files: [], states: { codex: { installed: false, configured: false } } }), stderr: "" }
+      : nativeExec(argv, cwd, timeout);
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.components.find((item) => item.name === "latent-compass").state).toBe("partial");
+    expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(rt.writes.at(-1).inProgress).toBeDefined();
   });
 
   test("upgrading one host cannot relabel an untouched host at the new version", async () => {
