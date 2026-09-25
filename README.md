@@ -33,7 +33,7 @@ bunx hoklims-devkit@latest upgrade . --dry-run --json
 
 `setup` resolves the latest compatible stable release on first installation, runs **all selected preflights before applying any step**, and records each successfully configured component in a user-local state file. A second `setup` keeps recorded versions. `upgrade` resolves the newest stable releases explicitly. Package and plugin version skew, malformed files, conflicting package managers, foreign hooks, and unsupported runtimes stop the plan before writes. A failure during application is reported as partial; repair it and rerun the same command.
 
-`doctor --json` reports installation, configuration, session loading, trust, and observation separately. A successful package install does not establish that a running agent session loaded or trusted it. Open a new Codex task or reload Claude plugins when instructed. Review a Latent Compass hook in the host before trusting it.
+`doctor --json` reports installation, configuration, session loading, approval, and observation separately. A successful package install does not establish that a running agent session loaded or approved it. Open a new Codex task or reload Claude plugins when instructed. Review a Latent Compass hook in the host before approving it.
 
 ## Daily use
 

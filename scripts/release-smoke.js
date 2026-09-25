@@ -59,8 +59,8 @@ run(["git", "-C", repository, "-c", "user.name=Devkit Smoke", "-c", "user.email=
 
 const protectedPaths = [
   join(home, ".codex"), join(home, ".claude"),
-  join(home, "AppData", "Local"), join(home, "AppData", "Roaming"),
-  join(home, ".local", "state"),
+  join(home, "AppData", "Local", "hoklims-devkit"),
+  join(home, ".local", "state", "hoklims-devkit"),
 ];
 const profileBefore = protectedPaths.map(snapshot);
 

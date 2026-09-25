@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { execute, parseArgs } from "../src/app.js";
 
-function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "setup_plan", verdict: "SETUP_PLANNED" }, setupReady = true, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS" } = {}) {
+function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "setup_plan", verdict: "SETUP_PLANNED" }, setupReady = true, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false } = {}) {
   const calls = [];
   const writes = [];
   const rt = {
@@ -38,8 +38,15 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
       if (argv[0] === "npm" && argv.includes("install")) return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
       if (argv.includes("plugin-status")) {
         return {
-          code: 3,
-          stdout: JSON.stringify({ hosts: { codex: { installed: { version: null } } } }),
+          code: semctxStatusCode,
+          stdout: JSON.stringify(semctxStatusMalformed ? { hosts: {} } : {
+            schemaVersion: 2,
+            kind: "plugin_delivery_status",
+            hosts: {
+              codex: { requested: true, installed: { version: null, contentMatchesSnapshot: null }, marketplace: { matchesSemctx: null } },
+              claude: { requested: true, installed: { version: null, contentMatchesSnapshot: null }, marketplace: { matchesSemctx: null } },
+            },
+          }),
           stderr: "",
         };
       }
@@ -86,6 +93,29 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("every planned and applied component reports the five distinct states", async () => {
+    const rt = fakeRuntime();
+    const plan = await execute({ ...setupOptions(), dryRun: true }, rt);
+    expect(plan.components[0]).toMatchObject({
+      installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown",
+    });
+    const applied = await execute(setupOptions(), rt);
+    expect(applied.components[0]).toMatchObject({
+      installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown",
+    });
+  });
+
+  test("Semctx plugin-status failure or incomplete host evidence blocks all writes", async () => {
+    for (const settings of [{ semctxStatusCode: 5 }, { semctxStatusMalformed: true }]) {
+      const rt = fakeRuntime(settings);
+      const report = await execute(setupOptions(), rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_STATUS_INVALID");
+      expect(rt.calls.some((args) => args.includes("install") && !args.includes("--dry-run"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
   test("workspace conflict prevents any host installation", async () => {
     const rt = fakeRuntime({ setup: { kind: "setup_conflict", verdict: "SETUP_REFUSED", reason: "invalid-config" } });
     const report = await execute(setupOptions(), rt);
@@ -127,13 +157,27 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
-  test("doctor keeps unobserved session and trust unknown", async () => {
+  test("doctor keeps unobserved session and approval unknown", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
-    expect(report.components[0]).toEqual(expect.objectContaining({ installed: "no", loaded: "unknown", trusted: "unknown", observed: "unknown" }));
+    expect(report.components[0]).toEqual(expect.objectContaining({ installed: "no", loaded: "unknown", approved: "unknown", observed: "unknown" }));
     expect(report.conflicts.map((item) => item.code)).toContain("DOCTOR_NOT_READY");
+  });
+
+  test("doctor keeps Semctx installation unknown without positive content attestation", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv.includes("plugin-status")
+      ? { code: 3, stdout: JSON.stringify({ schemaVersion: 2, kind: "plugin_delivery_status", hosts: {
+        codex: { requested: true, installed: { version: "0.3.4", contentMatchesSnapshot: null }, marketplace: { matchesSemctx: true } },
+      } }), stderr: "" }
+      : nativeExec(argv, cwd);
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    expect(report.ok).toBe(false);
+    expect(report.components[0]).toMatchObject({ installed: "unknown", approved: "unknown" });
   });
 
   test("doctor does not claim success when the tool was never configured", async () => {

@@ -178,6 +178,13 @@ async function checkSemctxChannel(rt, version) {
   }
 }
 
+function semctxStatusHasHosts(status, hosts) {
+  return status?.schemaVersion === 2 && status.kind === "plugin_delivery_status"
+    && hosts.every((host) => status.hosts?.[host]?.requested === true
+      && status.hosts[host].installed
+      && Object.hasOwn(status.hosts[host].installed, "version"));
+}
+
 async function resolveComponents(rt, options, state, root, report) {
   const selected = new Set(["semctx", ...options.with]);
   if (options.command !== "setup" && options.with.length === 0) {
@@ -232,6 +239,10 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
   const status = await rt.exec(["bunx", `semctx@${version}`, "plugin-status", "--host", hostMode, ...args], root);
   const statusJson = nativeResult(status, "semctx plugin-status", report);
   if (!statusJson) return null;
+  if (![0, 2, 3].includes(status.code) || !semctxStatusHasHosts(statusJson, hosts)) {
+    problem(report, "SEMCTX_STATUS_INVALID", `Semctx plugin-status returned incomplete or failed host evidence (exit ${status.code})`);
+    return null;
+  }
   const installedVersions = hosts.map((host) => statusJson.hosts?.[host]?.installed?.version).filter((value) => isStableVersion(value));
   if (command !== "upgrade" && !previous && installedVersions.some((installed) => installed !== version)) {
     problem(report, "EXISTING_VERSION", `Semctx is already installed at ${[...new Set(installedVersions)].join(", ")}; use upgrade explicitly`);
@@ -416,17 +427,20 @@ async function diagnoseSemctx(rt, root, hosts, version) {
     checks.push({ command: argv[2], exitCode: result.code, report: parseJsonOutput(result) });
   }
   const delivery = checks[0].report;
-  const validDelivery = delivery?.hosts && checks[0].exitCode <= 2 && hosts.every((host) => {
+  const validStatus = [0, 2, 3].includes(checks[0].exitCode) && semctxStatusHasHosts(delivery, hosts);
+  const validDelivery = validStatus && hosts.every((host) => {
     const item = delivery.hosts[host];
     return item?.installed?.version === version && item?.marketplace?.matchesSemctx === true
-      && item?.installed?.contentMatchesSnapshot !== false;
+      && item?.installed?.contentMatchesSnapshot === true;
   });
   const workspaceReady = checks[1].exitCode === 0 && checks[1].report !== null
     && checks[2].exitCode === 0 && checks[2].report !== null;
   const loaded = validDelivery && hosts.every((host) => delivery.hosts[host]?.session?.status === "observed") ? "yes" : "unknown";
+  const installed = validDelivery ? "yes"
+    : validStatus && hosts.every((host) => delivery.hosts[host].installed.version === null) ? "no" : "unknown";
   return {
-    name: "semctx", version, installed: validDelivery ? "yes" : "no",
-    configured: workspaceReady ? "yes" : "no", loaded, trusted: "unknown", observed: "unknown",
+    name: "semctx", version, installed,
+    configured: workspaceReady ? "yes" : "no", loaded, approved: "unknown", observed: "unknown",
     checks, ready: validDelivery && workspaceReady,
   };
 }
@@ -434,7 +448,7 @@ async function diagnoseSemctx(rt, root, hosts, version) {
 async function diagnoseAssert(rt, root, hosts, version) {
   const entry = localAssertEntry(rt, root);
   if (entry?.version !== version) {
-    return { name: "assertledger", version, installed: "no", configured: "unknown", loaded: "unknown", trusted: "unknown", observed: "unknown", checks: [], ready: false };
+    return { name: "assertledger", version, installed: "no", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
   }
   const checks = [];
   for (const host of hosts) {
@@ -447,14 +461,14 @@ async function diagnoseAssert(rt, root, hosts, version) {
     && item.report?.mode === "dry-run" && item.report.artifacts?.every((artifact) => artifact.state === "UNCHANGED"));
   return {
     name: "assertledger", version, installed: "yes", configured: configured ? "yes" : "no",
-    loaded: "unknown", trusted: "unknown", observed: "unknown", checks, ready: configured,
+    loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured,
   };
 }
 
 async function diagnoseCompass(rt, root, hosts, version) {
   const entry = await persistentCompassEntry(rt, root);
   if (entry?.version !== version) {
-    return { name: "latent-compass", version, installed: "no", configured: "unknown", loaded: "unknown", trusted: "unknown", observed: "unknown", checks: [], ready: false };
+    return { name: "latent-compass", version, installed: "no", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
   }
   const checks = [];
   for (const host of hosts) {
@@ -470,7 +484,7 @@ async function diagnoseCompass(rt, root, hosts, version) {
   const observed = healthy && checks.every((item, index) => item.report.states[hosts[index]].observed === true) ? "yes" : healthy ? "no" : "unknown";
   return {
     name: "latent-compass", version, installed: "yes", configured: healthy ? "yes" : "no",
-    loaded: "unknown", trusted: "unknown", observed, checks, ready: healthy,
+    loaded: "unknown", approved: "unknown", observed, checks, ready: healthy,
   };
 }
 
@@ -506,7 +520,7 @@ export async function execute(options, rt = createRuntime()) {
     for (const name of COMPONENTS.filter((item) => names.has(item))) {
       const version = state?.components?.[name]?.version ?? null;
       if (!version) {
-        report.components.push({ name, installed: "unknown", configured: "unknown", loaded: "unknown", trusted: "unknown", observed: "unknown" });
+        report.components.push({ name, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
         problem(report, "DOCTOR_UNMANAGED", `${name} has no devkit installation record; run setup or inspect its native CLI`, 3);
         continue;
       }
@@ -518,7 +532,7 @@ export async function execute(options, rt = createRuntime()) {
         report.components.push(publicDiagnostic);
         if (!ready) problem(report, "DOCTOR_NOT_READY", `${name}: installed=${diagnostic.installed}, configured=${diagnostic.configured}`, 3);
       } catch (error) {
-        report.components.push({ name, version, installed: "unknown", configured: "unknown", loaded: "unknown", trusted: "unknown", observed: "unknown" });
+        report.components.push({ name, version, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
         problem(report, "DOCTOR_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
       }
     }
@@ -534,7 +548,7 @@ export async function execute(options, rt = createRuntime()) {
     if (name === "semctx") previews[name] = await preflightSemctx(rt, root, hosts, version, previous, options.command, report);
     else if (name === "assertledger") previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report);
     else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report);
-    report.components.push({ name, version, state: "planned", loaded: "unknown", trusted: "unknown", observed: "unknown" });
+    report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
   if (report.conflicts.length || options.dryRun) {
     report.ok = report.conflicts.length === 0;
@@ -560,6 +574,8 @@ export async function execute(options, rt = createRuntime()) {
         nextState.components[name] = { version, hosts: [...new Set([...(nextState.components[name]?.hosts ?? []), ...hosts])] };
         rt.writeState(statePath, nextState);
         component.state = result.ready === false ? "needs-attention" : "configured";
+        component.installed = "yes";
+        component.configured = result.ready === false ? "unknown" : "yes";
         component.loaded = result.activation;
         report.nextActions.push(...result.next);
         if (result.ready === false) {
@@ -568,6 +584,8 @@ export async function execute(options, rt = createRuntime()) {
         }
       } catch (error) {
         component.state = "partial";
+        component.installed = "unknown";
+        component.configured = "unknown";
         problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. Re-run setup after resolving the error.`, 5);
         break;
       }

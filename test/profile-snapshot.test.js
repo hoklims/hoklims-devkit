@@ -17,4 +17,8 @@ test("release smoke rejects a host mutation despite a valid planned report", () 
   assertSnapshotUnchanged(protectedPaths, before, "codex");
   writeFileSync(hooks, '{"hooks":{"SessionStart":[]}}\n');
   expect(() => assertSnapshotUnchanged(protectedPaths, before, "codex")).toThrow(/modified the host profile/u);
+  writeFileSync(hooks, '{"hooks":{}}\n');
+  mkdirSync(protectedPaths[1]);
+  writeFileSync(join(protectedPaths[1], "repo.json"), '{}\n');
+  expect(() => assertSnapshotUnchanged(protectedPaths, before, "codex")).toThrow(/modified the host profile/u);
 });
