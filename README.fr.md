@@ -21,7 +21,7 @@ Après publication, lancer depuis un dépôt Git :
 bunx hoklims-devkit@latest setup .
 ```
 
-Cette commande sélectionne Semctx ainsi que les hôtes Codex et Claude détectés. `--dry-run --json` affiche le plan sans écrire. `--with assertledger`, `--with latent-compass` ou les deux activent les parcours facultatifs. `--host codex` et `--host claude` ciblent un seul hôte.
+Cette commande sélectionne Semctx ainsi que les hôtes Codex et Claude détectés. `--dry-run --json` affiche le plan sans modifier le dépôt, la configuration des hôtes ni l'état du lanceur. Bun, npm et uv peuvent toutefois remplir leurs caches de téléchargement. `--with assertledger`, `--with latent-compass` ou les deux activent les parcours facultatifs. `--host codex` et `--host claude` ciblent un seul hôte.
 
 ```sh
 bunx hoklims-devkit@latest setup . --host codex --with assertledger,latent-compass --dry-run --json
@@ -29,7 +29,7 @@ bunx hoklims-devkit@latest doctor . --json
 bunx hoklims-devkit@latest upgrade . --dry-run --json
 ```
 
-Au premier lancement, `setup` choisit les dernières versions stables compatibles, vérifie **tous les composants sélectionnés avant la première écriture**, puis enregistre le plan de versions et chaque installation réussie dans un état local à l'utilisateur. Une relance conserve ces versions ; `upgrade` recherche de nouvelles versions. Un échec pendant l'application est déclaré partiel : la même commande reprend les versions déjà choisies. Si le canal stable a changé avant la reprise d'une mise à niveau, `upgrade --refresh-pending` recalcule explicitement le plan avec les versions stables actuelles.
+Lors de la première installation, `setup` choisit les dernières versions stables compatibles. Il vérifie **tous les composants sélectionnés avant de modifier le dépôt ou la configuration des hôtes**, puis mémorise le plan et chaque installation réussie dans un fichier d'état du profil utilisateur. Une relance conserve ces versions ; seul `upgrade` recherche de nouvelles versions. Si l'installation s'interrompt, relancez la même commande pour reprendre le plan initial. Si le canal stable a changé et empêche la reprise d'une mise à niveau, `upgrade --refresh-pending` recalcule explicitement le plan.
 
 Si un composant est enregistré pour Codex et Claude, utiliser `upgrade --host all` pour changer sa version sans attribuer la nouvelle version à un hôte non modifié.
 

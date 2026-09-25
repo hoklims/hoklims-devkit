@@ -23,7 +23,7 @@ After the public release, run this **from a Git repository**:
 bunx hoklims-devkit@latest setup .
 ```
 
-This selects Semctx and detected Codex/Claude hosts. To inspect the plan without writing, add `--dry-run --json`. To enable the optional tools, use `--with assertledger`, `--with latent-compass`, or both as a comma-separated list. To target one host, use `--host codex` or `--host claude`.
+This selects Semctx and detected Codex/Claude hosts. `--dry-run --json` shows the plan without changing the repository, host configuration, or launcher state. Bun, npm, and uv may still populate download caches. To enable the optional tools, use `--with assertledger`, `--with latent-compass`, or both as a comma-separated list. To target one host, use `--host codex` or `--host claude`.
 
 ```sh
 bunx hoklims-devkit@latest setup . --host codex --with assertledger,latent-compass --dry-run --json
@@ -31,7 +31,7 @@ bunx hoklims-devkit@latest doctor . --json
 bunx hoklims-devkit@latest upgrade . --dry-run --json
 ```
 
-`setup` resolves the latest compatible stable release on first installation, runs **all selected preflights before applying any step**, and records the resolved plan and each successfully configured component in a user-local state file. A second `setup` keeps recorded versions. `upgrade` resolves the newest stable releases explicitly. Package and plugin version skew, malformed files, conflicting package managers, foreign hooks, and unsupported runtimes stop the plan before writes. A failure during application is reported as partial; repair it and rerun the same command to keep the original resolved versions. If the stable channel has moved before an interrupted upgrade can resume, `upgrade --refresh-pending` explicitly replans against current stable releases.
+`setup` resolves the latest compatible stable release on first installation, runs **all selected preflights before changing the repository or host configuration**, and records the resolved plan and each successfully configured component in a user-local state file. A second `setup` keeps recorded versions. `upgrade` resolves the newest stable releases explicitly. Package and plugin version skew, malformed files, conflicting package managers, foreign hooks, and unsupported runtimes stop the plan before those changes. A failure during application is reported as partial; repair it and rerun the same command to keep the original resolved versions. If the stable channel has moved before an interrupted upgrade can resume, `upgrade --refresh-pending` explicitly replans against current stable releases.
 
 If a component is recorded for both hosts, change its version with `upgrade --host all` so the saved version never describes an untouched host.
 
