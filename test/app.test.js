@@ -11,7 +11,30 @@ function compassInstallReport(argv, { installed = false, configured = false } = 
   };
 }
 
-function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "setup_plan", verdict: "SETUP_PLANNED" }, setupReady = true, workspaceReady = false, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false, semctxMissing = false, semctxContentDrift = false, semctxMarketplaceMatch = true, installedSemctxVersion } = {}) {
+function semctxSetupPlan() {
+  return {
+    schemaVersion: 1, kind: "setup_plan", verdict: "SETUP_PLANNED", repositoryRoot: "/repo",
+    config: { action: "create" }, semantic: { files: [] }, plannedChanges: [],
+    index: { status: "not-run", reason: "dry-run" }, analysisReady: "unknown", setupReady: "unknown",
+  };
+}
+
+function assertSetupReport(argv, status, mode) {
+  const client = argv[argv.indexOf("--client") + 1];
+  const artifactState = status === "CREATED" ? "CREATED" : status === "UNCHANGED" ? "UNCHANGED"
+    : status === "CONFLICT" ? "CONFLICT" : "WOULD_CREATE";
+  return {
+    status, client, mode,
+    init: { status, requiredOperatorInputs: [] }, connection: { status },
+    artifacts: [
+      { owner: "init", path: "/repo/assertledger.config.json", state: artifactState },
+      { owner: "connection", path: `/repo/${client}/config`, state: artifactState },
+    ],
+    rollback: { status: "NOT_REQUIRED", removed: [], unresolved: [] },
+  };
+}
+
+function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupPlan(), setupReady = true, workspaceReady = false, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false, semctxMissing = false, semctxContentDrift = false, semctxMarketplaceMatch = true, installedSemctxVersion } = {}) {
   const calls = [];
   const writes = [];
   let semctxInstalledVersion = semctxMissing ? null : installedSemctxVersion ?? state?.components?.semctx?.version ?? null;
@@ -36,7 +59,10 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
     exec: async (argv) => {
       calls.push(argv);
       if (argv[0] === "bun") return { code: 0, stdout: "1.4.0\n", stderr: "" };
-      if (argv[0] === "node" && argv.includes("setup")) return { code: assertStatus === "CONFLICT" ? 4 : 0, stdout: JSON.stringify({ status: argv.includes("--write") ? "CREATED" : assertStatus, mode: argv.includes("--write") ? "write" : "dry-run", artifacts: [{ state: assertStatus === "UNCHANGED" ? "UNCHANGED" : "CONFLICT" }] }), stderr: "" };
+      if (argv[0] === "node" && argv.includes("setup")) {
+        const write = argv.includes("--write");
+        return { code: assertStatus === "CONFLICT" ? 4 : 0, stdout: JSON.stringify(assertSetupReport(argv, write ? "CREATED" : assertStatus, write ? "write" : "dry-run")), stderr: "" };
+      }
       if (argv[0] === "node") return { code: 0, stdout: "v22.15.0\n", stderr: "" };
       if (argv[0] === "git") return { code: 0, stdout: "/repo\n", stderr: "" };
       if (argv[0] === "uv" && argv.includes("dir")) return { code: 0, stdout: "/uvbin\n", stderr: "" };
@@ -44,7 +70,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
       if (argv[0] === "uv" && argv.includes("run")) return { code: 0, stdout: JSON.stringify(compassInstallReport(argv)), stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("--version")) return { code: 0, stdout: "latent-compass 0.3.0\n", stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
-      if (argv[0] === "npm" && argv.includes("exec")) return { code: 0, stdout: JSON.stringify({ status: "WOULD_CREATE", mode: "dry-run", artifacts: [{ owner: "init", path: "/repo/assertledger.config.json", state: "WOULD_CREATE" }], init: { requiredOperatorInputs: [] } }), stderr: "" };
+      if (argv[0] === "npm" && argv.includes("exec")) return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
       if (argv[0] === "npm" && argv.includes("install")) return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
       if (argv.includes("plugin-status")) {
         return {
@@ -72,7 +98,13 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
         : { code: 2, stdout: JSON.stringify({ coverage: { status: "partial" } }), stderr: "" };
       if (argv.includes("install")) {
         if (!argv.includes("--dry-run")) semctxInstalledVersion = version;
-        return { code: 0, stdout: JSON.stringify({ ok: true, dryRun: argv.includes("--dry-run"), hosts: { codex: { status: "planned" } } }), stderr: "" };
+        return { code: 0, stdout: JSON.stringify({
+          ok: true, version, dryRun: argv.includes("--dry-run"), selection: argv[argv.indexOf("--host") + 1],
+          hosts: {
+            codex: { requested: true, detected: true, status: "planned" },
+            claude: { requested: true, detected: true, status: "planned" },
+          },
+        }), stderr: "" };
       }
       if (argv.includes("setup")) return { code: setupReady ? 0 : 1, stdout: JSON.stringify({ kind: "setup", setupReady, analysisReady: setupReady }), stderr: "" };
       throw new Error(`Unexpected command: ${argv.join(" ")}`);
@@ -141,6 +173,27 @@ describe("public CLI", () => {
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_WORKSPACE_CONFLICT");
     expect(rt.calls.some((args) => args.includes("install") && !args.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("an incomplete Semctx workspace plan blocks all writes", async () => {
+    const rt = fakeRuntime({ setup: { ...semctxSetupPlan(), index: undefined } });
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_WORKSPACE_CONFLICT");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a Semctx host plan missing its selected host blocks all writes", async () => {
+    const rt = fakeRuntime();
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv.includes("install") && argv.includes("--dry-run")
+      ? { code: 0, stdout: JSON.stringify({ ok: true, version: "0.3.4", dryRun: true, selection: "codex", hosts: {} }), stderr: "" }
+      : nativeExec(argv, cwd);
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_HOST_CONFLICT");
     expect(rt.writes).toHaveLength(0);
   });
 
@@ -299,7 +352,7 @@ describe("public CLI", () => {
   });
 
   test("repeating a completed setup does not rewrite devkit state", async () => {
-    const rt = fakeRuntime({ setup: { kind: "setup_plan", verdict: "SETUP_PLANNED", plannedChanges: [] }, workspaceReady: true });
+    const rt = fakeRuntime({ setup: semctxSetupPlan(), workspaceReady: true });
     expect((await execute(setupOptions(), rt)).ok).toBe(true);
     const writes = rt.writes.length;
     const setupCalls = rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run")).length;
@@ -454,6 +507,32 @@ describe("public CLI", () => {
     expect(rt.writes.at(-1).components.assertledger).toBeUndefined();
   });
 
+  test("AssertLedger write needs an unchanged native post-install preview", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const nativeExec = rt.exec;
+    let previews = 0;
+    rt.exec = async (argv, cwd) => {
+      if (argv[0] === "node" && argv.includes("setup") && argv.includes("--dry-run")) {
+        previews += 1;
+        if (previews === 3) return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
+      }
+      return nativeExec(argv, cwd);
+    };
+    const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+  });
+
   test("interrupted host expansion preserves both selected hosts in its pending plan", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state, tools: ["claude"] });
@@ -515,6 +594,20 @@ describe("public CLI", () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state, semctxContentDrift: true });
     const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_DRIFT");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a pinned same-version upgrade does not overwrite modified Semctx plugin bytes", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const rt = fakeRuntime({ state, semctxContentDrift: true });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_DRIFT");
     expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);

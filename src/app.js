@@ -176,6 +176,32 @@ function validCompassInstallReport(parsed, host, version, dryRun) {
     && typeof parsed.states?.[host]?.configured === "boolean";
 }
 
+function validSemctxSetupPlan(parsed, root) {
+  return parsed?.schemaVersion === 1 && parsed.kind === "setup_plan" && parsed.verdict === "SETUP_PLANNED"
+    && parsed.repositoryRoot === root && Array.isArray(parsed.plannedChanges)
+    && parsed.plannedChanges.every((path) => typeof path === "string" && path.length > 0)
+    && ["create", "keep"].includes(parsed.config?.action) && Array.isArray(parsed.semantic?.files)
+    && parsed.index?.status === "not-run" && parsed.index.reason === "dry-run"
+    && parsed.analysisReady === "unknown" && parsed.setupReady === "unknown";
+}
+
+function validSemctxHostPlan(parsed, hosts, version, selection) {
+  return parsed?.ok === true && parsed.version === version && parsed.dryRun === true
+    && parsed.selection === selection && hosts.every((host) => parsed.hosts?.[host]?.requested === true
+      && parsed.hosts[host].detected === true && parsed.hosts[host].status === "planned");
+}
+
+function validAssertSetupReport(parsed, client, mode, statuses, artifactStates) {
+  return statuses.includes(parsed?.status) && parsed.client === client && parsed.mode === mode
+    && Array.isArray(parsed.artifacts) && parsed.artifacts.length > 0
+    && ["init", "connection"].every((owner) => parsed.artifacts.some((artifact) => artifact?.owner === owner))
+    && parsed.artifacts.every((artifact) => ["init", "connection"].includes(artifact?.owner)
+      && typeof artifact.path === "string" && artifact.path.length > 0
+      && artifactStates.includes(artifact.state))
+    && typeof parsed.init?.status === "string" && typeof parsed.connection?.status === "string"
+    && parsed.rollback?.status === "NOT_REQUIRED";
+}
+
 async function persistentCompassEntry(rt, root) {
   const bin = await rt.exec(["uv", "tool", "dir", "--bin"], root);
   if (bin.code !== 0) throw new Error(`uv tool dir --bin: ${shortError(bin)}`);
@@ -285,7 +311,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
   const setup = await rt.exec(["bunx", `semctx@${version}`, "setup", "--dry-run", ...args], root);
   const setupJson = nativeResult(setup, "semctx setup --dry-run", report);
   if (!setupJson) return null;
-  if (setup.code !== 0 || setupJson.kind !== "setup_plan" || setupJson.verdict !== "SETUP_PLANNED") {
+  if (setup.code !== 0 || !validSemctxSetupPlan(setupJson, root)) {
     problem(report, "SEMCTX_WORKSPACE_CONFLICT", JSON.stringify(setupJson).slice(0, 600));
   }
   const status = await rt.exec(["bunx", `semctx@${version}`, "plugin-status", "--host", hostMode, ...args], root);
@@ -302,6 +328,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
       problem(report, "SEMCTX_MARKETPLACE_CONFLICT", `${host} Semctx plugin is not from the expected marketplace`);
     }
     if (installed.version === version && installed.contentMatchesSnapshot === false) {
+      // A pinned retry must not replace modified plugin bytes, even when upgrade is explicit.
       problem(report, "SEMCTX_CONTENT_DRIFT", `${host} Semctx plugin bytes differ from its marketplace snapshot; inspect or repair with the native installer`);
     } else if (previous && installed.version === version && installed.contentMatchesSnapshot !== true) {
       problem(report, "SEMCTX_CONTENT_UNVERIFIED", `${host} Semctx plugin content is unverified; inspect semctx plugin-status before retrying`);
@@ -332,7 +359,9 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     const host = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", "--dry-run", ...args], root);
     hostJson = nativeResult(host, "semctx install --dry-run", report);
     if (!hostJson) return null;
-    if (host.code !== 0 || hostJson.ok !== true || hostJson.dryRun !== true) problem(report, "SEMCTX_HOST_CONFLICT", JSON.stringify(hostJson).slice(0, 600));
+    if (host.code !== 0 || !validSemctxHostPlan(hostJson, hosts, version, hostMode)) {
+      problem(report, "SEMCTX_HOST_CONFLICT", JSON.stringify(hostJson).slice(0, 600));
+    }
   }
   let skipSetup = false;
   if (previous && !hostInstallNeeded && Array.isArray(setupJson.plannedChanges)
@@ -386,7 +415,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     const result = await rt.exec(previewCommand, root);
     const parsed = nativeResult(result, `assertledger setup (${client})`, report);
     if (!parsed) continue;
-    if (result.code !== 0 || !["WOULD_CREATE", "UNCHANGED"].includes(parsed.status) || parsed.mode !== "dry-run") {
+    if (result.code !== 0 || !validAssertSetupReport(parsed, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
       problem(report, "ASSERTLEDGER_CONFLICT", JSON.stringify(parsed).slice(0, 600));
     }
     previews.push({
@@ -495,13 +524,18 @@ async function applyAssert(rt, root, hosts, version, preflight) {
     const client = host === "claude" ? "claude-code" : "codex";
     const preview = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const previewReport = parseJsonOutput(preview);
-    if (preview.code !== 0 || !["WOULD_CREATE", "UNCHANGED"].includes(previewReport?.status)) {
+    if (preview.code !== 0 || !validAssertSetupReport(previewReport, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
       throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
     }
     const result = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--write", "--json"]), root);
     const parsed = parseJsonOutput(result);
-    if (result.code !== 0 || !["CREATED", "UNCHANGED"].includes(parsed?.status) || parsed?.mode !== "write") {
+    if (result.code !== 0 || !validAssertSetupReport(parsed, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"])) {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
+    }
+    const verify = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
+    const verified = parseJsonOutput(verify);
+    if (verify.code !== 0 || !validAssertSetupReport(verified, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"])) {
+      throw new Error(`AssertLedger post-install verification (${client}): ${shortError(verify)}`);
     }
   }
   return { activation: "unknown", next: ["Approve or trust the project integration in the selected client, then restart it"] };
