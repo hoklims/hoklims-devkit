@@ -257,6 +257,18 @@ describe("public CLI", () => {
     expect(report.components.find((item) => item.name === "latent-compass").configured).toBe("unknown");
   });
 
+  test("doctor keeps Compass observation unknown when native status omits the evidence", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, compassStatus: "OBSERVING" });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === executable && argv.includes("status")
+      ? { code: 0, stdout: JSON.stringify({ hosts: [{ host: "codex", status: "OBSERVING" }], states: { codex: { installed: true, configured: true } } }), stderr: "" }
+      : nativeExec(argv, cwd);
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    expect(report.components.find((item) => item.name === "latent-compass")).toMatchObject({ configured: "yes", observed: "unknown" });
+  });
+
   test("doctor rejects a rendered but unconfigured Latent Compass status", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
@@ -337,6 +349,30 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("a failed uv inventory blocks optional installation before any native write", async () => {
+    const rt = fakeRuntime({ tools: ["uv"] });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === "uv" && argv.includes("list")
+      ? { code: 5, stdout: "", stderr: "uv inventory unavailable" } : nativeExec(argv, cwd);
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("VERSION_UNAVAILABLE");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a failed uv tool directory probe blocks optional installation", async () => {
+    const rt = fakeRuntime({ tools: ["uv"] });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === "uv" && argv.includes("dir")
+      ? { code: 5, stdout: "", stderr: "uv bin directory unavailable" } : nativeExec(argv, cwd);
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("UV_TOOL_INVENTORY_FAILED");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("partial failure saves the completed component for a later retry", async () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],
@@ -350,6 +386,25 @@ describe("public CLI", () => {
     expect(rt.writes[0].inProgress.versions.assertledger).toBe("1.2.0");
     expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.4");
     expect(rt.writes.at(-1).components.assertledger).toBeUndefined();
+  });
+
+  test("interrupted host expansion preserves both selected hosts in its pending plan", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, tools: ["claude"] });
+    const nativeExec = rt.exec;
+    let interrupt = true;
+    rt.exec = async (argv, cwd, timeout) => interrupt && argv[0] === "bunx" && argv.includes("install") && !argv.includes("--dry-run")
+      ? { code: 5, stdout: "", stderr: "simulated interruption" } : nativeExec(argv, cwd, timeout);
+    const options = parseArgs(["setup", "/repo", "--host", "all"]);
+    const first = await execute(options, rt);
+    expect(first.ok).toBe(false);
+    expect(rt.writes.at(-1).inProgress.hosts).toEqual(["codex", "claude"]);
+    expect(rt.writes.at(-1).components.semctx.hosts).toEqual(["codex"]);
+    interrupt = false;
+    const resumed = await execute(options, rt);
+    expect(resumed.ok).toBe(true);
+    expect(rt.writes.at(-1).components.semctx.hosts).toEqual(["codex", "claude"]);
+    expect(rt.writes.at(-1).inProgress).toBeUndefined();
   });
 
   test("retry keeps the failed component's resolved version when registry latest advances", async () => {

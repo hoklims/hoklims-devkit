@@ -148,7 +148,7 @@ function uvToolVersion(output) {
 
 async function persistentCompassEntry(rt, root) {
   const bin = await rt.exec(["uv", "tool", "dir", "--bin"], root);
-  if (bin.code !== 0) return null;
+  if (bin.code !== 0) throw new Error(`uv tool dir --bin: ${shortError(bin)}`);
   const executable = join(bin.stdout.trim(), process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
   if (!rt.exists(executable)) return null;
   const reported = await rt.exec([executable, "--version"], root);
@@ -231,6 +231,7 @@ async function resolveComponents(rt, options, state, root, report) {
         versions[name] = existingAssertVersion(rt, root);
       } else if (name === "latent-compass" && options.command === "setup" && rt.which("uv")) {
         const listed = await rt.exec(["uv", "tool", "list"], root);
+        if (listed.code !== 0) throw new Error(`uv tool list: ${shortError(listed)}`);
         versions[name] = uvToolVersion(listed.stdout) ?? await resolveVersion(rt, name);
       } else {
         versions[name] = await resolveVersion(rt, name);
@@ -375,13 +376,23 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
     return null;
   }
   const listed = await rt.exec(["uv", "tool", "list"], root);
+  if (listed.code !== 0) {
+    problem(report, "UV_TOOL_INVENTORY_FAILED", `uv tool list: ${shortError(listed)}`, 3);
+    return null;
+  }
   const current = uvToolVersion(listed.stdout);
   if (command !== "upgrade" && current && current !== version) problem(report, "EXISTING_VERSION", `Latent Compass is installed at ${current}; use upgrade explicitly`);
   if (previous && current && current !== previous.version
     && !(command === "upgrade" && (current === version || current === pendingVersion))) {
     problem(report, "INSTALLED_VERSION_DRIFT", `Latent Compass installation differs from recorded ${previous.version}`);
   }
-  const entry = await persistentCompassEntry(rt, root);
+  let entry;
+  try {
+    entry = await persistentCompassEntry(rt, root);
+  } catch (error) {
+    problem(report, "UV_TOOL_INVENTORY_FAILED", String(error.message ?? error), 3);
+    return null;
+  }
   const needsInstall = current !== version || entry?.version !== version;
   const previews = [];
   for (const host of hosts) {
@@ -558,7 +569,9 @@ async function diagnoseCompass(rt, root, hosts, version) {
     return item.exitCode === 0 && ["NO_OBSERVATIONS", "OBSERVING"].includes(status)
       && item.report?.states?.[host]?.installed === true && item.report.states[host].configured === true;
   });
-  const observed = healthy && checks.every((item, index) => item.report.states[hosts[index]].observed === true) ? "yes" : healthy ? "no" : "unknown";
+  const observations = healthy ? checks.map((item, index) => item.report.states[hosts[index]].observed) : [];
+  const observed = !healthy || observations.some((value) => typeof value !== "boolean")
+    ? "unknown" : observations.every((value) => value === true) ? "yes" : "no";
   return {
     name: "latent-compass", version, installed: "yes", configured: !recognizable ? "unknown" : healthy ? "yes" : "no",
     loaded: "unknown", approved: "unknown", observed, checks, ready: healthy,
@@ -672,7 +685,8 @@ export async function execute(options, rt = createRuntime()) {
         savedState = next;
       }
     };
-    if (state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name])) {
+    if (state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name]
+      || hosts.some((host) => !state?.components?.[name]?.hosts?.includes(host)))) {
       nextState.inProgress = {
         command: options.command,
         selected,

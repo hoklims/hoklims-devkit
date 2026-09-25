@@ -75,7 +75,7 @@ const repositoryBefore = snapshot(repository);
 const protectedPaths = protectedProfilePaths(home);
 const profileBefore = protectedPaths.map(snapshot);
 
-for (const host of ["codex", "claude"]) {
+for (const host of ["codex", "claude", "all"]) {
   for (const withTools of [[], ["--with", "assertledger,latent-compass"]]) {
     const output = run(["bunx", "--no-install", "hoklims-devkit", "setup", repository, "--host", host, ...withTools, "--dry-run", "--json"]);
     const report = JSON.parse(output);
@@ -94,16 +94,15 @@ for (const host of ["codex", "claude"]) {
   }
 }
 
-for (const host of ["codex", "claude"]) {
+for (const host of ["codex", "claude", "all"]) {
   for (const withTools of [[], ["--with", "assertledger,latent-compass"]]) {
     const scenario = `${host}-${withTools.length ? "full" : "default"}`;
     const scenarioRepository = join(root, `repository-${scenario}`);
     const scenarioHome = join(root, `home-${scenario}`);
-    const scenarioCache = join(root, `cache-${scenario}`);
+    const scenarioCache = cache;
     cpSync(repository, scenarioRepository, { recursive: true });
     mkdirSync(join(scenarioHome, ".codex"), { recursive: true });
     mkdirSync(join(scenarioHome, ".claude"), { recursive: true });
-    mkdirSync(scenarioCache);
     writeFileSync(join(scenarioHome, ".codex", "hooks.json"), '{"hooks":{}}\n');
     writeFileSync(join(scenarioHome, ".claude", "settings.json"), '{"hooks":{}}\n');
     const scenarioEnv = {
