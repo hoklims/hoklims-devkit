@@ -241,6 +241,38 @@ describe("public CLI", () => {
     expect(rt.writes[0].components.assertledger).toBeUndefined();
   });
 
+  test("concurrent host setups cannot overwrite a completed state record", async () => {
+    let persisted = null;
+    let locked = false;
+    let waiting = 0;
+    let releaseFetch;
+    const fetchGate = new Promise((resolve) => { releaseFetch = resolve; });
+    const runtimes = [fakeRuntime({ tools: ["claude"] }), fakeRuntime({ tools: ["claude"] })];
+    for (const rt of runtimes) {
+      const fetchJson = rt.fetchJson;
+      rt.fetchJson = async (url) => {
+        if (++waiting === 2) releaseFetch();
+        await fetchGate;
+        return fetchJson(url);
+      };
+      rt.readState = () => structuredClone(persisted);
+      rt.writeState = (_path, value) => { persisted = structuredClone(value); rt.writes.push(structuredClone(value)); };
+      rt.acquireLock = () => {
+        if (locked) throw new Error("Another setup is running");
+        locked = true;
+        return () => { locked = false; };
+      };
+    }
+    const [codex, claude] = await Promise.all([
+      execute(setupOptions(), runtimes[0]),
+      execute(parseArgs(["setup", "/repo", "--host", "claude"]), runtimes[1]),
+    ]);
+    expect([codex, claude].filter((report) => report.ok)).toHaveLength(1);
+    expect([codex, claude].find((report) => !report.ok).conflicts[0].code).toMatch(/^(RUN_LOCKED|STATE_CHANGED)$/u);
+    expect(runtimes.flatMap((rt) => rt.writes)).toHaveLength(1);
+    expect(persisted.components.semctx.hosts).toHaveLength(1);
+  });
+
   test("an incomplete Semctx index is reported without claiming the profile is ready", async () => {
     const rt = fakeRuntime({ setupReady: false });
     const report = await execute(setupOptions(), rt);

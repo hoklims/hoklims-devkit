@@ -544,6 +544,12 @@ export async function execute(options, rt = createRuntime()) {
   let releaseLock;
   try {
     releaseLock = rt.acquireLock(statePath);
+    // Preflights can take time. Another setup may have committed while they ran.
+    // Revalidate under the exclusive lock before applying or recording anything.
+    const currentState = validateState(rt.readState(statePath));
+    if (JSON.stringify(currentState) !== JSON.stringify(state)) {
+      return problem(report, "STATE_CHANGED", "Installation state changed during preflight. Re-run setup to recompute the plan.", 4);
+    }
     for (const component of report.components) {
       const { name, version } = component;
       try {

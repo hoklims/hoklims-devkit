@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { assertSnapshotUnchanged, snapshot } from "./profile-snapshot.js";
 
 const consumer = process.argv[2];
 if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "bin", "hoklims-devkit.js"))) {
@@ -56,6 +57,13 @@ run(["git", "init", "-b", "main", repository]);
 run(["git", "-C", repository, "add", "."]);
 run(["git", "-C", repository, "-c", "user.name=Devkit Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-m", "fixture"]);
 
+const protectedPaths = [
+  join(home, ".codex"), join(home, ".claude"),
+  join(home, "AppData", "Local"), join(home, "AppData", "Roaming"),
+  join(home, ".local", "state"),
+];
+const profileBefore = protectedPaths.map(snapshot);
+
 for (const host of ["codex", "claude"]) {
   for (const withTools of [[], ["--with", "assertledger,latent-compass"]]) {
     const output = run(["bunx", "--no-install", "hoklims-devkit", "setup", repository, "--host", host, ...withTools, "--dry-run", "--json"]);
@@ -69,6 +77,7 @@ for (const host of ["codex", "claude"]) {
     if (run(["git", "-C", repository, "status", "--porcelain"]).trim()) {
       throw new Error(`${host} dry-run modified the Git fixture`);
     }
+    assertSnapshotUnchanged(protectedPaths, profileBefore, host);
     process.stdout.write(`PASS ${host} ${expected.join("+")} dry-run\n`);
   }
 }
