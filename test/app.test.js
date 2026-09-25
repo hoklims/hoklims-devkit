@@ -6,7 +6,8 @@ function compassInstallReport(argv, { installed = false, configured = false } = 
   const host = argv[argv.indexOf("--host") + 1];
   return {
     schema_version: 1, operation: "install", version: "0.3.0", dry_run: argv.includes("--dry-run"),
-    hosts: [host], files: [], conflicts: [], states: { [host]: { installed, configured } },
+    hosts: [host], files: [{ path: `/profile/${host}/settings.json`, action: "unchanged" }],
+    conflicts: [], states: { [host]: { installed, configured } },
   };
 }
 
@@ -370,6 +371,18 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("a Compass preview without planned files blocks every write", async () => {
+    const rt = fakeRuntime({ tools: ["uv"], uvInstalled: false });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === "uv" && argv.includes("run")
+      ? { code: 0, stdout: JSON.stringify({ ...compassInstallReport(argv), files: [] }), stderr: "" }
+      : nativeExec(argv, cwd);
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("optional registry failure blocks all components before preflight writes", async () => {
     const rt = fakeRuntime({ tools: ["uv"], failPyPi: true, uvInstalled: false });
     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
@@ -530,6 +543,25 @@ describe("public CLI", () => {
     expect(report.components[0].version).toBe("0.3.5");
     expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
     expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.5");
+    expect(rt.writes.at(-1).inProgress).toBeUndefined();
+  });
+
+  test("a failed same-version upgrade pins its version before native writes", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv.includes("setup") && !argv.includes("--dry-run")
+      ? { code: 5, stdout: "", stderr: "setup interrupted" } : nativeExec(argv, cwd);
+    const options = parseArgs(["upgrade", "/repo", "--host", "codex"]);
+    const interrupted = await execute(options, rt);
+    expect(interrupted.ok).toBe(false);
+    expect(rt.writes.at(-1).inProgress.versions.semctx).toBe("0.3.4");
+    rt.exec = nativeExec;
+    const originalFetch = rt.fetchJson;
+    rt.fetchJson = async (url) => url.includes("semctx") ? { version: "0.3.5" } : originalFetch(url);
+    const resumed = await execute(options, rt);
+    expect(resumed.ok).toBe(true);
+    expect(resumed.components[0].version).toBe("0.3.4");
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
   });
 

@@ -168,7 +168,7 @@ function uvToolVersion(output, stderr = "") {
 function validCompassInstallReport(parsed, host, version, dryRun) {
   return parsed?.schema_version === 1 && parsed.operation === "install" && parsed.version === version
     && parsed.dry_run === dryRun && Array.isArray(parsed.hosts) && parsed.hosts.length === 1
-    && parsed.hosts[0] === host && Array.isArray(parsed.files)
+    && parsed.hosts[0] === host && Array.isArray(parsed.files) && parsed.files.length > 0
     && parsed.files.every((file) => typeof file?.path === "string" && file.path.length > 0
       && ["create", "update", "delete", "unchanged"].includes(file.action))
     && Array.isArray(parsed.conflicts) && parsed.conflicts.length === 0
@@ -722,7 +722,7 @@ export async function execute(options, rt = createRuntime()) {
         savedState = next;
       }
     };
-    if (state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name]
+    if (options.command === "upgrade" || state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name]
       || hosts.some((host) => !state?.components?.[name]?.hosts?.includes(host)))) {
       nextState.inProgress = {
         command: options.command,
