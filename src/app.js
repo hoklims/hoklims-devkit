@@ -253,7 +253,9 @@ function semctxStatusHasHosts(status, hosts) {
   return status?.schemaVersion === 2 && status.kind === "plugin_delivery_status"
     && hosts.every((host) => status.hosts?.[host]?.requested === true
       && status.hosts[host].installed
-      && Object.hasOwn(status.hosts[host].installed, "version"));
+      && (status.hosts[host].installed.version === null || isStableVersion(status.hosts[host].installed.version))
+      && [true, false, null].includes(status.hosts[host].installed.contentMatchesSnapshot)
+      && [true, false, null].includes(status.hosts[host].marketplace?.matchesSemctx));
 }
 
 function semctxWorkspaceStatus(doctorResult, healthResult, version) {
@@ -570,7 +572,9 @@ async function applyCompass(rt, root, hosts, version, preflight) {
     }
     const status = await rt.exec([entry.executable, "host", "status", "--project-root", root, "--host", host, "--json"], root);
     const observed = parseJsonOutput(status);
-    if (status.code !== 0 || observed?.operation !== "status" || observed.version !== version
+    if (status.code !== 0 || observed?.schema_version !== 1 || observed.operation !== "status" || observed.version !== version
+      || !Array.isArray(observed.hosts) || observed.hosts.length !== 1
+      || observed.hosts[0]?.host !== host || !["NO_OBSERVATIONS", "OBSERVING"].includes(observed.hosts[0].status)
       || observed.states?.[host]?.installed !== true || observed.states?.[host]?.configured !== true) {
       throw new Error(`Latent Compass post-install status (${host}): ${shortError(status)}`);
     }

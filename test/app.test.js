@@ -70,7 +70,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
       if (argv[0] === "uv" && argv.includes("list")) return { code: 0, stdout: uvInstalled ? "latent-compass v0.3.0\n" : "", stderr: uvInstalled ? "" : "No tools installed\n" };
       if (argv[0] === "uv" && argv.includes("run")) return { code: 0, stdout: JSON.stringify(compassInstallReport(argv)), stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("--version")) return { code: 0, stdout: "latent-compass 0.3.0\n", stderr: "" };
-      if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ operation: "status", version: "0.3.0", hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
+      if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ schema_version: 1, operation: "status", version: "0.3.0", hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
       if (argv[0] === "npm" && argv.includes("exec")) return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
       if (argv[0] === "npm" && argv.includes("install")) return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
       if (argv.includes("plugin-status")) {
@@ -170,6 +170,24 @@ describe("public CLI", () => {
       expect(rt.calls.some((args) => args.includes("install") && !args.includes("--dry-run"))).toBe(false);
       expect(rt.writes).toHaveLength(0);
     }
+  });
+
+  test("a malformed Semctx installed version blocks before any write", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => {
+      const result = await nativeExec(argv, cwd);
+      if (!argv.includes("plugin-status")) return result;
+      const status = JSON.parse(result.stdout);
+      status.hosts.codex.installed.version = "bad";
+      return { ...result, stdout: JSON.stringify(status) };
+    };
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_STATUS_INVALID");
+    expect(rt.calls.some((argv) => argv.includes("setup") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
   });
 
   test("workspace conflict prevents any host installation", async () => {
@@ -802,6 +820,32 @@ describe("public CLI", () => {
       }
       if (argv[0] === executable && argv.includes("status")) {
         return { code: 0, stdout: JSON.stringify({ operation: "status", version: "0.3.0", states: { codex: { installed: true, configured: false } } }), stderr: "" };
+      }
+      return nativeExec(argv, cwd);
+    };
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.components.find((item) => item.name === "latent-compass").configured).toBe("unknown");
+    expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+  });
+
+  test("Compass post-install status needs a matching host snapshot", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+    } };
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" } });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => {
+      if (argv[0] === executable && argv.includes("install")) {
+        return { code: 0, stdout: JSON.stringify(compassInstallReport(argv, { installed: true, configured: true })), stderr: "" };
+      }
+      if (argv[0] === executable && argv.includes("status")) {
+        return { code: 0, stdout: JSON.stringify({
+          schema_version: 1, operation: "status", version: "0.3.0", hosts: [],
+          states: { codex: { installed: true, configured: true } },
+        }), stderr: "" };
       }
       return nativeExec(argv, cwd);
     };
