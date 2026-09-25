@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
@@ -8,7 +8,9 @@ if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "b
   throw new Error("Pass a fresh consumer prefix containing the installed hoklims-devkit package");
 }
 
-const root = mkdtempSync(join(tmpdir(), "hoklims-devkit-release-smoke-"));
+// macOS exposes temporary directories through /var, a symlink to /private/var.
+// Pass the canonical fixture home to installers that reject linked ancestors.
+const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-release-smoke-")));
 const repository = join(root, "repository");
 const home = join(root, "home");
 const cache = join(root, "cache");
