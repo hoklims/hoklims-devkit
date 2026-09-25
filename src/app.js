@@ -11,7 +11,7 @@ export function parseArgs(argv) {
   if (argv.includes("--version")) return { version: true };
   const command = argv[0];
   if (!["setup", "doctor", "upgrade"].includes(command)) throw new UsageError(`Unknown command: ${command}`);
-  const options = { command, project: ".", host: "auto", with: [], dryRun: false, json: false };
+  const options = { command, project: ".", host: "auto", with: [], dryRun: false, json: false, refreshPending: false };
   let hasProject = false;
   for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -22,6 +22,7 @@ export function parseArgs(argv) {
       else options.with.push(...value.split(",").filter(Boolean));
     } else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--json") options.json = true;
+    else if (arg === "--refresh-pending") options.refreshPending = true;
     else if (arg.startsWith("-")) throw new UsageError(`Unknown option: ${arg}`);
     else if (hasProject) throw new UsageError("Only one repository path is accepted");
     else {
@@ -30,6 +31,7 @@ export function parseArgs(argv) {
     }
   }
   if (!["auto", "codex", "claude", "all"].includes(options.host)) throw new UsageError("--host must be auto, codex, claude, or all");
+  if (options.refreshPending && command !== "upgrade") throw new UsageError("--refresh-pending is only valid with upgrade");
   if (options.with.some((name) => !COMPONENTS.slice(1).includes(name))) {
     throw new UsageError("--with accepts assertledger and latent-compass");
   }
@@ -194,26 +196,34 @@ function semctxStatusHasHosts(status, hosts) {
       && Object.hasOwn(status.hosts[host].installed, "version"));
 }
 
-function semctxWorkspaceReady(doctorResult, healthResult, version) {
+function semctxWorkspaceStatus(doctorResult, healthResult, version) {
   const doctor = doctorResult.report ?? parseJsonOutput(doctorResult);
   const health = healthResult.report ?? parseJsonOutput(healthResult);
   const doctorCode = doctorResult.exitCode ?? doctorResult.code;
   const healthCode = healthResult.exitCode ?? healthResult.code;
   const requiredChecks = ["cli", "workspace", "config", "index", "runtime"];
+  const doctorStructured = [0, 1].includes(doctorCode) && typeof doctor?.healthy === "boolean"
+    && doctor.version === version && Array.isArray(doctor.checks)
+    && requiredChecks.every((name) => doctor.checks.some((check) => check.name === name && typeof check.ok === "boolean"));
+  const healthStructured = [0, 2, 3].includes(healthCode) && health?.schemaVersion === 1
+    && health.kind === "index_health" && ["valid", "invalid", "absent"].includes(health.binding?.status)
+    && typeof health.freshness?.canRunHighRiskControl === "boolean"
+    && ["complete", "partial", "insufficient"].includes(health.coverage?.status);
+  if (!doctorStructured || !healthStructured) return "unknown";
   const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
     && Array.isArray(doctor.checks) && requiredChecks.every((name) => doctor.checks.some((check) =>
       check.name === name && check.ok === true && (name !== "index" || check.status === "healthy")));
   const indexReady = healthCode === 0 && health?.schemaVersion === 1 && health.kind === "index_health"
     && health.binding?.status === "valid" && health.freshness?.canRunHighRiskControl === true
     && health.coverage?.status === "complete";
-  return doctorReady && indexReady;
+  return doctorReady && indexReady ? "yes" : "no";
 }
 
 async function resolveComponents(rt, options, state, root, report) {
   const versions = {};
   for (const name of selectedComponents(options, state)) {
     try {
-      if (state?.inProgress?.versions[name]) {
+      if (state?.inProgress?.versions[name] && !options.refreshPending) {
         versions[name] = state.inProgress.versions[name];
       } else if (options.command !== "upgrade" && state?.components?.[name]?.version) {
         versions[name] = state.components[name].version;
@@ -237,7 +247,7 @@ async function resolveComponents(rt, options, state, root, report) {
   return versions;
 }
 
-async function preflightSemctx(rt, root, hosts, version, previous, command, report) {
+async function preflightSemctx(rt, root, hosts, version, previous, command, report, pendingVersion) {
   const hostMode = hosts.length === 2 ? "all" : hosts[0];
   const args = ["--root", root, "--json"];
   let hostInstallNeeded = command === "upgrade" || !previous || hosts.some((host) => !previous.hosts?.includes(host));
@@ -275,7 +285,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     problem(report, "EXISTING_VERSION", `Semctx is already installed at ${[...new Set(installedVersions)].join(", ")}; use upgrade explicitly`);
   }
   if (previous && installedVersions.some((installed) => installed !== previous.version
-    && !(command === "upgrade" && installed === version))) {
+    && !(command === "upgrade" && (installed === version || installed === pendingVersion)))) {
     problem(report, "INSTALLED_VERSION_DRIFT", `Semctx installation differs from recorded ${previous.version}`);
   }
   if (hostInstallNeeded) {
@@ -298,7 +308,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     && setupJson.plannedChanges.length === 0 && report.conflicts.length === 0) {
     const doctor = await rt.exec(["bunx", `semctx@${version}`, "doctor", ...args], root);
     const health = await rt.exec(["bunx", `semctx@${version}`, "index-health", ...args], root);
-    skipSetup = semctxWorkspaceReady(doctor, health, version);
+    skipSetup = semctxWorkspaceStatus(doctor, health, version) === "yes";
   }
   report.plannedChanges.push({ component: "semctx", workspace: setupJson, hosts: hostJson.hosts });
   return { setup: setupJson, host: hostJson, hostInstallNeeded, skipSetup };
@@ -359,7 +369,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
   return { manager, current, needsInstall, previews };
 }
 
-async function preflightCompass(rt, root, hosts, version, previous, command, report) {
+async function preflightCompass(rt, root, hosts, version, previous, command, report, pendingVersion) {
   if (!rt.which("uv")) {
     problem(report, "UV_REQUIRED", "Latent Compass needs uv on PATH", 3);
     return null;
@@ -367,7 +377,8 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
   const listed = await rt.exec(["uv", "tool", "list"], root);
   const current = uvToolVersion(listed.stdout);
   if (command !== "upgrade" && current && current !== version) problem(report, "EXISTING_VERSION", `Latent Compass is installed at ${current}; use upgrade explicitly`);
-  if (previous && current && current !== previous.version && !(command === "upgrade" && current === version)) {
+  if (previous && current && current !== previous.version
+    && !(command === "upgrade" && (current === version || current === pendingVersion))) {
     problem(report, "INSTALLED_VERSION_DRIFT", `Latent Compass installation differs from recorded ${previous.version}`);
   }
   const entry = await persistentCompassEntry(rt, root);
@@ -490,14 +501,14 @@ async function diagnoseSemctx(rt, root, hosts, version) {
     return item?.installed?.version === version && item?.marketplace?.matchesSemctx === true
       && item?.installed?.contentMatchesSnapshot === true;
   });
-  const workspaceReady = semctxWorkspaceReady(checks[1], checks[2], version);
+  const workspaceStatus = semctxWorkspaceStatus(checks[1], checks[2], version);
   const loaded = validDelivery && hosts.every((host) => delivery.hosts[host]?.session?.status === "observed") ? "yes" : "unknown";
   const installed = validDelivery ? "yes"
     : validStatus && hosts.every((host) => delivery.hosts[host].installed.version === null) ? "no" : "unknown";
   return {
     name: "semctx", version, installed,
-    configured: workspaceReady ? "yes" : "no", loaded, approved: "unknown", observed: "unknown",
-    checks, ready: validDelivery && workspaceReady,
+    configured: workspaceStatus, loaded, approved: "unknown", observed: "unknown",
+    checks, ready: validDelivery && workspaceStatus === "yes",
   };
 }
 
@@ -599,23 +610,37 @@ export async function execute(options, rt = createRuntime()) {
     return report;
   }
   const selected = selectedComponents(options, state);
-  if (state?.inProgress && (state.inProgress.command !== options.command
+  if (state?.inProgress && !options.refreshPending && (state.inProgress.command !== options.command
     || JSON.stringify(state.inProgress.hosts) !== JSON.stringify(hosts)
     || JSON.stringify(state.inProgress.selected) !== JSON.stringify(selected))) {
     return problem(report, "PENDING_PLAN_CONFLICT", `Complete the recorded ${state.inProgress.command} plan for ${state.inProgress.hosts.join(",")} and ${state.inProgress.selected.join(",")} before changing selectors`, 4);
   }
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) return report;
+  if (options.command === "upgrade") {
+    for (const name of selected) {
+      const previous = state?.components?.[name];
+      if (previous && previous.version !== versions[name] && previous.hosts.some((host) => !hosts.includes(host))) {
+        problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; re-run upgrade with --host all to change its shared version safely`);
+      }
+    }
+    if (report.conflicts.length) return report;
+  }
   const previews = {};
   for (const name of COMPONENTS.filter((item) => versions[item])) {
     const previous = state?.components?.[name];
     const version = versions[name];
-    if (name === "semctx") previews[name] = await preflightSemctx(rt, root, hosts, version, previous, options.command, report);
+    if (name === "semctx") previews[name] = await preflightSemctx(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.semctx);
     else if (name === "assertledger") previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report);
-    else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report);
+    else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions["latent-compass"]);
     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
   if (report.conflicts.length || options.dryRun) {
+    if (state?.inProgress && !options.refreshPending
+      && report.conflicts.some((item) => item.code === "RELEASE_SKEW_OR_UNAVAILABLE")) {
+      const optional = selected.filter((name) => name !== "semctx");
+      report.nextActions.push(`Review the new stable releases, then run hoklims-devkit upgrade ${root} --host ${hosts.length === 2 ? "all" : hosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`);
+    }
     report.ok = report.conflicts.length === 0;
     return report;
   }
@@ -686,7 +711,7 @@ export async function execute(options, rt = createRuntime()) {
 }
 
 function usage() {
-  return `hoklims-devkit ${VERSION}\n\nUsage:\n  hoklims-devkit setup [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json]\n  hoklims-devkit doctor [repository] [--host auto|codex|claude|all] [--json]\n  hoklims-devkit upgrade [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json]\n\nsetup installs Semctx by default. --with adds optional tools. setup keeps installed versions; upgrade resolves new stable versions.\n`;
+  return `hoklims-devkit ${VERSION}\n\nUsage:\n  hoklims-devkit setup [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json]\n  hoklims-devkit doctor [repository] [--host auto|codex|claude|all] [--json]\n  hoklims-devkit upgrade [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json] [--refresh-pending]\n\nsetup installs Semctx by default. --with adds optional tools. setup keeps installed versions; upgrade resolves new stable versions. --refresh-pending explicitly replaces an interrupted plan with current stable releases.\n`;
 }
 
 export async function main(argv, rt = createRuntime(), out = process.stdout, err = process.stderr) {

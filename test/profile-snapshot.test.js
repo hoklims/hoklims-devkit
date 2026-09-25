@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "../scripts/profile-snapshot.js";
@@ -60,4 +60,30 @@ test("release smoke records Unix npm executable links without following them", (
   const before = [snapshot(repository)];
   expect(JSON.stringify(before)).toContain('"link":"../assertledger/cli.js"');
   assertSnapshotUnchanged([repository], before, "codex");
+});
+
+test("release smoke detects a new host skill outside the standard hook file", () => {
+  const home = mkdtempSync(join(tmpdir(), "hoklims-devkit-skill-oracle-"));
+  const codex = join(home, ".codex");
+  mkdirSync(codex);
+  const paths = protectedProfilePaths(home);
+  const before = paths.map(snapshot);
+  const skill = join(codex, "skills", "foreign");
+  mkdirSync(skill, { recursive: true });
+  writeFileSync(join(skill, "SKILL.md"), "unexpected\n");
+  expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
+});
+
+test("release smoke detects an executable permission change", () => {
+  if (process.platform === "win32") return;
+  const home = mkdtempSync(join(tmpdir(), "hoklims-devkit-mode-oracle-"));
+  const bin = join(home, "uv-bin");
+  mkdirSync(bin);
+  const executable = join(bin, "latent-compass");
+  writeFileSync(executable, "#!/bin/sh\n");
+  chmodSync(executable, 0o755);
+  const paths = protectedProfilePaths(home);
+  const before = paths.map(snapshot);
+  chmodSync(executable, 0o644);
+  expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
 });

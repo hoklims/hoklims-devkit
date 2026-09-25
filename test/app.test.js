@@ -82,6 +82,7 @@ describe("public CLI", () => {
     expect(setupOptions().with).toEqual([]);
     expect(parseArgs(["setup", ".", "--with", "assertledger,latent-compass"]).with).toEqual(["assertledger", "latent-compass"]);
     expect(() => parseArgs(["setup", ".", "--with", "unknown"])).toThrow();
+    expect(() => parseArgs(["setup", ".", "--refresh-pending"])).toThrow();
   });
 
   test("blocks published Semctx 0.3.3 before invoking its unsafe dry-run", async () => {
@@ -199,7 +200,18 @@ describe("public CLI", () => {
       ? { code: 0, stdout: "{}", stderr: "" } : nativeExec(argv, cwd);
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
-    expect(report.components[0].configured).toBe("no");
+    expect(report.components[0].configured).toBe("unknown");
+  });
+
+  test("doctor preserves unknown configuration when native diagnostics are unavailable", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv.includes("doctor") || argv.includes("index-health")
+      ? { code: 5, stdout: "", stderr: "simulated diagnostic outage" } : nativeExec(argv, cwd);
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    expect(report.ok).toBe(false);
+    expect(report.components[0]).toMatchObject({ installed: "yes", configured: "unknown" });
   });
 
   test("doctor does not claim success when the tool was never configured", async () => {
@@ -391,6 +403,25 @@ describe("public CLI", () => {
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
   });
 
+  test("an interrupted upgrade can explicitly refresh a now-unavailable stable plan", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.6", stable: "0.3.6" });
+    const pinned = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+    expect(pinned.ok).toBe(false);
+    expect(pinned.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
+    expect(pinned.nextActions.join(" ")).toContain("--refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+    const refreshed = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    expect(refreshed.ok).toBe(true);
+    expect(refreshed.components[0].version).toBe("0.3.6");
+    expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.6");
+    expect(rt.writes.at(-1).inProgress).toBeUndefined();
+  });
+
   test("an interrupted upgrade accepts its already installed pinned Compass version", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
@@ -412,6 +443,16 @@ describe("public CLI", () => {
     expect(rt.calls.some((argv) => argv[0] === "uv" && argv.includes("install"))).toBe(false);
     expect(rt.writes.at(-1).components["latent-compass"].version).toBe("0.3.0");
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
+  });
+
+  test("upgrading one host cannot relabel an untouched host at the new version", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex", "claude"] } } };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
   });
 
   test("concurrent host setups cannot overwrite a completed state record", async () => {

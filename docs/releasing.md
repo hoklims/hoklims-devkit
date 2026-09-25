@@ -8,7 +8,7 @@ npm requires a package to exist before its first trusted publisher can be regist
 
 1. Check the CI `verify` job, local package checksum, and `bun run check`. The release smoke must pass against the actual public versions and both host CLIs.
 2. Authenticate the `hoklims` npm account with `npm login --auth-type=web` and its ordinary second factor. Publish the tested `hoklims-devkit@0.1.0` package once with `npm publish --access public`. Never put an npm token in this repository.
-3. Verify `npm view hoklims-devkit@0.1.0 version gitHead` and install from npm into a fresh directory. Run the installed `bunx --no-install hoklims-devkit --version` and `scripts/release-smoke.js` against that fresh consumer.
+3. Verify `npm view hoklims-devkit@0.1.0 version gitHead`, then dispatch `.github/workflows/bootstrap-verify.yml` from `main`. Its fixed `v0.1.0` tag check installs the public package into a fresh consumer, runs the full Codex and Claude smoke, and creates the GitHub Release only after it passes. Retain its exact-SHA run URL as the first-publication evidence.
 4. In npm package settings, register `hoklims/hoklims-devkit`, workflow `release.yml`, with direct `npm publish` permission as its trusted publisher. Restrict traditional token publishing only after that publisher works.
 
 Tag the next version (`v0.1.1` or later) from the verified main commit. The tag workflow tests Windows, Linux, and macOS, publishes through GitHub OIDC, installs the public package again on a fresh Linux runner, then creates its GitHub Release. A publication is incomplete if the public install smoke fails, even when `npm publish` succeeded.

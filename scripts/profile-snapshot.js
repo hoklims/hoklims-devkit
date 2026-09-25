@@ -10,16 +10,12 @@ export function snapshot(path) {
     throw error;
   }
   if (root.isSymbolicLink()) return { link: readlinkSync(path) };
-  if (root.isFile()) return { file: Buffer.from(readFileSync(path)).toString("base64") };
+  if (root.isFile()) return { file: Buffer.from(readFileSync(path)).toString("base64"), mode: root.mode & 0o777 };
   if (!root.isDirectory()) throw new Error(`Unexpected special file in smoke profile: ${path}`);
-  const entries = readdirSync(path, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
-  return entries.map((entry) => {
-    const child = join(path, entry.name);
-    if (entry.isDirectory()) return [entry.name, snapshot(child)];
-    if (entry.isSymbolicLink()) return [entry.name, { link: readlinkSync(child) }];
-    if (!entry.isFile()) throw new Error(`Unexpected special file in smoke profile: ${child}`);
-    return [entry.name, Buffer.from(readFileSync(child)).toString("base64")];
-  });
+  return {
+    mode: root.mode & 0o777,
+    entries: readdirSync(path).sort().map((name) => [name, snapshot(join(path, name))]),
+  };
 }
 
 export function assertSnapshotUnchanged(paths, before, label) {
@@ -30,9 +26,7 @@ export function assertSnapshotUnchanged(paths, before, label) {
 
 export function protectedProfilePaths(profile) {
   return [
-    join(profile, ".codex", "hooks.json"), join(profile, ".codex", "config.toml"),
-    join(profile, ".codex", "plugins"), join(profile, ".codex", "marketplaces"),
-    join(profile, ".claude", "settings.json"), join(profile, ".claude", "plugins"),
+    join(profile, ".codex"), join(profile, ".claude"),
     join(profile, ".config"),
     join(profile, "uv-tools"), join(profile, "uv-bin"),
     join(profile, "uv-python"), join(profile, "uv-python-bin"),
