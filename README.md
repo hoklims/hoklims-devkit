@@ -2,7 +2,7 @@
 
 Hoklims Devkit prepares a Git repository for [Semctx](https://github.com/hoklims/semctx), with optional [AssertLedger](https://github.com/hoklims/assertledger) and [Latent Compass](https://github.com/hoklims/latent-compass) integration. It uses each project's installer and keeps their data and authority boundaries separate.
 
-**Release status:** this repository is under development. `hoklims-devkit` is not yet published to npm. The commands below are the intended public interface; use `bun bin/hoklims-devkit.js` from this checkout during development.
+**Availability:** check `npm view hoklims-devkit@0.1.0 version` before using the public commands below. A version is ready only after its tagged release and installation from npm have been verified. During development, use `bun bin/hoklims-devkit.js` from this checkout.
 
 [Guide français](README.fr.md)
 
