@@ -1,12 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { execute, parseArgs } from "../src/app.js";
 
 function compassInstallReport(argv, { installed = false, configured = false } = {}) {
   const host = argv[argv.indexOf("--host") + 1];
+  const hostRoot = join(homedir(), `.${host}`);
   return {
     schema_version: 1, operation: "install", version: "0.3.0", dry_run: argv.includes("--dry-run"),
-    hosts: [host], files: [{ path: `/profile/${host}/settings.json`, action: "unchanged" }],
+    hosts: [host], files: [
+      { path: join(hostRoot, "latent-compass-shadow", "runtime", "latent-compass-shadow-hook.py"), action: "unchanged" },
+      { path: join(hostRoot, host === "codex" ? "hooks.json" : "settings.json"), action: "unchanged" },
+      { path: join(hostRoot, "latent-compass-shadow", "config.json"), action: "unchanged" },
+      { path: join(hostRoot, "latent-compass-shadow", "ownership.json"), action: "unchanged" },
+    ],
     conflicts: [], states: { [host]: { installed, configured } },
   };
 }
@@ -29,7 +36,9 @@ function assertSetupReport(argv, status, mode) {
     connection: { client, status: mode === "write" ? status : "EMITTED" },
     artifacts: [
       { owner: "init", path: "/repo/assertledger.config.json", state: artifactState },
-      { owner: "connection", path: `/repo/${client}/config`, state: artifactState },
+      { owner: "init", path: "/repo/assertledger.lock.json", state: artifactState },
+      { owner: "connection", path: client === "codex" ? "/repo/.codex/config.toml" : "/repo/.mcp.json", state: artifactState },
+      { owner: "connection", path: client === "codex" ? "/repo/.agents/skills/assertledger/SKILL.md" : "/repo/.claude/skills/assertledger/SKILL.md", state: artifactState },
     ],
     rollback: { status: "NOT_REQUIRED", removed: [], unresolved: [] },
   };
@@ -318,6 +327,20 @@ describe("public CLI", () => {
     expect(report.components[0].configured).toBe("unknown");
   });
 
+  test("doctor rejects a Semctx diagnostic naming another repository", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, workspaceReady: true });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => {
+      const result = await nativeExec(argv, cwd);
+      if (!argv.includes("doctor")) return result;
+      return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), repositoryRoot: "/other" }) };
+    };
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    expect(report.ok).toBe(false);
+    expect(report.components[0].configured).toBe("unknown");
+  });
+
   test("doctor preserves unknown configuration when native diagnostics are unavailable", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
@@ -466,6 +489,29 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("AssertLedger preview cannot plan artifacts for another repository or client", async () => {
+    const rt = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) },
+    });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === "npm" && argv.includes("exec")
+      ? { code: 0, stdout: JSON.stringify({
+        ...assertSetupReport(argv, "WOULD_CREATE", "dry-run"),
+        artifacts: [
+          { owner: "init", path: "/other/assertledger.config.json", state: "WOULD_CREATE" },
+          { owner: "init", path: "/other/assertledger.lock.json", state: "WOULD_CREATE" },
+          { owner: "connection", path: "/other/.mcp.json", state: "WOULD_CREATE" },
+          { owner: "connection", path: "/other/.claude/skills/assertledger/SKILL.md", state: "WOULD_CREATE" },
+        ],
+      }), stderr: "" }
+      : nativeExec(argv, cwd);
+    const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_CONFLICT");
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("a declared AssertLedger version without installed executable still plans installation", async () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],
@@ -512,6 +558,21 @@ describe("public CLI", () => {
     rt.exec = async (argv, cwd) => argv[0] === "uv" && argv.includes("run")
       ? { code: 0, stdout: JSON.stringify({ ...compassInstallReport(argv), files: [] }), stderr: "" }
       : nativeExec(argv, cwd);
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a Compass preview for another host path blocks every write", async () => {
+    const rt = fakeRuntime({ tools: ["uv"], uvInstalled: false });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => {
+      if (argv[0] !== "uv" || !argv.includes("run")) return nativeExec(argv, cwd);
+      const plan = compassInstallReport(argv);
+      plan.files[1].path = join(homedir(), ".claude", "settings.json");
+      return { code: 0, stdout: JSON.stringify(plan), stderr: "" };
+    };
     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");

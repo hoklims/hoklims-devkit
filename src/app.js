@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { homedir } from "node:os";
 import packageJson from "../package.json" with { type: "json" };
 import { createRuntime, parseJsonOutput, shortError, validateState } from "./runtime.js";
 
@@ -165,12 +166,36 @@ function uvToolVersion(output, stderr = "") {
   return version;
 }
 
-function validCompassInstallReport(parsed, host, version, dryRun) {
+function validCompassInstallReport(rt, parsed, host, version, dryRun) {
+  const hostDir = `.${host}`;
+  const expected = [
+    `${hostDir}/latent-compass-shadow/runtime/latent-compass-shadow-hook.py`,
+    `${hostDir}/${host === "codex" ? "hooks.json" : "settings.json"}`,
+    `${hostDir}/latent-compass-shadow/config.json`,
+    `${hostDir}/latent-compass-shadow/ownership.json`,
+  ];
+  let home;
+  try {
+    home = rt.realpath(homedir()).replaceAll("\\", "/");
+  } catch {
+    return false;
+  }
   return parsed?.schema_version === 1 && parsed.operation === "install" && parsed.version === version
     && parsed.dry_run === dryRun && Array.isArray(parsed.hosts) && parsed.hosts.length === 1
-    && parsed.hosts[0] === host && Array.isArray(parsed.files) && parsed.files.length > 0
+    && parsed.hosts[0] === host && Array.isArray(parsed.files) && parsed.files.length === expected.length
+    && expected.every((relativePath) => parsed.files.filter((file) => {
+      if (typeof file?.path !== "string") return false;
+      const normalized = file.path.replaceAll("\\", "/");
+      const suffix = `/${relativePath}`;
+      if (!normalized.endsWith(suffix)) return false;
+      try {
+        return rt.realpath(normalized.slice(0, -suffix.length)).replaceAll("\\", "/") === home;
+      } catch {
+        return false;
+      }
+    }).length === 1)
     && parsed.files.every((file) => typeof file?.path === "string" && file.path.length > 0
-      && ["create", "update", "delete", "unchanged"].includes(file.action))
+      && ["create", "update", "unchanged"].includes(file.action))
     && Array.isArray(parsed.conflicts) && parsed.conflicts.length === 0
     && typeof parsed.states?.[host]?.installed === "boolean"
     && typeof parsed.states?.[host]?.configured === "boolean";
@@ -191,10 +216,28 @@ function validSemctxHostPlan(parsed, hosts, version, selection) {
       && parsed.hosts[host].detected === true && parsed.hosts[host].status === "planned");
 }
 
-function validAssertSetupReport(parsed, client, mode, statuses, artifactStates) {
+function fileBelongsToRoot(rt, path, relativePath, root) {
+  if (typeof path !== "string") return false;
+  const normalized = path.replaceAll("\\", "/");
+  const suffix = `/${relativePath}`;
+  if (!normalized.endsWith(suffix)) return false;
+  try {
+    return rt.realpath(normalized.slice(0, -suffix.length)) === root;
+  } catch {
+    return false;
+  }
+}
+
+function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifactStates) {
+  const expected = [
+    ["init", "assertledger.config.json"], ["init", "assertledger.lock.json"],
+    ["connection", client === "codex" ? ".codex/config.toml" : ".mcp.json"],
+    ["connection", client === "codex" ? ".agents/skills/assertledger/SKILL.md" : ".claude/skills/assertledger/SKILL.md"],
+  ];
   return statuses.includes(parsed?.status) && parsed.client === client && parsed.mode === mode
-    && Array.isArray(parsed.artifacts) && parsed.artifacts.length > 0
-    && ["init", "connection"].every((owner) => parsed.artifacts.some((artifact) => artifact?.owner === owner))
+    && Array.isArray(parsed.artifacts) && parsed.artifacts.length === expected.length
+    && expected.every(([owner, relativePath]) => parsed.artifacts.filter((artifact) => artifact?.owner === owner
+      && fileBelongsToRoot(rt, artifact.path, relativePath, root)).length === 1)
     && parsed.artifacts.every((artifact) => ["init", "connection"].includes(artifact?.owner)
       && typeof artifact.path === "string" && artifact.path.length > 0
       && artifactStates.includes(artifact.state))
@@ -272,9 +315,17 @@ function semctxStatusHasHosts(status, hosts) {
       && [true, false, null].includes(status.hosts[host].marketplace?.matchesSemctx));
 }
 
-function semctxWorkspaceStatus(doctorResult, healthResult, version) {
+function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
   const doctor = doctorResult.report ?? parseJsonOutput(doctorResult);
   const health = healthResult.report ?? parseJsonOutput(healthResult);
+  for (const candidate of [doctor?.repositoryRoot, health?.repositoryRoot]) {
+    if (candidate === undefined) continue;
+    try {
+      if (typeof candidate !== "string" || rt.realpath(candidate) !== root) return "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
   const doctorCode = doctorResult.exitCode ?? doctorResult.code;
   const healthCode = healthResult.exitCode ?? healthResult.code;
   const requiredChecks = ["cli", "workspace", "config", "index", "runtime"];
@@ -388,7 +439,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     && setupJson.plannedChanges.length === 0 && report.conflicts.length === 0) {
     const doctor = await rt.exec(["bunx", `semctx@${version}`, "doctor", ...args], root);
     const health = await rt.exec(["bunx", `semctx@${version}`, "index-health", ...args], root);
-    skipSetup = semctxWorkspaceStatus(doctor, health, version) === "yes";
+    skipSetup = semctxWorkspaceStatus(rt, root, doctor, health, version) === "yes";
   }
   report.plannedChanges.push({ component: "semctx", workspace: setupJson, hosts: hostJson.hosts });
   return { setup: setupJson, host: hostJson, hostInstallNeeded, skipSetup };
@@ -435,7 +486,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     const result = await rt.exec(previewCommand, root);
     const parsed = nativeResult(result, `assertledger setup (${client})`, report);
     if (!parsed) continue;
-    if (result.code !== 0 || !validAssertSetupReport(parsed, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
+    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
       problem(report, "ASSERTLEDGER_CONFLICT", JSON.stringify(parsed).slice(0, 600));
     }
     previews.push({
@@ -487,7 +538,7 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
     const result = await rt.exec(commandLine, root);
     const parsed = nativeResult(result, `latent-compass host install (${host})`, report);
     if (!parsed) continue;
-    if (result.code !== 0 || !validCompassInstallReport(parsed, host, version, true)) {
+    if (result.code !== 0 || !validCompassInstallReport(rt, parsed, host, version, true)) {
       problem(report, "COMPASS_HOOK_CONFLICT", JSON.stringify(parsed).slice(0, 600));
     }
     previews.push({ host, files: parsed.files ?? [], conflicts: parsed.conflicts ?? [] });
@@ -548,17 +599,17 @@ async function applyAssert(rt, root, hosts, version, preflight) {
     const client = host === "claude" ? "claude-code" : "codex";
     const preview = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const previewReport = parseJsonOutput(preview);
-    if (preview.code !== 0 || !validAssertSetupReport(previewReport, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
+    if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
       throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
     }
     const result = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--write", "--json"]), root);
     const parsed = parseJsonOutput(result);
-    if (result.code !== 0 || !validAssertSetupReport(parsed, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"])) {
+    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"])) {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
     }
     const verify = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const verified = parseJsonOutput(verify);
-    if (verify.code !== 0 || !validAssertSetupReport(verified, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"])) {
+    if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"])) {
       throw new Error(`AssertLedger post-install verification (${client}): ${shortError(verify)}`);
     }
   }
@@ -576,12 +627,12 @@ async function applyCompass(rt, root, hosts, version, preflight) {
   for (const host of hosts) {
     const preview = await rt.exec([entry.executable, "host", "install", "--project-root", root, "--host", host, "--dry-run", "--json"], root);
     const previewReport = parseJsonOutput(preview);
-    if (preview.code !== 0 || !validCompassInstallReport(previewReport, host, version, true)) {
+    if (preview.code !== 0 || !validCompassInstallReport(rt, previewReport, host, version, true)) {
       throw new Error(`Latent Compass persistent preflight (${host}): ${shortError(preview)}`);
     }
     const result = await rt.exec([entry.executable, "host", "install", "--project-root", root, "--host", host, "--json"], root);
     const parsed = parseJsonOutput(result);
-    if (result.code !== 0 || !validCompassInstallReport(parsed, host, version, false)
+    if (result.code !== 0 || !validCompassInstallReport(rt, parsed, host, version, false)
       || parsed.states?.[host]?.installed !== true || parsed.states?.[host]?.configured !== true) {
       throw new Error(`Latent Compass hook install (${host}): ${shortError(result)}`);
     }
@@ -614,7 +665,7 @@ async function diagnoseSemctx(rt, root, hosts, version) {
     return item?.installed?.version === version && item?.marketplace?.matchesSemctx === true
       && item?.installed?.contentMatchesSnapshot === true;
   });
-  const workspaceStatus = semctxWorkspaceStatus(checks[1], checks[2], version);
+  const workspaceStatus = semctxWorkspaceStatus(rt, root, checks[1], checks[2], version);
   const loaded = validDelivery && hosts.every((host) => delivery.hosts[host]?.session?.status === "observed") ? "yes" : "unknown";
   const installed = validDelivery ? "yes"
     : validStatus && hosts.every((host) => delivery.hosts[host].installed.version === null) ? "no" : "unknown";
@@ -642,7 +693,7 @@ async function diagnoseAssert(rt, root, hosts, version) {
     && ["UNCHANGED", "WOULD_CREATE", "BLOCKED", "CONFLICT", "PARTIAL_FAILURE"].includes(item.report.status)
     && Array.isArray(item.report.artifacts) && item.report.artifacts.length > 0);
   const configured = recognizable && checks.every((item) => item.exitCode === 0 && item.report.status === "UNCHANGED"
-    && validAssertSetupReport(item.report, item.command.slice(6), "dry-run", ["UNCHANGED"], ["UNCHANGED"]));
+    && validAssertSetupReport(rt, item.report, root, item.command.slice(6), "dry-run", ["UNCHANGED"], ["UNCHANGED"]));
   return {
     name: "assertledger", version, installed: "yes", configured: !recognizable ? "unknown" : configured ? "yes" : "no",
     loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured,
