@@ -90,14 +90,14 @@ jobs:
           version="$(node -p 'require("./package.json").version')"
           tarball="tested-package/hoklims-devkit-${version}.tgz"
           test -f "$tarball"
+          integrity="sha512-$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "$tarball")"
           if npm view "hoklims-devkit@$version" version >/dev/null 2>&1; then
-            existing="$(npm view "hoklims-devkit@$version" gitHead)"
-            test -n "$existing"
-            test "$existing" = "$(git rev-parse HEAD)"
+            test "$(npm view "hoklims-devkit@$version" dist.integrity)" = "$integrity"
           else
             npm publish "$tarball" --access public
           fi
           test "$(npm view "hoklims-devkit@$version" version)" = "$version"
+          test "$(npm view "hoklims-devkit@$version" dist.integrity)" = "$integrity"
   public-smoke:
     needs: publish
     runs-on: ubuntu-latest

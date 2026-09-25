@@ -31,7 +31,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
       if (argv[0] === "node") return { code: 0, stdout: "v22.15.0\n", stderr: "" };
       if (argv[0] === "git") return { code: 0, stdout: "/repo\n", stderr: "" };
       if (argv[0] === "uv" && argv.includes("dir")) return { code: 0, stdout: "/uvbin\n", stderr: "" };
-      if (argv[0] === "uv" && argv.includes("list")) return { code: 0, stdout: uvInstalled ? "latent-compass v0.3.0\n" : "No tools installed\n", stderr: "" };
+      if (argv[0] === "uv" && argv.includes("list")) return { code: 0, stdout: uvInstalled ? "latent-compass v0.3.0\n" : "", stderr: uvInstalled ? "" : "No tools installed\n" };
       if (argv[0] === "uv" && argv.includes("run")) return { code: 0, stdout: JSON.stringify({ dry_run: true, conflicts: [], files: [] }), stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("--version")) return { code: 0, stdout: "latent-compass 0.3.0\n", stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
@@ -335,6 +335,14 @@ describe("public CLI", () => {
 
   test("a listed uv tool without its executable is planned for reinstall", async () => {
     const rt = fakeRuntime({ tools: ["uv"] });
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"], dryRun: true }, rt);
+    expect(report.ok).toBe(true);
+    expect(report.plannedChanges.find((item) => item.component === "latent-compass").installTool).toBe(true);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("an empty uv inventory reported on stderr plans first installation", async () => {
+    const rt = fakeRuntime({ tools: ["uv"], uvInstalled: false });
     const report = await execute({ ...setupOptions(), with: ["latent-compass"], dryRun: true }, rt);
     expect(report.ok).toBe(true);
     expect(report.plannedChanges.find((item) => item.component === "latent-compass").installTool).toBe(true);

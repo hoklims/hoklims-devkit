@@ -141,7 +141,9 @@ function localAssertCommand(entry, args) {
   return ["node", entry.cliPath, ...args];
 }
 
-function uvToolVersion(output) {
+function uvToolVersion(output, stderr = "") {
+  if (!output.trim() && stderr.trim() === "No tools installed") return null;
+  if (stderr.trim()) throw new Error(`uv tool list reported an unexpected message: ${stderr.trim().slice(0, 100)}`);
   const lines = output.trim().split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
   if (lines.length === 1 && lines[0] === "No tools installed") return null;
   if (lines.length === 0) throw new Error("uv tool list returned an empty inventory");
@@ -249,7 +251,7 @@ async function resolveComponents(rt, options, state, root, report) {
       } else if (name === "latent-compass" && options.command === "setup" && rt.which("uv")) {
         const listed = await rt.exec(["uv", "tool", "list"], root);
         if (listed.code !== 0) throw new Error(`uv tool list: ${shortError(listed)}`);
-        versions[name] = uvToolVersion(listed.stdout) ?? await resolveVersion(rt, name);
+        versions[name] = uvToolVersion(listed.stdout, listed.stderr) ?? await resolveVersion(rt, name);
       } else {
         versions[name] = await resolveVersion(rt, name);
       }
@@ -399,7 +401,7 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
   }
   let current;
   try {
-    current = uvToolVersion(listed.stdout);
+    current = uvToolVersion(listed.stdout, listed.stderr);
   } catch (error) {
     problem(report, "UV_TOOL_INVENTORY_FAILED", String(error.message ?? error), 3);
     return null;
