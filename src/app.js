@@ -213,8 +213,18 @@ function validSemctxSetupPlan(parsed, root) {
     && parsed.analysisReady === "unknown" && parsed.setupReady === "unknown";
 }
 
-function validSemctxHostPlan(parsed, hosts, version, selection) {
-  return parsed?.ok === true && parsed.version === version && parsed.dryRun === true
+function optionalNativeRootMatches(rt, parsed, root) {
+  if (parsed?.repositoryRoot === undefined) return true;
+  try {
+    return typeof parsed.repositoryRoot === "string" && rt.realpath(parsed.repositoryRoot) === root;
+  } catch {
+    return false;
+  }
+}
+
+function validSemctxHostPlan(rt, parsed, root, hosts, version, selection) {
+  return optionalNativeRootMatches(rt, parsed, root)
+    && parsed?.ok === true && parsed.version === version && parsed.dryRun === true
     && parsed.selection === selection && hosts.every((host) => parsed.hosts?.[host]?.requested === true
       && parsed.hosts[host].detected === true && parsed.hosts[host].status === "planned");
 }
@@ -309,8 +319,9 @@ function selectedComponents(options, state) {
   return COMPONENTS.filter((name) => selected.has(name));
 }
 
-function semctxStatusHasHosts(status, hosts) {
-  return status?.schemaVersion === 2 && status.kind === "plugin_delivery_status"
+function semctxStatusHasHosts(rt, status, root, hosts) {
+  return optionalNativeRootMatches(rt, status, root)
+    && status?.schemaVersion === 2 && status.kind === "plugin_delivery_status"
     && hosts.every((host) => status.hosts?.[host]?.requested === true
       && status.hosts[host].installed
       && (status.hosts[host].installed.version === null || isStableVersion(status.hosts[host].installed.version))
@@ -391,7 +402,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
   const status = await rt.exec(["bunx", `semctx@${version}`, "plugin-status", "--host", hostMode, ...args], root);
   const statusJson = nativeResult(status, "semctx plugin-status", report);
   if (!statusJson) return null;
-  if (![0, 2, 3].includes(status.code) || !semctxStatusHasHosts(statusJson, hosts)) {
+  if (![0, 2, 3].includes(status.code) || !semctxStatusHasHosts(rt, statusJson, root, hosts)) {
     problem(report, "SEMCTX_STATUS_INVALID", `Semctx plugin-status returned incomplete or failed host evidence (exit ${status.code})`);
     return null;
   }
@@ -433,7 +444,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     const host = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", "--dry-run", ...args], root);
     hostJson = nativeResult(host, "semctx install --dry-run", report);
     if (!hostJson) return null;
-    if (host.code !== 0 || !validSemctxHostPlan(hostJson, hosts, version, hostMode)) {
+    if (host.code !== 0 || !validSemctxHostPlan(rt, hostJson, root, hosts, version, hostMode)) {
       problem(report, "SEMCTX_HOST_CONFLICT", JSON.stringify(hostJson).slice(0, 600));
     }
   }
@@ -576,7 +587,7 @@ async function applySemctx(rt, root, hosts, version, preflight) {
   }
   const status = await rt.exec(["bunx", `semctx@${version}`, "plugin-status", "--host", hostMode, ...args], root);
   const delivery = parseJsonOutput(status);
-  if (![0, 2, 3].includes(status.code) || !semctxStatusHasHosts(delivery, hosts)
+  if (![0, 2, 3].includes(status.code) || !semctxStatusHasHosts(rt, delivery, root, hosts)
     || hosts.some((host) => delivery.hosts[host].installed.version !== version
       || delivery.hosts[host].marketplace?.matchesSemctx !== true
       || delivery.hosts[host].installed.contentMatchesSnapshot !== true)) {
@@ -662,7 +673,7 @@ async function diagnoseSemctx(rt, root, hosts, version) {
     checks.push({ command: argv[2], exitCode: result.code, report: parseJsonOutput(result) });
   }
   const delivery = checks[0].report;
-  const validStatus = [0, 2, 3].includes(checks[0].exitCode) && semctxStatusHasHosts(delivery, hosts);
+  const validStatus = [0, 2, 3].includes(checks[0].exitCode) && semctxStatusHasHosts(rt, delivery, root, hosts);
   const validDelivery = validStatus && hosts.every((host) => {
     const item = delivery.hosts[host];
     return item?.installed?.version === version && item?.marketplace?.matchesSemctx === true

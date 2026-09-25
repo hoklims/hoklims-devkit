@@ -229,6 +229,35 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("a Semctx host plan naming another repository blocks all writes", async () => {
+    const rt = fakeRuntime();
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => {
+      const result = await nativeExec(argv, cwd);
+      if (!argv.includes("install") || !argv.includes("--dry-run")) return result;
+      return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), repositoryRoot: "/other" }) };
+    };
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_HOST_CONFLICT");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("Semctx plugin status naming another repository blocks all writes", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => {
+      const result = await nativeExec(argv, cwd);
+      if (!argv.includes("plugin-status")) return result;
+      return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), repositoryRoot: "/other" }) };
+    };
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_STATUS_INVALID");
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("successful setup records the exact installed version for resume", async () => {
     const rt = fakeRuntime();
     const report = await execute(setupOptions(), rt);
