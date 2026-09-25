@@ -230,9 +230,6 @@ async function resolveComponents(rt, options, state, root, report) {
       if (name === "semctx" && compareVersions(versions[name], "0.3.4") < 0) {
         throw new Error("Semctx before 0.3.4 has no safe workspace preflight");
       }
-      if (name === "semctx" && (options.command === "upgrade" || !state?.components?.semctx)) {
-        await checkSemctxChannel(rt, versions[name]);
-      }
     } catch (error) {
       problem(report, name === "semctx" ? "RELEASE_SKEW_OR_UNAVAILABLE" : "VERSION_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
     }
@@ -260,24 +257,32 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
   if (previous && hosts.some((host) => statusJson.hosts[host].installed.version === null)) hostInstallNeeded = true;
   for (const host of hosts) {
     const installed = statusJson.hosts[host].installed;
+    if (installed.version !== null && statusJson.hosts[host].marketplace?.matchesSemctx !== true) {
+      problem(report, "SEMCTX_MARKETPLACE_CONFLICT", `${host} Semctx plugin is not from the expected marketplace`);
+    }
     if (installed.version === version && installed.contentMatchesSnapshot === false) {
       problem(report, "SEMCTX_CONTENT_DRIFT", `${host} Semctx plugin bytes differ from its marketplace snapshot; inspect or repair with the native installer`);
     } else if (previous && installed.version === version && installed.contentMatchesSnapshot !== true) {
       problem(report, "SEMCTX_CONTENT_UNVERIFIED", `${host} Semctx plugin content is unverified; inspect semctx plugin-status before retrying`);
     }
   }
+  if (previous && hosts.every((host) => previous.hosts?.includes(host))
+    && hosts.every((host) => statusJson.hosts[host].installed.version === version
+    && statusJson.hosts[host].installed.contentMatchesSnapshot === true
+    && statusJson.hosts[host].marketplace?.matchesSemctx === true)) hostInstallNeeded = false;
   const installedVersions = hosts.map((host) => statusJson.hosts?.[host]?.installed?.version).filter((value) => isStableVersion(value));
   if (command !== "upgrade" && !previous && installedVersions.some((installed) => installed !== version)) {
     problem(report, "EXISTING_VERSION", `Semctx is already installed at ${[...new Set(installedVersions)].join(", ")}; use upgrade explicitly`);
   }
-  if (previous && installedVersions.some((installed) => installed !== previous.version)) {
+  if (previous && installedVersions.some((installed) => installed !== previous.version
+    && !(command === "upgrade" && installed === version))) {
     problem(report, "INSTALLED_VERSION_DRIFT", `Semctx installation differs from recorded ${previous.version}`);
   }
-  if (hostInstallNeeded && previous && command !== "upgrade") {
+  if (hostInstallNeeded) {
     try {
       await checkSemctxChannel(rt, version);
     } catch (error) {
-      problem(report, "RELEASE_SKEW_OR_UNAVAILABLE", `Semctx host repair: ${String(error.message ?? error)}`, 3);
+      problem(report, "RELEASE_SKEW_OR_UNAVAILABLE", `Semctx host installation: ${String(error.message ?? error)}`, 3);
       return null;
     }
   }
@@ -362,7 +367,9 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
   const listed = await rt.exec(["uv", "tool", "list"], root);
   const current = uvToolVersion(listed.stdout);
   if (command !== "upgrade" && current && current !== version) problem(report, "EXISTING_VERSION", `Latent Compass is installed at ${current}; use upgrade explicitly`);
-  if (previous && current && current !== previous.version) problem(report, "INSTALLED_VERSION_DRIFT", `Latent Compass installation differs from recorded ${previous.version}`);
+  if (previous && current && current !== previous.version && !(command === "upgrade" && current === version)) {
+    problem(report, "INSTALLED_VERSION_DRIFT", `Latent Compass installation differs from recorded ${previous.version}`);
+  }
   const entry = await persistentCompassEntry(rt, root);
   const needsInstall = current !== version || entry?.version !== version;
   const previews = [];

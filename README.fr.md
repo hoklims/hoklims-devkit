@@ -29,7 +29,7 @@ bunx hoklims-devkit@latest doctor . --json
 bunx hoklims-devkit@latest upgrade . --dry-run --json
 ```
 
-Au premier lancement, `setup` choisit les dernières versions stables compatibles, vérifie **tous les composants sélectionnés avant la première écriture**, puis enregistre chaque installation réussie dans un état local à l'utilisateur. Une relance conserve ces versions ; `upgrade` recherche de nouvelles versions. Un échec pendant l'application est déclaré partiel et peut être repris avec la même commande.
+Au premier lancement, `setup` choisit les dernières versions stables compatibles, vérifie **tous les composants sélectionnés avant la première écriture**, puis enregistre le plan de versions et chaque installation réussie dans un état local à l'utilisateur. Une relance conserve ces versions ; `upgrade` recherche de nouvelles versions. Un échec pendant l'application est déclaré partiel : la même commande reprend les versions déjà choisies.
 
 `doctor --json` distingue le paquet installé, la configuration, le chargement dans la session, l'approbation et l'usage observé. L'installation seule ne prouve ni le chargement ni l'approbation. Ouvrir une nouvelle tâche Codex ou recharger les plugins Claude lorsque le rapport le demande. Examiner le hook Latent Compass dans l'hôte avant de l'approuver.
 

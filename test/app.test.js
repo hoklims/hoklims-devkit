@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { execute, parseArgs } from "../src/app.js";
 
-function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "setup_plan", verdict: "SETUP_PLANNED" }, setupReady = true, workspaceReady = false, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false, semctxMissing = false, semctxContentDrift = false } = {}) {
+function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "setup_plan", verdict: "SETUP_PLANNED" }, setupReady = true, workspaceReady = false, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false, semctxMissing = false, semctxContentDrift = false, semctxMarketplaceMatch = true, installedSemctxVersion } = {}) {
   const calls = [];
   const writes = [];
-  let semctxInstalledVersion = semctxMissing ? null : state?.components?.semctx?.version ?? null;
+  let semctxInstalledVersion = semctxMissing ? null : installedSemctxVersion ?? state?.components?.semctx?.version ?? null;
   const rt = {
     calls,
     writes,
@@ -44,8 +44,8 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = { kind: "set
             schemaVersion: 2,
             kind: "plugin_delivery_status",
             hosts: {
-              codex: { requested: true, installed: { version: semctxInstalledVersion, contentMatchesSnapshot: semctxInstalledVersion ? !semctxContentDrift : null }, marketplace: { matchesSemctx: Boolean(semctxInstalledVersion) } },
-              claude: { requested: true, installed: { version: semctxInstalledVersion, contentMatchesSnapshot: semctxInstalledVersion ? !semctxContentDrift : null }, marketplace: { matchesSemctx: Boolean(semctxInstalledVersion) } },
+              codex: { requested: true, installed: { version: semctxInstalledVersion, contentMatchesSnapshot: semctxInstalledVersion ? !semctxContentDrift : null }, marketplace: { matchesSemctx: Boolean(semctxInstalledVersion) && semctxMarketplaceMatch } },
+              claude: { requested: true, installed: { version: semctxInstalledVersion, contentMatchesSnapshot: semctxInstalledVersion ? !semctxContentDrift : null }, marketplace: { matchesSemctx: Boolean(semctxInstalledVersion) && semctxMarketplaceMatch } },
             },
           }),
           stderr: "",
@@ -364,6 +364,54 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_DRIFT");
     expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a foreign Semctx marketplace blocks before workspace setup", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, semctxMarketplaceMatch: false });
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_MARKETPLACE_CONFLICT");
+    expect(rt.calls.some((argv) => argv.includes("setup") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("an interrupted upgrade accepts its already installed pinned Semctx version", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.6", stable: "0.3.6", installedSemctxVersion: "0.3.5" });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+    expect(report.ok).toBe(true);
+    expect(report.components[0].version).toBe("0.3.5");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.5");
+    expect(rt.writes.at(-1).inProgress).toBeUndefined();
+  });
+
+  test("an interrupted upgrade accepts its already installed pinned Compass version", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        "latent-compass": { version: "0.2.0", hosts: ["codex"] },
+      },
+      inProgress: { command: "upgrade", selected: ["semctx", "latent-compass"], hosts: ["codex"], versions: { semctx: "0.3.4", "latent-compass": "0.3.0" } },
+    };
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, uvInstalled: true });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => argv[0] === executable && argv.includes("install")
+      ? { code: 0, stdout: JSON.stringify({ dry_run: argv.includes("--dry-run"), conflicts: [], files: [] }), stderr: "" }
+      : nativeExec(argv, cwd, timeout);
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+    expect(report.ok).toBe(true);
+    expect(report.components.find((item) => item.name === "latent-compass").version).toBe("0.3.0");
+    expect(rt.calls.some((argv) => argv[0] === "uv" && argv.includes("install"))).toBe(false);
+    expect(rt.writes.at(-1).components["latent-compass"].version).toBe("0.3.0");
+    expect(rt.writes.at(-1).inProgress).toBeUndefined();
   });
 
   test("concurrent host setups cannot overwrite a completed state record", async () => {

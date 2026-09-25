@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertSnapshotUnchanged, snapshot } from "./profile-snapshot.js";
+import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
 
 const consumer = process.argv[2];
 if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "bin", "hoklims-devkit.js"))) {
@@ -49,6 +49,13 @@ const env = {
   XDG_CACHE_HOME: join(cache, "xdg"),
   npm_config_cache: join(cache, "npm"),
   UV_CACHE_DIR: join(cache, "uv"),
+  UV_TOOL_DIR: join(home, "uv-tools"),
+  UV_TOOL_BIN_DIR: join(home, "uv-bin"),
+  UV_PYTHON_INSTALL_DIR: join(home, "uv-python"),
+  UV_PYTHON_BIN_DIR: join(home, "uv-python-bin"),
+  UV_PYTHON_NO_REGISTRY: "true",
+  BUN_INSTALL_CACHE_DIR: join(cache, "bun"),
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(cache, "bun-runtime"),
 };
 
 function run(argv, cwd = consumer, runEnv = env) {
@@ -65,11 +72,7 @@ run(["git", "-C", repository, "-c", "user.name=Devkit Smoke", "-c", "user.email=
 run(["git", "-C", repository, "status", "--porcelain"]);
 const repositoryBefore = snapshot(repository);
 
-const protectedPaths = [
-  join(home, ".codex"), join(home, ".claude"),
-  join(home, "AppData", "Local", "hoklims-devkit"),
-  join(home, ".local", "state", "hoklims-devkit"),
-];
+const protectedPaths = protectedProfilePaths(home);
 const profileBefore = protectedPaths.map(snapshot);
 
 for (const host of ["codex", "claude"]) {
@@ -110,12 +113,13 @@ for (const host of ["codex", "claude"]) {
       LOCALAPPDATA: join(scenarioHome, "AppData", "Local"), APPDATA: join(scenarioHome, "AppData", "Roaming"),
       XDG_STATE_HOME: join(scenarioHome, ".local", "state"), XDG_CACHE_HOME: join(scenarioCache, "xdg"),
       npm_config_cache: join(scenarioCache, "npm"), UV_CACHE_DIR: join(scenarioCache, "uv"),
+      UV_TOOL_DIR: join(scenarioHome, "uv-tools"), UV_TOOL_BIN_DIR: join(scenarioHome, "uv-bin"),
+      UV_PYTHON_INSTALL_DIR: join(scenarioHome, "uv-python"), UV_PYTHON_BIN_DIR: join(scenarioHome, "uv-python-bin"),
+      UV_PYTHON_NO_REGISTRY: "true",
+      BUN_INSTALL_CACHE_DIR: join(scenarioCache, "bun"),
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(scenarioCache, "bun-runtime"),
     };
-    const scenarioProtectedPaths = [
-      join(scenarioHome, ".codex"), join(scenarioHome, ".claude"),
-      join(scenarioHome, "AppData", "Local", "hoklims-devkit"),
-      join(scenarioHome, ".local", "state", "hoklims-devkit"),
-    ];
+    const scenarioProtectedPaths = protectedProfilePaths(scenarioHome);
     const selectors = ["--host", host, ...withTools, "--json"];
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
     const installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
@@ -130,10 +134,12 @@ for (const host of ["codex", "claude"]) {
     if (repeated.ok !== true) throw new Error(`${host} repeated setup failed: ${JSON.stringify(repeated)}`);
     assertSnapshotUnchanged(targets, installedSnapshot, `${host} repeated setup`);
 
+    const beforeDoctor = targets.map(snapshot);
     const diagnosed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
     if (diagnosed.ok !== true || diagnosed.components.some((item) => item.installed !== "yes" || item.configured !== "yes")) {
       throw new Error(`${host} doctor did not confirm installation: ${JSON.stringify(diagnosed)}`);
     }
+    assertSnapshotUnchanged(targets, beforeDoctor, `${host} doctor`);
     const beforeUpgradePlan = targets.map(snapshot);
     const upgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "upgrade", scenarioRepository, ...selectors.slice(0, -1), "--dry-run", "--json"], consumer, scenarioEnv));
     if (upgrade.ok !== true) throw new Error(`${host} upgrade plan failed: ${JSON.stringify(upgrade)}`);
