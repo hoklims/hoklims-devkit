@@ -87,3 +87,20 @@ test("release smoke detects an executable permission change", () => {
   chmodSync(executable, 0o644);
   expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
 });
+
+test("release smoke detects special permission-bit changes", () => {
+  if (process.platform === "win32") return;
+  const home = mkdtempSync(join(tmpdir(), "hoklims-devkit-special-mode-oracle-"));
+  const bin = join(home, "uv-bin");
+  mkdirSync(bin);
+  const executable = join(bin, "latent-compass");
+  writeFileSync(executable, "#!/bin/sh\n");
+  chmodSync(executable, 0o755);
+  const paths = protectedProfilePaths(home);
+  let before = paths.map(snapshot);
+  chmodSync(executable, 0o4755);
+  expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
+  before = paths.map(snapshot);
+  chmodSync(bin, 0o1777);
+  expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
+});

@@ -524,10 +524,13 @@ async function diagnoseAssert(rt, root, hosts, version) {
     const result = await rt.exec(argv, root);
     checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result) });
   }
-  const configured = checks.every((item) => item.exitCode === 0 && item.report?.status === "UNCHANGED"
-    && item.report?.mode === "dry-run" && item.report.artifacts?.every((artifact) => artifact.state === "UNCHANGED"));
+  const recognizable = checks.every((item) => item.report && item.report.mode === "dry-run"
+    && ["UNCHANGED", "WOULD_CREATE", "BLOCKED", "CONFLICT", "PARTIAL_FAILURE"].includes(item.report.status)
+    && Array.isArray(item.report.artifacts));
+  const configured = recognizable && checks.every((item) => item.exitCode === 0 && item.report.status === "UNCHANGED"
+    && item.report.artifacts.every((artifact) => artifact.state === "UNCHANGED"));
   return {
-    name: "assertledger", version, installed: "yes", configured: configured ? "yes" : "no",
+    name: "assertledger", version, installed: "yes", configured: !recognizable ? "unknown" : configured ? "yes" : "no",
     loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured,
   };
 }
@@ -542,7 +545,14 @@ async function diagnoseCompass(rt, root, hosts, version) {
     const result = await rt.exec([entry.executable, "host", "status", "--project-root", root, "--host", host, "--json"], root);
     checks.push({ command: `host-status:${host}`, exitCode: result.code, report: parseJsonOutput(result) });
   }
-  const healthy = checks.every((item, index) => {
+  const recognizable = checks.every((item, index) => {
+    const host = hosts[index];
+    return Array.isArray(item.report?.hosts)
+      && typeof item.report.hosts.find((entry) => entry.host === host)?.status === "string"
+      && typeof item.report.states?.[host]?.installed === "boolean"
+      && typeof item.report.states?.[host]?.configured === "boolean";
+  });
+  const healthy = recognizable && checks.every((item, index) => {
     const host = hosts[index];
     const status = item.report?.hosts?.find((entry) => entry.host === host)?.status;
     return item.exitCode === 0 && ["NO_OBSERVATIONS", "OBSERVING"].includes(status)
@@ -550,7 +560,7 @@ async function diagnoseCompass(rt, root, hosts, version) {
   });
   const observed = healthy && checks.every((item, index) => item.report.states[hosts[index]].observed === true) ? "yes" : healthy ? "no" : "unknown";
   return {
-    name: "latent-compass", version, installed: "yes", configured: healthy ? "yes" : "no",
+    name: "latent-compass", version, installed: "yes", configured: !recognizable ? "unknown" : healthy ? "yes" : "no",
     loaded: "unknown", approved: "unknown", observed, checks, ready: healthy,
   };
 }
@@ -610,7 +620,7 @@ export async function execute(options, rt = createRuntime()) {
     return report;
   }
   const selected = selectedComponents(options, state);
-  if (state?.inProgress && !options.refreshPending && (state.inProgress.command !== options.command
+  if (state?.inProgress && ((state.inProgress.command !== options.command && !options.refreshPending)
     || JSON.stringify(state.inProgress.hosts) !== JSON.stringify(hosts)
     || JSON.stringify(state.inProgress.selected) !== JSON.stringify(selected))) {
     return problem(report, "PENDING_PLAN_CONFLICT", `Complete the recorded ${state.inProgress.command} plan for ${state.inProgress.hosts.join(",")} and ${state.inProgress.selected.join(",")} before changing selectors`, 4);

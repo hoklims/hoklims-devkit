@@ -10,10 +10,10 @@ export function snapshot(path) {
     throw error;
   }
   if (root.isSymbolicLink()) return { link: readlinkSync(path) };
-  if (root.isFile()) return { file: Buffer.from(readFileSync(path)).toString("base64"), mode: root.mode & 0o777 };
+  if (root.isFile()) return { file: Buffer.from(readFileSync(path)).toString("base64"), mode: root.mode & 0o7777 };
   if (!root.isDirectory()) throw new Error(`Unexpected special file in smoke profile: ${path}`);
   return {
-    mode: root.mode & 0o777,
+    mode: root.mode & 0o7777,
     entries: readdirSync(path).sort().map((name) => [name, snapshot(join(path, name))]),
   };
 }

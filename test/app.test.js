@@ -235,6 +235,28 @@ describe("public CLI", () => {
     expect(report.ok).toBe(false);
   });
 
+  test("doctor preserves unknown for unavailable optional native diagnostics", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+    } };
+    const files = {
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      [executable]: "shim",
+    };
+    const rt = fakeRuntime({ state, files, tools: ["uv", "node"] });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => (argv[0] === "node" && argv.includes("setup"))
+      || (argv[0] === executable && argv.includes("status"))
+      ? { code: 5, stdout: "", stderr: "simulated native outage" } : nativeExec(argv, cwd);
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    expect(report.ok).toBe(false);
+    expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+    expect(report.components.find((item) => item.name === "latent-compass").configured).toBe("unknown");
+  });
+
   test("doctor rejects a rendered but unconfigured Latent Compass status", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
@@ -420,6 +442,19 @@ describe("public CLI", () => {
     expect(refreshed.components[0].version).toBe("0.3.6");
     expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.6");
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
+  });
+
+  test("refreshing a pending plan cannot silently drop its other host", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex", "claude"], versions: { semctx: "0.3.4" } },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("PENDING_PLAN_CONFLICT");
+    expect(rt.writes).toHaveLength(0);
   });
 
   test("an interrupted upgrade accepts its already installed pinned Compass version", async () => {
