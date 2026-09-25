@@ -7,7 +7,7 @@ function compassInstallReport(argv, { installed = false, configured = false } = 
   const host = argv[argv.indexOf("--host") + 1];
   const hostRoot = join(homedir(), `.${host}`);
   return {
-    schema_version: 1, operation: "install", version: "0.3.0", dry_run: argv.includes("--dry-run"),
+    schema_version: 1, operation: "install", version: "0.3.0", project_root: "/repo", dry_run: argv.includes("--dry-run"),
     hosts: [host], files: [
       { path: join(hostRoot, "latent-compass-shadow", "runtime", "latent-compass-shadow-hook.py"), action: "unchanged" },
       { path: join(hostRoot, host === "codex" ? "hooks.json" : "settings.json"), action: "unchanged" },
@@ -573,6 +573,18 @@ describe("public CLI", () => {
       plan.files[1].path = join(homedir(), ".claude", "settings.json");
       return { code: 0, stdout: JSON.stringify(plan), stderr: "" };
     };
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a Compass preview for another repository blocks every write", async () => {
+    const rt = fakeRuntime({ tools: ["uv"], uvInstalled: false });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === "uv" && argv.includes("run")
+      ? { code: 0, stdout: JSON.stringify({ ...compassInstallReport(argv), project_root: "/other" }), stderr: "" }
+      : nativeExec(argv, cwd);
     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
