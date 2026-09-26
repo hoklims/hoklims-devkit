@@ -82,14 +82,26 @@ function stateBoundaryProblem(report, error, statePath, operation, { allowRunLoc
   return stateIoProblem(report, error, statePath, operation, recoveryCommand);
 }
 
+export function quoteShellToken(value) {
+  const text = String(value);
+  if (/^[A-Za-z0-9_./:\\-]+$/u.test(text)) return text;
+  if (process.platform === "win32") return `'${text.replaceAll("'", "''")}'`;
+  return `'${text.replaceAll("'", `'"'"'`)}'`;
+}
+
 function stateRecoveryCommand(options, root, state, hosts) {
   const pending = state?.inProgress;
-  const command = pending?.command ?? options.command;
-  const selected = pending?.selected ?? ["semctx", ...options.with];
-  const selectedHosts = pending?.hosts ?? hosts;
+  const requestedSelected = ["semctx", ...options.with];
+  const pendingMatchesRequest = pending?.command === options.command
+    && JSON.stringify(pending.hosts) === JSON.stringify(hosts)
+    && JSON.stringify(pending.selected) === JSON.stringify(requestedSelected);
+  const refreshRequired = options.refreshPending && Boolean(pending) && !pendingMatchesRequest;
+  const command = pending && !refreshRequired ? pending.command : options.command;
+  const selected = pending && !refreshRequired ? pending.selected : requestedSelected;
+  const selectedHosts = pending && !refreshRequired ? pending.hosts : hosts;
   const host = selectedHosts.length === 2 ? "all" : selectedHosts[0];
   const optional = selected.filter((name) => name !== "semctx");
-  return `hoklims-devkit ${command} ${root} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}`;
+  return `hoklims-devkit ${command} ${quoteShellToken(root)} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}${refreshRequired ? " --refresh-pending" : ""}`;
 }
 
 function nativeResult(result, name, report) {
@@ -142,7 +154,11 @@ function packageManager(rt, root) {
   const manifestPath = join(root, "package.json");
   if (!rt.exists(manifestPath)) throw new Error("AssertLedger setup needs an existing package.json");
   const manifest = JSON.parse(rt.readText(manifestPath));
-  const declared = typeof manifest.packageManager === "string" ? manifest.packageManager.split("@")[0] : null;
+  const hasDeclaration = Object.hasOwn(manifest, "packageManager");
+  if (hasDeclaration && (typeof manifest.packageManager !== "string" || manifest.packageManager.length === 0)) {
+    throw new Error(`packageManager must be a string and non-empty when present; found ${String(manifest.packageManager)}`);
+  }
+  const declared = hasDeclaration ? manifest.packageManager.split("@")[0] : null;
   const locks = [
     ["npm", ["package-lock.json", "npm-shrinkwrap.json"]],
     ["pnpm", ["pnpm-lock.yaml"]],
@@ -833,7 +849,7 @@ export async function execute(options, rt = createRuntime()) {
       }
     }
     if (state?.inProgress) {
-      problem(report, "INCOMPLETE_OPERATION", `Re-run ${state.inProgress.command} with --host ${state.inProgress.hosts.length === 2 ? "all" : state.inProgress.hosts[0]}${state.inProgress.selected.length > 1 ? ` --with ${state.inProgress.selected.slice(1).join(",")}` : ""} to complete the recorded plan`, 3);
+      problem(report, "INCOMPLETE_OPERATION", `Run ${recoveryCommandFor(state)} to complete the recorded plan`, 3);
     }
     report.ok = report.conflicts.length === 0;
     return report;
@@ -842,7 +858,7 @@ export async function execute(options, rt = createRuntime()) {
   if (state?.inProgress && ((state.inProgress.command !== options.command && !options.refreshPending)
     || JSON.stringify(state.inProgress.hosts) !== JSON.stringify(hosts)
     || JSON.stringify(state.inProgress.selected) !== JSON.stringify(selected))) {
-    return problem(report, "PENDING_PLAN_CONFLICT", `Complete the recorded ${state.inProgress.command} plan for ${state.inProgress.hosts.join(",")} and ${state.inProgress.selected.join(",")} before changing selectors`, 4);
+    return problem(report, "PENDING_PLAN_CONFLICT", `Complete the recorded plan with ${recoveryCommandFor(state)} before changing selectors`, 4);
   }
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) return report;
@@ -868,12 +884,13 @@ export async function execute(options, rt = createRuntime()) {
     if (state?.inProgress && !options.refreshPending
       && report.conflicts.some((item) => item.code === "RELEASE_SKEW_OR_UNAVAILABLE")) {
       const optional = selected.filter((name) => name !== "semctx");
-      report.nextActions.push(`Review the new stable releases, then run hoklims-devkit upgrade ${root} --host ${hosts.length === 2 ? "all" : hosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`);
+      report.nextActions.push(`Review the new stable releases, then run hoklims-devkit upgrade ${quoteShellToken(root)} --host ${hosts.length === 2 ? "all" : hosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`);
     }
     report.ok = report.conflicts.length === 0;
     return report;
   }
-  const nextState = state ?? { schemaVersion: 1, projectRoot: root, components: {} };
+  const nextState = state ? structuredClone(state) : { schemaVersion: 1, projectRoot: root, components: {} };
+  let persistedState = state ? structuredClone(state) : null;
   let releaseLock;
   try {
     releaseLock = rt.acquireLock(statePath);
@@ -893,6 +910,7 @@ export async function execute(options, rt = createRuntime()) {
       return problem(report, "STATE_CHANGED", `Installation state changed during preflight. Re-run ${recoveryCommandFor(state)} to recompute the plan.`, 4);
     }
     let savedState = JSON.stringify(currentState);
+    persistedState = currentState ? structuredClone(currentState) : null;
     const saveStateIfChanged = () => {
       const next = JSON.stringify(nextState);
       if (next !== savedState) {
@@ -906,6 +924,7 @@ export async function execute(options, rt = createRuntime()) {
           });
         }
         savedState = next;
+        persistedState = structuredClone(nextState);
       }
     };
     if (options.command === "upgrade" || state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name]
@@ -941,7 +960,7 @@ export async function execute(options, rt = createRuntime()) {
         component.state = "partial";
         component.installed = "unknown";
         component.configured = "unknown";
-        problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error, re-run ${recoveryCommandFor(nextState)}.`, 5);
+        problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error, re-run ${recoveryCommandFor(persistedState)}.`, 5);
         break;
       }
     }
@@ -950,12 +969,12 @@ export async function execute(options, rt = createRuntime()) {
       saveStateIfChanged();
     }
   } catch (error) {
-    stateBoundaryProblem(report, error, statePath, "read or write", { recoveryCommand: recoveryCommandFor(nextState) });
+    stateBoundaryProblem(report, error, statePath, "read or write", { recoveryCommand: recoveryCommandFor(persistedState) });
   } finally {
     try {
       releaseLock?.();
     } catch (error) {
-      stateBoundaryProblem(report, error, statePath, "lock release", { recoveryCommand: recoveryCommandFor(nextState) });
+      stateBoundaryProblem(report, error, statePath, "lock release", { recoveryCommand: recoveryCommandFor(persistedState) });
     }
   }
   report.ok = report.conflicts.length === 0;

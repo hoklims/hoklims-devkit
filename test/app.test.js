@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { execute, parseArgs } from "../src/app.js";
+import { execute, parseArgs, quoteShellToken } from "../src/app.js";
 
 function compassInstallReport(argv, { installed = false, configured = false } = {}) {
   const host = argv[argv.indexOf("--host") + 1];
@@ -575,6 +575,34 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_CONFLICT");
     expect(rt.calls.some((args) => args.includes("install") && !args.includes("--dry-run"))).toBe(false);
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("malformed packageManager declarations block before state writes", async () => {
+    for (const packageManager of [7, null, false, { name: "npm" }]) {
+      const rt = fakeRuntime({
+        tools: ["node", "npm"],
+        files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager }) },
+      });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_CONFLICT");
+      expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/packageManager must be a string/u);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("valid packageManager declarations retain supported manager selection", async () => {
+    for (const packageManager of ["npm@10.9.8", "pnpm@10.0.0", "bun@1.4.2"]) {
+      const manager = packageManager.split("@")[0];
+      const rt = fakeRuntime({
+        tools: ["node", "npm", manager],
+        files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager }) },
+      });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.ok).toBe(true);
+      expect(report.plannedChanges.find((item) => item.component === "assertledger").packageManager).toBe(manager);
+      expect(rt.writes).toHaveLength(0);
+    }
   });
 
   test("AssertLedger preview cannot plan artifacts for another repository or client", async () => {
@@ -1267,10 +1295,10 @@ describe("public CLI", () => {
       projectRoot: "/repo",
       components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
       inProgress: {
-        command: "upgrade",
+        command: "setup",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.5", assertledger: "1.3.0" },
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
       },
     };
     const rt = fakeRuntime({
@@ -1283,13 +1311,37 @@ describe("public CLI", () => {
         [join("/repo", "package-lock.json")]: "{}",
       },
     });
-    rt.acquireLock = () => { throw Object.assign(new Error("state disk unavailable"), { code: "EIO" }); };
-    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    rt.writeState = () => { throw Object.assign(new Error("state disk unavailable"), { code: "EIO" }); };
+    const options = parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]);
+    const report = await execute(options, rt);
     const detail = report.conflicts.map((item) => item.detail).join("\n");
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
-    expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger --refresh-pending");
     expect(detail).not.toContain("hoklims-devkit setup");
     expect(rt.writes).toHaveLength(0);
+
+    const checkpoint = fakeRuntime({
+      state: structuredClone(state),
+      version: "0.3.5",
+      stable: "0.3.5",
+      tools: ["node", "npm"],
+      files: {
+        [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+      },
+    });
+    const persist = checkpoint.writeState;
+    let writes = 0;
+    checkpoint.writeState = (path, value) => {
+      writes += 1;
+      if (writes === 1) return persist(path, value);
+      throw Object.assign(new Error("checkpoint disk unavailable"), { code: "EIO" });
+    };
+    const laterFailure = await execute(options, checkpoint);
+    const laterDetail = laterFailure.conflicts.map((item) => item.detail).join("\n");
+    expect(laterFailure.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(laterDetail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(laterDetail).not.toContain("--refresh-pending");
   });
 
   test("doctor state I/O recovery repeats doctor", async () => {
@@ -1300,6 +1352,20 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
     expect(detail).toContain("hoklims-devkit doctor /repo --host codex");
     expect(detail).not.toContain("hoklims-devkit setup");
+  });
+
+  test("shell-quoted recovery paths round-trip as one inert token", () => {
+    const root = process.platform === "win32"
+      ? "C:\\repo with 'quote $() ` tick"
+      : "/tmp/repo with 'quote $() ` tick";
+    const quoted = quoteShellToken(root);
+    const command = process.platform === "win32"
+      ? ["powershell", "-NoProfile", "-Command", `[Console]::Out.Write(${quoted})`]
+      : ["bash", "-lc", `printf %s ${quoted}`];
+    const result = Bun.spawnSync({ cmd: command, stdout: "pipe", stderr: "pipe" });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe(root);
+    expect(result.stderr.toString()).toBe("");
   });
 
   test("typed state path conflicts stay STATE_CONFLICT at every locked boundary", async () => {
