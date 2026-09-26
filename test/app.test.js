@@ -322,6 +322,18 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("adding Codex to a Claude-only component persists canonical host order", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["claude"] } },
+    };
+    const rt = fakeRuntime({ state });
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(true);
+    expect(rt.writes.at(-1).components.semctx.hosts).toEqual(["codex", "claude"]);
+  });
+
   test("doctor keeps unobserved session and approval unknown", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
@@ -1235,6 +1247,64 @@ describe("public CLI", () => {
     expect([codex, claude].find((report) => !report.ok).conflicts[0].code).toMatch(/^(RUN_LOCKED|STATE_CHANGED)$/u);
     expect(runtimes.flatMap((rt) => rt.writes)).toHaveLength(3);
     expect(persisted.components.semctx.hosts).toHaveLength(1);
+  });
+
+  test("STATE_CHANGED recovery uses the latest locked reread plan", async () => {
+    const lockedState = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.5", assertledger: "1.3.0" },
+      },
+    };
+    const rt = fakeRuntime({ tools: ["node", "npm"], files: {
+      [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+    } });
+    let reads = 0;
+    let released = false;
+    rt.readState = () => ++reads === 1 ? null : structuredClone(lockedState);
+    rt.acquireLock = () => () => { released = true; };
+    const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(detail).not.toContain("hoklims-devkit setup");
+    expect(rt.writes).toHaveLength(0);
+    expect(released).toBe(true);
+  });
+
+  test("noncanonical persisted plan order is a state conflict", async () => {
+    for (const state of [
+      {
+        schemaVersion: 1, projectRoot: "/repo", components: {},
+        inProgress: {
+          command: "setup",
+          selected: ["semctx", "latent-compass", "assertledger"],
+          hosts: ["codex"],
+          versions: { semctx: "0.3.5", assertledger: "1.3.0", "latent-compass": "0.3.0" },
+        },
+      },
+      {
+        schemaVersion: 1, projectRoot: "/repo", components: {},
+        inProgress: {
+          command: "setup",
+          selected: ["semctx"],
+          hosts: ["claude", "codex"],
+          versions: { semctx: "0.3.5" },
+        },
+      },
+    ]) {
+      const rt = fakeRuntime({ state, tools: ["claude"] });
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "all"]), rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+      expect(rt.writes).toHaveLength(0);
+    }
   });
 
   test("state I/O failures are distinct from lock contention and release the owned lock", async () => {

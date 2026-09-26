@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRuntime } from "../src/runtime.js";
+import { createRuntime, validateState } from "../src/runtime.js";
 
 function danglingStateFixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-link-")));
@@ -255,4 +255,44 @@ test("runtime propagates an owned lock unlink failure", () => {
   const release = rt.acquireLock(statePath);
   expect(release).toThrow(/lock unlink denied/u);
   expect(existsSync(lockPath)).toBe(true);
+});
+
+test("state validation accepts only canonical component and host order", () => {
+  const canonical = {
+    schemaVersion: 1,
+    projectRoot: "/repo",
+    components: {
+      semctx: { version: "0.3.5", hosts: ["codex", "claude"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
+      "latent-compass": { version: "0.3.0", hosts: ["claude"] },
+    },
+    inProgress: {
+      command: "upgrade",
+      selected: ["semctx", "assertledger", "latent-compass"],
+      hosts: ["codex", "claude"],
+      versions: { semctx: "0.3.5", assertledger: "1.3.0", "latent-compass": "0.3.0" },
+    },
+  };
+  expect(validateState(canonical)).toBe(canonical);
+  expect(validateState(canonical).inProgress.versions).toEqual({
+    semctx: "0.3.5", assertledger: "1.3.0", "latent-compass": "0.3.0",
+  });
+
+  const wrongComponents = structuredClone(canonical);
+  wrongComponents.inProgress.selected = ["semctx", "latent-compass", "assertledger"];
+  expect(() => validateState(wrongComponents)).toThrow(/Invalid in-progress installation plan/u);
+
+  const wrongPlanHosts = structuredClone(canonical);
+  wrongPlanHosts.inProgress.hosts = ["claude", "codex"];
+  expect(() => validateState(wrongPlanHosts)).toThrow(/Invalid in-progress installation plan/u);
+
+  const wrongComponentHosts = structuredClone(canonical);
+  wrongComponentHosts.components.semctx.hosts = ["claude", "codex"];
+  expect(() => validateState(wrongComponentHosts)).toThrow(/Invalid devkit state component/u);
+
+  for (const selected of [["semctx", "assertledger", "assertledger"], ["semctx", "unknown"]]) {
+    const invalid = structuredClone(canonical);
+    invalid.inProgress.selected = selected;
+    expect(() => validateState(invalid)).toThrow(/Invalid in-progress installation plan/u);
+  }
 });

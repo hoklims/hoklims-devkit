@@ -3,8 +3,10 @@ import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readF
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-const COMPONENT_NAMES = new Set(["semctx", "assertledger", "latent-compass"]);
-const HOST_NAMES = new Set(["codex", "claude"]);
+const COMPONENT_ORDER = ["semctx", "assertledger", "latent-compass"];
+const HOST_ORDER = ["codex", "claude"];
+const COMPONENT_NAMES = new Set(COMPONENT_ORDER);
+const HOST_NAMES = new Set(HOST_ORDER);
 
 function lstatIfPresent(path, options) {
   try {
@@ -110,7 +112,8 @@ export function validateState(state) {
       || typeof component.version !== "string" || !/^\d+\.\d+\.\d+$/u.test(component.version)
       || !Array.isArray(component.hosts) || component.hosts.length === 0
       || component.hosts.some((host) => !HOST_NAMES.has(host))
-      || new Set(component.hosts).size !== component.hosts.length) {
+      || new Set(component.hosts).size !== component.hosts.length
+      || JSON.stringify(component.hosts) !== JSON.stringify(HOST_ORDER.filter((host) => component.hosts.includes(host)))) {
       throw new Error(`Invalid devkit state component: ${name}`);
     }
   }
@@ -121,9 +124,11 @@ export function validateState(state) {
       || !Array.isArray(plan.selected) || plan.selected[0] !== "semctx"
       || plan.selected.some((name) => !COMPONENT_NAMES.has(name))
       || new Set(plan.selected).size !== plan.selected.length
+      || JSON.stringify(plan.selected) !== JSON.stringify(COMPONENT_ORDER.filter((name) => plan.selected.includes(name)))
       || !Array.isArray(plan.hosts) || plan.hosts.length === 0
       || plan.hosts.some((host) => !HOST_NAMES.has(host))
       || new Set(plan.hosts).size !== plan.hosts.length
+      || JSON.stringify(plan.hosts) !== JSON.stringify(HOST_ORDER.filter((host) => plan.hosts.includes(host)))
       || !plan.versions || Array.isArray(plan.versions) || typeof plan.versions !== "object"
       || Object.keys(plan.versions).length !== plan.selected.length
       || plan.selected.some((name) => typeof plan.versions[name] !== "string"

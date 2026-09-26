@@ -904,7 +904,7 @@ export async function execute(options, rt = createRuntime()) {
     // Revalidate under the exclusive lock before applying or recording anything.
     const currentState = validateState(rt.readState(statePath));
     if (JSON.stringify(currentState) !== JSON.stringify(state)) {
-      return problem(report, "STATE_CHANGED", `Installation state changed during preflight. Re-run ${recoveryCommandFor(state)} to recompute the plan.`, 4);
+      return problem(report, "STATE_CHANGED", `Installation state changed during preflight. Re-run ${recoveryCommandFor(currentState)} to recompute the plan.`, 4);
     }
     let savedState = JSON.stringify(currentState);
     persistedState = currentState ? structuredClone(currentState) : null;
@@ -942,7 +942,8 @@ export async function execute(options, rt = createRuntime()) {
         if (name === "semctx") result = await applySemctx(rt, root, hosts, version, previews[name]);
         else if (name === "assertledger") result = await applyAssert(rt, root, hosts, version, previews[name]);
         else result = await applyCompass(rt, root, hosts, version, previews[name]);
-        nextState.components[name] = { version, hosts: [...new Set([...(nextState.components[name]?.hosts ?? []), ...hosts])] };
+        const componentHosts = new Set([...(nextState.components[name]?.hosts ?? []), ...hosts]);
+        nextState.components[name] = { version, hosts: HOSTS.filter((host) => componentHosts.has(host)) };
         saveStateIfChanged();
         component.state = result.ready === false ? "needs-attention" : "configured";
         component.installed = "yes";
