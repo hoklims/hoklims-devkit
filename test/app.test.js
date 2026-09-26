@@ -3755,4 +3755,48 @@ describe("public CLI", () => {
     expect(report.nextActions.join("\n")).toContain("hoklims-devkit setup /repo --host codex");
     expect(rt.writes).toHaveLength(2);
   });
+
+  test("Semctx incomplete recovery is retired when release I/O adds prerequisites", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const command = "hoklims-devkit setup /repo --host codex --with assertledger";
+    for (const releaseFailure of [false, true]) {
+      const rt = fakeRuntime({ state: structuredClone(state), setupReady: false, tools: ["node", "npm"], files: { ...files } });
+      const nativeWhich = rt.which;
+      let toolsMissing = false;
+      rt.which = (name) => toolsMissing && ["node", "npm"].includes(name) ? null : nativeWhich(name);
+      if (releaseFailure) {
+        rt.acquireLock = () => () => {
+          toolsMissing = true;
+          throw Object.assign(new Error("release EIO after incomplete setup"), { code: "EIO" });
+        };
+      }
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      const recovery = [...report.nextActions, ...report.conflicts.map((item) => item.detail)]
+        .filter((item) => item.includes("hoklims-devkit")).join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_NOT_READY");
+      if (releaseFailure) {
+        expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+        expect(recovery).toContain(`Restore Node, npm on PATH before running ${command}`);
+        expect(recovery).not.toContain(`Run ${command}`);
+        for (const detail of report.conflicts.map((item) => item.detail)) {
+          expect(detail).toContain(`Restore Node, npm on PATH before running ${command}`);
+        }
+      } else {
+        expect(recovery.toLowerCase()).toContain(`run ${command}`.toLowerCase());
+        expect(recovery).not.toContain("Restore Node");
+      }
+    }
+  });
 });

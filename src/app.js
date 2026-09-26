@@ -1130,6 +1130,8 @@ export async function execute(options, rt = createRuntime()) {
     if (segment) authoredRecoverySegments.add(segment);
     return segment;
   };
+  const renderRetryInstruction = (hosts, command, requirements) =>
+    rememberRecovery(retryInstruction(rt, hosts, command, requirements));
   const renderUnverifiedRecovery = (repair, command, retry) => {
     const guidance = unverifiedStateGuidance(repair, command, retry);
     rememberRecovery(guidance.action);
@@ -1191,7 +1193,7 @@ export async function execute(options, rt = createRuntime()) {
     } else {
       const current = stateRecoveryCommand(options, candidate.root, null, recoveryHosts, { useRequestedRefresh: options.refreshPending });
       guidance = renderUnverifiedRecovery(repair, current,
-        retryInstruction(rt, recoveryHosts, current, { components: selectedComponents(options, null) }));
+        renderRetryInstruction(recoveryHosts, current, { components: selectedComponents(options, null) }));
     }
     problem(report, code, detail, exitCode);
     return recordFailureRecovery(guidance.action, guidance.command);
@@ -1228,10 +1230,10 @@ export async function execute(options, rt = createRuntime()) {
   const recoveryCommandFor = (candidateState, recoveryOptions) => stateRecoveryCommand(options, root, candidateState, requestedRecoveryHosts, recoveryOptions);
   const recoveryActionFor = (candidateState, recoveryOptions) => {
     const plan = stateRecoveryPlan(options, candidateState, requestedRecoveryHosts, recoveryOptions);
-    return rememberRecovery(retryInstruction(rt, plan.hosts, recoveryCommandFor(candidateState, recoveryOptions), {
+    return renderRetryInstruction(plan.hosts, recoveryCommandFor(candidateState, recoveryOptions), {
       components: plan.selected,
       packageManager: recoveryPackageManager,
-    }));
+    });
   };
   const finalizeFailure = (candidateState = state, recoveryOptions) => {
     if (report.conflicts.length === 0) return report;
@@ -1246,7 +1248,7 @@ export async function execute(options, rt = createRuntime()) {
   } catch (error) {
     const current = recoveryCommandFor(null, { useRequestedRefresh: false });
     const guidance = renderUnverifiedRecovery("Resolve the initial state read conflict", current,
-      retryInstruction(rt, requestedRecoveryHosts, current, { components: selectedComponents(options, null) }));
+      renderRetryInstruction(requestedRecoveryHosts, current, { components: selectedComponents(options, null) }));
     stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: guidance.action });
     return recordFailureRecovery(guidance.action, guidance.command);
   }
@@ -1315,7 +1317,7 @@ export async function execute(options, rt = createRuntime()) {
         } else {
           const optional = selected.filter((item) => item !== "semctx");
           const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
-          const instruction = retryInstruction(rt, previous.hosts, retry, { components: selected, packageManager: recoveryPackageManager });
+          const instruction = renderRetryInstruction(previous.hosts, retry, { components: selected, packageManager: recoveryPackageManager });
           problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; ${instruction} to change its shared version safely`);
           if (!report.nextActions.includes(instruction)) report.nextActions.push(instruction);
         }
@@ -1343,7 +1345,7 @@ export async function execute(options, rt = createRuntime()) {
       const refreshHosts = HOSTS.filter((host) => hosts.includes(host)
         || selected.some((name) => state.components[name]?.hosts?.includes(host)));
       const refreshCommand = `hoklims-devkit upgrade ${quoteShellToken(root)} --host ${refreshHosts.length === 2 ? "all" : refreshHosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`;
-      const refreshInstruction = retryInstruction(rt, refreshHosts, refreshCommand, { components: selected, packageManager: recoveryPackageManager });
+      const refreshInstruction = renderRetryInstruction(refreshHosts, refreshCommand, { components: selected, packageManager: recoveryPackageManager });
       report.nextActions.push(`Review the new stable releases, then ${refreshInstruction[0].toLowerCase()}${refreshInstruction.slice(1)}`);
     }
     report.ok = report.conflicts.length === 0;
@@ -1374,7 +1376,7 @@ export async function execute(options, rt = createRuntime()) {
     const plan = stateRecoveryPlan(options, null, requestedRecoveryHosts, { useRequestedRefresh: false });
     const current = stateRecoveryCommand(options, root, null, requestedRecoveryHosts, { useRequestedRefresh: false });
     return renderUnverifiedRecovery("Resolve the locked state conflict", current,
-      retryInstruction(rt, plan.hosts, current, { components: plan.selected, packageManager: recoveryPackageManager }));
+      renderRetryInstruction(plan.hosts, current, { components: plan.selected, packageManager: recoveryPackageManager }));
   };
   const replaceFailureRecovery = (guidance) => {
     const stale = [...staleRecoveryFragments].filter(Boolean).sort((left, right) => right.length - left.length);
@@ -1481,7 +1483,7 @@ export async function execute(options, rt = createRuntime()) {
           report.nextActions.push(...result.next);
           if (result.ready === false) {
             const retry = recoveryCommandFor(recoveryState());
-            const retryAction = retryInstruction(rt, recoveryState()?.inProgress?.hosts ?? hosts, retry,
+            const retryAction = renderRetryInstruction(recoveryState()?.inProgress?.hosts ?? hosts, retry,
               { components: selected, packageManager: recoveryPackageManager });
             report.nextActions.push(retryAction);
             problem(report, "SEMCTX_NOT_READY", `Semctx installed but its workspace analysis is incomplete. ${retryAction}.`, 3);
