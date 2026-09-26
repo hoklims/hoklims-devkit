@@ -61,6 +61,13 @@ function inspectPlainProjectFile(path, options) {
   return stat;
 }
 
+function openVerifiedReadDescriptor(path) {
+  const flags = platform() === "win32"
+    ? constants.O_RDONLY
+    : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+  return openSync(path, flags);
+}
+
 function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}) {
   const initial = inspectFile(path, { bigint: true });
   if (!initial) return null;
@@ -69,7 +76,7 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}) {
   let descriptor;
   try {
     try {
-      descriptor = openSync(path, "r");
+      descriptor = openVerifiedReadDescriptor(path);
     } catch (error) {
       inspectFile(path, { bigint: true });
       throw error;
@@ -105,7 +112,12 @@ function captureManagedDestination(path) {
   const identity = { dev: initial.dev, ino: initial.ino };
   let descriptor;
   try {
-    descriptor = openSync(path, "r");
+    try {
+      descriptor = openVerifiedReadDescriptor(path);
+    } catch (error) {
+      inspectManagedFile(path, { bigint: true });
+      throw error;
+    }
     const opened = fstatSync(descriptor, { bigint: true });
     if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
       throw ownedFileConflict(path, "the destination changed while its identity was captured");
@@ -347,6 +359,11 @@ export function createRuntime({
           } catch (cleanupError) {
             throw cleanupError;
           }
+        }
+        if (error?.code === "EEXIST") {
+          const collision = inspectManagedFile(temp);
+          if (collision) throw ownedFileConflict(temp, "a foreign temporary file already exists");
+          throw unsafeManagedPath(temp, "changed during exclusive temporary-file creation");
         }
         throw error;
       } finally {

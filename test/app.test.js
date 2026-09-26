@@ -2037,6 +2037,34 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("a rejected refresh preflight resumes the saved plan without refresh", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {},
+      inProgress: {
+        command: "setup",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.6", tools: ["node", "npm"], files });
+    const report = await execute(parseArgs([
+      "upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending",
+    ]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
+    expect(report.nextActions).toContain("Complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger before refreshing releases");
+    expect(report.nextActions.join("\n")).not.toContain("--refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("an incomplete Semctx index is reported without claiming the profile is ready", async () => {
     const rt = fakeRuntime({ setupReady: false });
     const report = await execute(setupOptions(), rt);

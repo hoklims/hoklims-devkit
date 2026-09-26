@@ -882,6 +882,11 @@ export async function execute(options, rt = createRuntime()) {
   let state;
   const statePath = rt.statePath(root);
   const recoveryCommandFor = (candidateState, recoveryOptions) => stateRecoveryCommand(options, root, candidateState, hosts, recoveryOptions);
+  const addSavedPlanRefreshRecovery = () => {
+    if (!options.refreshPending || !state?.inProgress) return;
+    const action = `Complete the recorded plan with ${recoveryCommandFor(state)} before refreshing releases`;
+    if (!report.nextActions.includes(action)) report.nextActions.push(action);
+  };
   try {
     state = validateState(rt.readState(statePath));
     if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
@@ -924,7 +929,10 @@ export async function execute(options, rt = createRuntime()) {
     return problem(report, "PENDING_PLAN_CONFLICT", `Complete the recorded plan with ${recoveryCommandFor(state)} before changing selectors`, 4);
   }
   const versions = await resolveComponents(rt, options, state, root, report);
-  if (report.conflicts.length) return report;
+  if (report.conflicts.length) {
+    addSavedPlanRefreshRecovery();
+    return report;
+  }
   if (options.command === "upgrade") {
     for (const name of selected) {
       const previous = state?.components?.[name];
@@ -948,6 +956,7 @@ export async function execute(options, rt = createRuntime()) {
     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
   if (report.conflicts.length || options.dryRun) {
+    if (report.conflicts.length) addSavedPlanRefreshRecovery();
     if (state?.inProgress && !options.refreshPending
       && report.conflicts.some((item) => item.code === "RELEASE_SKEW_OR_UNAVAILABLE")) {
       const optional = selected.filter((name) => name !== "semctx");

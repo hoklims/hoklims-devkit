@@ -103,6 +103,40 @@ test("runtime binds state and lock reads to the inspected regular file", () => {
   }
 });
 
+test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
+  if (process.platform === "win32") return;
+  const runtimeUrl = new URL("../src/runtime.js", import.meta.url).href;
+  const script = `
+    import { lstatSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+    import { tmpdir } from "node:os";
+    import { join } from "node:path";
+    import { createRuntime } from ${JSON.stringify(runtimeUrl)};
+    const root = mkdtempSync(join(tmpdir(), "hoklims-devkit-fifo-read-"));
+    const statePath = join(root, "repository.json");
+    writeFileSync(statePath, JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }));
+    const rt = createRuntime({ beforeManagedReadOpen: (path) => {
+      unlinkSync(path);
+      const made = Bun.spawnSync({ cmd: ["mkfifo", path], stdout: "pipe", stderr: "pipe" });
+      if (made.exitCode !== 0) throw new Error(new TextDecoder().decode(made.stderr));
+    } });
+    let error;
+    try { rt.readState(statePath); } catch (caught) { error = caught; }
+    process.stdout.write(JSON.stringify({ code: error?.code ?? null, fifo: lstatSync(statePath).isFIFO() }));
+    rmSync(root, { recursive: true, force: true });
+  `;
+  const child = Bun.spawn({ cmd: [process.execPath, "--eval", script], stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 2_000);
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  clearTimeout(timer);
+  expect(timedOut).toBe(false);
+  expect(exitCode).toBe(0);
+  expect(stderr).toBe("");
+  expect(JSON.parse(stdout)).toEqual({ code: "STATE_CONFLICT", fifo: true });
+});
+
 test("runtime project-file inspection rejects linked and non-file entries", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-project-files-")));
   const regular = join(root, "package.json");
@@ -264,15 +298,31 @@ test("runtime preserves a state destination replaced during temporary write", ()
   }
 });
 
-test("runtime preserves a foreign temporary-file collision", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-collision-")));
-  const statePath = join(root, "repository.json");
-  const foreignTemp = `${statePath}.foreign.tmp`;
-  writeFileSync(foreignTemp, "foreign\n");
-  const rt = createRuntime({ randomId: () => "foreign" });
-  expect(() => rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} })).toThrow();
-  expect(readFileSync(foreignTemp, "utf8")).toBe("foreign\n");
-  expect(existsSync(statePath)).toBe(false);
+test("runtime preserves and classifies every foreign temporary-file collision", () => {
+  for (const kind of ["file", "directory", "symlink"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-state-${kind}-collision-`)));
+    const statePath = join(root, "repository.json");
+    const foreignTemp = `${statePath}.foreign.tmp`;
+    if (kind === "file") writeFileSync(foreignTemp, "foreign\n");
+    else if (kind === "directory") mkdirSync(foreignTemp);
+    else {
+      try {
+        symlinkSync(join(root, "foreign-target"), foreignTemp, process.platform === "win32" ? "file" : undefined);
+      } catch (error) {
+        if (error?.code === "EPERM") continue;
+        throw error;
+      }
+    }
+    let error;
+    try {
+      createRuntime({ randomId: () => "foreign" })
+        .writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} });
+    } catch (caught) { error = caught; }
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(lstatSync(foreignTemp)[kind === "file" ? "isFile" : kind === "directory" ? "isDirectory" : "isSymbolicLink"]()).toBe(true);
+    if (kind === "file") expect(readFileSync(foreignTemp, "utf8")).toBe("foreign\n");
+    expect(existsSync(statePath)).toBe(false);
+  }
 });
 
 test("runtime preserves a replacement temporary file when the writer fails", () => {
