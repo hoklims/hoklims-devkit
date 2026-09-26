@@ -151,7 +151,6 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
     pathPresent: (path) => Object.hasOwn(files, path),
     plainFilePresent: (path) => Object.hasOwn(files, path),
     directoryPresent: (path) => Object.keys(files).some((candidate) => candidate.startsWith(`${path}${process.platform === "win32" ? "\\" : "/"}`)),
-    isReadableFile: (path) => Object.hasOwn(files, path) && typeof files[path] === "string",
     readText: (path) => files[path],
     readPlainText: (path) => files[path],
     join: (...parts) => parts.join("/"),
@@ -1605,12 +1604,38 @@ describe("public CLI", () => {
       [cliPath]: "directory-placeholder",
     };
     const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
-    const isReadableFile = rt.isReadableFile;
-    rt.isReadableFile = (path) => path !== cliPath && isReadableFile(path);
+    const readPlainText = rt.readPlainText;
+    rt.readPlainText = (path) => {
+      if (path === cliPath) throw new Error("CLI path is a directory");
+      return readPlainText(path);
+    };
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
     expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
     expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("AssertLedger CLI metadata, open, and read I/O failures remain STATE_IO_ERROR", async () => {
+    const cliPath = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
+    for (const phase of ["metadata", "open", "read"]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [cliPath]: "cli",
+      };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const readPlainText = rt.readPlainText;
+      rt.readPlainText = (path) => {
+        if (path === cliPath) throw Object.assign(new Error(`CLI ${phase} EIO`), { code: "EIO" });
+        return readPlainText(path);
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+      expect(report.exitCode).toBe(5);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
   });
 
   test("a dangling AssertLedger CLI link blocks package mutation", async () => {

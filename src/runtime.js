@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -337,6 +337,7 @@ export function createRuntime({
   commitOwnedFile = renameSync,
   createManagedParent = mkdirSync,
   createOwnedFile = openSync,
+  inspectPlainFile = inspectPlainProjectFile,
   openReadDescriptor = openVerifiedReadDescriptor,
   currentPlatform = platform,
   randomId = randomUUID,
@@ -358,7 +359,11 @@ export function createRuntime({
         return;
       }
       if (destination.observation === "closed-existing") {
-        assertManagedDestination(path, destination.identity);
+        const currentText = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
+          beforeManagedReadOpen, readFileData, openReadDescriptor);
+        if (currentText === null || currentText !== expectedText) {
+          throw ownedFileConflict(path, "the validated state bytes changed after publication failed");
+        }
         return;
       }
       if (destination.descriptor === null) throw ownedFileConflict(path, "the validated destination descriptor is unavailable");
@@ -485,18 +490,9 @@ export function createRuntime({
     },
     exists: existsSync,
     pathPresent: (path) => Boolean(lstatIfPresent(path)),
-    plainFilePresent: (path) => Boolean(inspectPlainProjectFile(path)),
+    plainFilePresent: (path) => Boolean(inspectPlainFile(path)),
     directoryPresent: inspectProjectDirectory,
-    isReadableFile: (path) => {
-      try {
-        if (!statSync(path).isFile()) return false;
-        accessSync(path, constants.R_OK);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    readPlainText: (path) => readVerifiedFile(path, inspectPlainProjectFile, unsafeProjectPath, undefined, readFileData, openReadDescriptor),
+    readPlainText: (path) => readVerifiedFile(path, inspectPlainFile, unsafeProjectPath, undefined, readFileData, openReadDescriptor),
     realpath: realpathSync,
     statePath: (root) => {
       const base = currentPlatform() === "win32"

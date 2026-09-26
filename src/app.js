@@ -353,7 +353,8 @@ function localAssertEntry(rt, root) {
   const packagePresent = rt.pathPresent(packagePath);
   const cliPresent = rt.pathPresent(cliPath);
   if (!packagePresent || !cliPresent) throw new Error("The project-local AssertLedger package is incomplete");
-  if (!rt.isReadableFile(cliPath)) throw new Error("The project-local AssertLedger CLI is not a readable regular file");
+  const cli = rt.readPlainText(cliPath);
+  if (typeof cli !== "string") throw new Error("The project-local AssertLedger CLI is not a readable regular file");
   let version;
   try {
     version = JSON.parse(rt.readPlainText(packagePath))?.version;

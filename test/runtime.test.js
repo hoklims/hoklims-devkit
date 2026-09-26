@@ -583,29 +583,39 @@ test("runtime preserves a state destination replaced during temporary write", ()
   }
 });
 
-test("runtime keeps an existing destination authoritative after a Windows publication I/O failure", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-windows-publish-")));
-  const statePath = join(root, "repository.json");
-  const original = `${JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }, null, 2)}\n`;
-  writeFileSync(statePath, original);
-  let platformObserved = false;
-  const rt = createRuntime({
-    currentPlatform: () => { platformObserved = true; return "win32"; },
-    randomId: () => "candidate",
-    commitOwnedFile: () => { throw Object.assign(new Error("Windows rename failed"), { code: "EIO" }); },
-  });
-  const transaction = rt.openStateTransaction(statePath);
-  let writeError;
-  try {
-    transaction.write({ schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } });
-  } catch (error) {
-    writeError = error;
+test("runtime revalidates Windows destination bytes after publication fails", () => {
+  for (const changed of [false, true]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-windows-publish-")));
+    const statePath = join(root, "repository.json");
+    const original = `${JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }, null, 2)}\n`;
+    writeFileSync(statePath, original);
+    let platformObserved = false;
+    const rt = createRuntime({
+      currentPlatform: () => { platformObserved = true; return "win32"; },
+      randomId: () => "candidate",
+      commitOwnedFile: () => { throw Object.assign(new Error("Windows rename failed"), { code: "EIO" }); },
+      removeOwnedFile: (path) => {
+        if (changed) writeFileSync(statePath, "FOREIGN STATE\n");
+        unlinkSync(path);
+      },
+    });
+    const transaction = rt.openStateTransaction(statePath);
+    let writeError;
+    try {
+      transaction.write({ schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } });
+    } catch (error) {
+      writeError = error;
+    }
+    expect(platformObserved).toBe(true);
+    expect(writeError?.code).toBe("EIO");
+    if (changed) {
+      expect(() => transaction.close()).toThrow(/state bytes changed/u);
+      expect(readFileSync(statePath, "utf8")).toBe("FOREIGN STATE\n");
+    } else {
+      expect(() => transaction.close()).not.toThrow();
+      expect(readFileSync(statePath, "utf8")).toBe(original);
+    }
   }
-  expect(platformObserved).toBe(true);
-  expect(writeError?.code).toBe("EIO");
-  expect(readFileSync(statePath, "utf8")).toBe(original);
-  expect(() => transaction.close()).not.toThrow();
-  expect(readFileSync(statePath, "utf8")).toBe(original);
 });
 
 test("runtime preserves and classifies every foreign temporary-file collision", () => {
@@ -796,16 +806,28 @@ test("runtime distinguishes malformed lock records from contention", () => {
   expect(readFileSync(lockPath, "utf8")).toBe(valid);
 });
 
-test("runtime distinguishes readable regular files from directories", () => {
+test("runtime verifies plain project files and preserves metadata, open, and read I/O errors", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-readable-file-")));
   const filePath = join(root, "cli.js");
   const directoryPath = join(root, "cli-directory");
   writeFileSync(filePath, "#!/usr/bin/env node\n");
   mkdirSync(directoryPath);
   const rt = createRuntime();
-  expect(rt.isReadableFile(filePath)).toBe(true);
-  expect(rt.isReadableFile(directoryPath)).toBe(false);
-  expect(rt.isReadableFile(join(root, "missing.js"))).toBe(false);
+  expect(rt.readPlainText(filePath)).toBe("#!/usr/bin/env node\n");
+  expect(() => rt.readPlainText(directoryPath)).toThrow(/not a regular file/u);
+  expect(rt.readPlainText(join(root, "missing.js"))).toBeNull();
+
+  for (const phase of ["metadata", "open", "read"]) {
+    const io = Object.assign(new Error(`${phase} EIO`), { code: "EIO" });
+    const failing = createRuntime({
+      inspectPlainFile: phase === "metadata" ? () => { throw io; } : undefined,
+      openReadDescriptor: phase === "open" ? () => { throw io; } : undefined,
+      readFileData: phase === "read" ? () => { throw io; } : undefined,
+    });
+    let error;
+    try { failing.readPlainText(filePath); } catch (caught) { error = caught; }
+    expect(error?.code).toBe("EIO");
+  }
 
   const targetPath = join(root, "linked-target.js");
   const linkPath = join(root, "linked-cli.js");
@@ -816,9 +838,9 @@ test("runtime distinguishes readable regular files from directories", () => {
     throw error;
   }
   expect(rt.pathPresent(linkPath)).toBe(true);
-  expect(rt.isReadableFile(linkPath)).toBe(false);
+  expect(() => rt.readPlainText(linkPath)).toThrow(/symbolic link/u);
   writeFileSync(targetPath, "#!/usr/bin/env node\n");
-  expect(rt.isReadableFile(linkPath)).toBe(true);
+  expect(() => rt.readPlainText(linkPath)).toThrow(/symbolic link/u);
 });
 
 test("state validation accepts only canonical component and host order", () => {
