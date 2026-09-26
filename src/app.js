@@ -140,6 +140,12 @@ function failureGuidance(rt, options, root, hosts, candidateState, recoveryOptio
   return { action, command };
 }
 
+function validateBoundState(candidate, root) {
+  const state = validateState(candidate);
+  if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
+  return state;
+}
+
 function nativeResult(result, name, report) {
   const json = parseJsonOutput(result);
   if (!json) {
@@ -946,8 +952,7 @@ export async function execute(options, rt = createRuntime()) {
   const earlyState = (projectPath) => {
     try {
       const candidateRoot = rt.realpath(projectPath);
-      const candidateState = validateState(rt.readState(rt.statePath(candidateRoot)));
-      if (candidateState && candidateState.projectRoot !== candidateRoot) throw new Error("State belongs to another repository");
+      const candidateState = validateBoundState(rt.readState(rt.statePath(candidateRoot)), candidateRoot);
       return { root: candidateRoot, state: candidateState, verified: true };
     } catch {
       return { root: options.project, state: null, verified: false };
@@ -1008,8 +1013,7 @@ export async function execute(options, rt = createRuntime()) {
     return recordFailureRecovery(action, command);
   };
   try {
-    state = validateState(rt.readState(statePath));
-    if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
+    state = validateBoundState(rt.readState(statePath), root);
   } catch (error) {
     stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: recoveryActionFor(null) });
     return finalizeFailure(null);
@@ -1040,7 +1044,7 @@ export async function execute(options, rt = createRuntime()) {
       }
     }
     if (state?.inProgress) {
-      problem(report, "INCOMPLETE_OPERATION", `Run ${recoveryCommandFor(state)} to complete the recorded plan`, 3);
+      problem(report, "INCOMPLETE_OPERATION", `${recoveryActionFor(state)} to complete the recorded plan`, 3);
     }
     report.ok = report.conflicts.length === 0;
     return report.ok ? report : finalizeFailure(state);
@@ -1121,7 +1125,7 @@ export async function execute(options, rt = createRuntime()) {
     applyOperation: {
       // Preflights can take time. Another setup may have committed while they ran.
       // Revalidate under the exclusive lock before applying or recording anything.
-      const currentState = validateState(rt.readState(statePath));
+      const currentState = validateBoundState(rt.readState(statePath), root);
       persistedState = currentState ? structuredClone(currentState) : null;
       persistedStateObserved = true;
       if (JSON.stringify(currentState) !== JSON.stringify(state)) {

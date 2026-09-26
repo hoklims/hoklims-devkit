@@ -2132,6 +2132,38 @@ describe("public CLI", () => {
     expect(released).toBe(true);
   });
 
+  test("a locked foreign state never becomes recovery authority", async () => {
+    const foreignState = {
+      schemaVersion: 1, projectRoot: "/other", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    let reads = 0;
+    let released = false;
+    rt.readState = () => ++reads === 1 ? null : structuredClone(foreignState);
+    rt.acquireLock = () => () => { released = true; };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex");
+    expect(guidance).not.toContain("--host claude");
+    expect(rt.writes).toHaveLength(0);
+    expect(released).toBe(true);
+  });
+
+  test("doctor incomplete-plan detail and action include missing host repair", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.5", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", workspaceReady: true });
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    const detail = report.conflicts.find((item) => item.code === "INCOMPLETE_OPERATION")?.detail ?? "";
+    const expected = "Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude";
+    expect(detail).toContain(expected);
+    expect(report.nextActions.join("\n").toLowerCase()).toContain(expected.toLowerCase());
+  });
+
   test("noncanonical persisted plan order is a state conflict", async () => {
     for (const state of [
       {
