@@ -107,7 +107,7 @@ test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
   if (process.platform === "win32") return;
   const runtimeUrl = new URL("../src/runtime.js", import.meta.url).href;
   const script = `
-    import { lstatSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+    import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
     import { tmpdir } from "node:os";
     import { join } from "node:path";
     import { createRuntime } from ${JSON.stringify(runtimeUrl)};
@@ -121,7 +121,8 @@ test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
     } });
     let error;
     try { rt.readState(statePath); } catch (caught) { error = caught; }
-    process.stdout.write(JSON.stringify({ code: error?.code ?? null, fifo: lstatSync(statePath).isFIFO() }));
+    const fifo = Bun.spawnSync({ cmd: ["/usr/bin/test", "-p", statePath], stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+    process.stdout.write(JSON.stringify({ code: error?.code ?? null, fifo }));
     rmSync(root, { recursive: true, force: true });
   `;
   const child = Bun.spawn({ cmd: [process.execPath, "--eval", script], stdout: "pipe", stderr: "pipe", stdin: "ignore" });
