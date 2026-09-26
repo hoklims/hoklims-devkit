@@ -1342,16 +1342,18 @@ export async function execute(options, rt = createRuntime()) {
   };
   const unsafeSemctxGuidance = (unsafeVersion, candidateState = state) => {
     const pending = candidateState?.inProgress;
+    const pendingUnsafe = Boolean(pending?.versions.semctx && !safeSemctxVersion(pending.versions.semctx));
     const recoveryOptions = candidateState ? {
       ...options,
       command: "upgrade",
       with: [],
-      refreshPending: Boolean(pending),
+      refreshPending: pendingUnsafe,
     } : options;
     const baseHosts = pending?.hosts ?? requestedRecoveryHosts;
+    const phase = { useRequestedRefresh: pendingUnsafe };
+    const recoverySelection = stateRecoveryPlan(recoveryOptions, candidateState, baseHosts, phase).selected;
     const requiredHosts = HOSTS.filter((host) => baseHosts.includes(host)
-      || candidateState?.components?.semctx?.hosts?.includes(host));
-    const phase = { useRequestedRefresh: Boolean(pending) };
+      || recoverySelection.some((name) => candidateState?.components?.[name]?.hosts?.includes(host)));
     const plan = stateRecoveryPlan(recoveryOptions, candidateState, requiredHosts, phase);
     const command = stateRecoveryCommand(recoveryOptions, root, candidateState, requiredHosts, phase);
     const retry = renderRetryInstruction(plan.hosts, command, {
@@ -1380,8 +1382,10 @@ export async function execute(options, rt = createRuntime()) {
     || state?.inProgress?.selected.includes("assertledger")) {
     try { recoveryPackageManager = inspectAssertProject(rt, root).manager; } catch { /* The owning command reports the concrete admission error. */ }
   }
+  const doctorSemctxVersions = options.command === "doctor"
+    ? [state?.components?.semctx?.version, state?.inProgress?.versions.semctx].filter(Boolean) : [];
   const knownSemctxVersion = options.command === "doctor"
-    ? state?.inProgress?.versions.semctx ?? state?.components?.semctx?.version
+    ? doctorSemctxVersions.find((version) => !safeSemctxVersion(version))
     : !options.refreshPending ? state?.inProgress?.versions.semctx
       ?? (options.command === "setup" ? state?.components?.semctx?.version : null) : null;
   if (knownSemctxVersion && !safeSemctxVersion(knownSemctxVersion)) {

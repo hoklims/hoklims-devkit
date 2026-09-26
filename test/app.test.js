@@ -225,8 +225,8 @@ describe("public CLI", () => {
     };
     const recordedState = {
       schemaVersion: 1, projectRoot: "/repo", components: {
-        semctx: { version: "0.3.5", hosts: ["codex", "claude"] },
-        assertledger: { version: "1.2.0", hosts: ["codex"] },
+        semctx: { version: "0.3.5", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["claude"] },
       },
     };
     const recorded = fakeRuntime({ state: structuredClone(recordedState), tools: ["node", "npm"], files: { ...assertFiles } });
@@ -294,6 +294,31 @@ describe("public CLI", () => {
     expect(mixedDoctorReport.nextActions.join("\n")).not.toContain("hoklims-devkit setup");
     expect(mixedDoctor.calls.flat().some((argument) => unsafeVersions.includes(String(argument)))).toBe(false);
     expect(mixedDoctor.writes).toHaveLength(0);
+
+    const reverseMixedState = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.5", hosts: ["codex"] } },
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.7" } },
+    };
+    const reverseMixedDoctor = fakeRuntime({ state: structuredClone(reverseMixedState), version: "0.3.7", stable: "0.3.7" });
+    const reverseMixedReport = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), reverseMixedDoctor);
+    expect(reverseMixedReport.conflicts.map((item) => item.code)).toContain("SEMCTX_VERSION_UNSAFE");
+    expect(reverseMixedReport.components[0]).toEqual({
+      name: "semctx", version: "0.3.5", installed: "unknown", configured: "unknown",
+      loaded: "unknown", approved: "unknown", observed: "unknown",
+    });
+    expect(reverseMixedReport.nextActions.join("\n")).toContain("hoklims-devkit upgrade /repo --host codex");
+    expect(reverseMixedReport.nextActions.join("\n")).not.toContain("--refresh-pending");
+    expect(reverseMixedDoctor.calls.flat().some((argument) => unsafeVersions.includes(String(argument)))).toBe(false);
+    expect(reverseMixedDoctor.writes).toHaveLength(0);
+
+    const admittedReverse = fakeRuntime({ state: structuredClone(reverseMixedState), version: "0.3.7", stable: "0.3.7" });
+    const admittedReverseReport = await execute({
+      ...parseArgs(["upgrade", "/repo", "--host", "codex"]), dryRun: true,
+    }, admittedReverse);
+    expect(admittedReverseReport.ok).toBe(true);
+    expect(admittedReverse.calls.some((argv) => argv.includes("semctx@0.3.7"))).toBe(true);
+    expect(admittedReverse.calls.flat().some((argument) => unsafeVersions.includes(String(argument)))).toBe(false);
   });
 
   test("Semctx 0.3.6 reaches safe preflight for Codex Claude and all hosts", async () => {
