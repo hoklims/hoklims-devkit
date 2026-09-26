@@ -245,6 +245,19 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("a missing-Bun subdirectory lookup cannot prove repository state absence", async () => {
+    const rt = fakeRuntime();
+    rt.resolve = () => "/repo/subdir";
+    rt.realpath = (value) => value;
+    rt.which = (name) => name === "codex" ? "/bin/codex" : null;
+    const report = await execute(parseArgs(["upgrade", "/repo/subdir", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).toContain("If a saved plan is present, follow it");
+    expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit upgrade /repo/subdir --host codex --refresh-pending");
+    expect(rt.calls).toHaveLength(0);
+  });
+
   test("a discovered repository realpath failure keeps typed context and conditional recovery", async () => {
     const rt = fakeRuntime();
     rt.realpath = () => { throw Object.assign(new Error("repository access denied"), { code: "EACCES" }); };
@@ -2162,6 +2175,29 @@ describe("public CLI", () => {
     expect(guidance).not.toContain("--host claude");
     expect(rt.writes).toHaveLength(0);
     expect(released).toBe(true);
+  });
+
+  test("an invalid locked reread invalidates refresh and requires state revalidation", async () => {
+    const initialState = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    };
+    for (const locked of [{}, { schemaVersion: 1, projectRoot: "/other", components: {} }]) {
+      const rt = fakeRuntime({ state: initialState, version: "0.3.5", stable: "0.3.5" });
+      let reads = 0;
+      let released = false;
+      rt.readState = () => ++reads === 1 ? structuredClone(initialState) : structuredClone(locked);
+      rt.acquireLock = () => () => { released = true; };
+      const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+      expect(guidance).toContain("inspect and validate the saved Devkit state");
+      expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit upgrade /repo --host codex");
+      expect(guidance).not.toContain("hoklims-devkit setup");
+      expect(guidance).not.toContain("--refresh-pending");
+      expect(rt.writes).toHaveLength(0);
+      expect(released).toBe(true);
+    }
   });
 
   test("doctor incomplete-plan detail and action include missing host repair", async () => {

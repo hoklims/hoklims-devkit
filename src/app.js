@@ -146,6 +146,13 @@ function validateBoundState(candidate, root) {
   return state;
 }
 
+function unverifiedStateGuidance(repair, currentCommand) {
+  return {
+    command: currentCommand,
+    action: `${repair}, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, run ${currentCommand}`,
+  };
+}
+
 function nativeResult(result, name, report) {
   const json = parseJsonOutput(result);
   if (!json) {
@@ -953,7 +960,7 @@ export async function execute(options, rt = createRuntime()) {
     try {
       const candidateRoot = rt.realpath(projectPath);
       const candidateState = validateBoundState(rt.readState(rt.statePath(candidateRoot)), candidateRoot);
-      return { root: candidateRoot, state: candidateState, verified: true };
+      return { root: candidateRoot, state: candidateState, verified: candidateState !== null };
     } catch {
       return { root: projectPath, state: null, verified: false };
     }
@@ -972,10 +979,7 @@ export async function execute(options, rt = createRuntime()) {
       guidance = failureGuidance(rt, options, candidate.root, recoveryHosts, candidate.state, { repair });
     } else {
       const current = stateRecoveryCommand(options, candidate.root, null, recoveryHosts, { useRequestedRefresh: options.refreshPending });
-      guidance = {
-        command: current,
-        action: `${repair}, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, run ${current}`,
-      };
+      guidance = unverifiedStateGuidance(repair, current);
     }
     problem(report, code, detail, exitCode);
     return recordFailureRecovery(guidance.action, guidance.command);
@@ -1118,6 +1122,12 @@ export async function execute(options, rt = createRuntime()) {
   const recoveryState = () => persistedStateObserved ? persistedState : state;
   let refreshSavePending = options.refreshPending;
   let refreshPhaseInvalidated = false;
+  let lockedRereadStarted = false;
+  let lockedStateUnverified = false;
+  const lockedUnknownGuidance = () => {
+    const current = stateRecoveryCommand(options, root, null, requestedRecoveryHosts, { useRequestedRefresh: false });
+    return unverifiedStateGuidance("Resolve the locked state read conflict", current);
+  };
   let releaseLock;
   try {
     releaseLock = rt.acquireLock(statePath);
@@ -1132,17 +1142,22 @@ export async function execute(options, rt = createRuntime()) {
     applyOperation: {
       // Preflights can take time. Another setup may have committed while they ran.
       // Revalidate under the exclusive lock before applying or recording anything.
+      const admittedRefresh = refreshSavePending;
+      lockedRereadStarted = true;
+      refreshSavePending = false;
+      refreshPhaseInvalidated = true;
       const currentState = validateBoundState(rt.readState(statePath), root);
+      lockedRereadStarted = false;
       persistedState = currentState ? structuredClone(currentState) : null;
       persistedStateObserved = true;
       if (JSON.stringify(currentState) !== JSON.stringify(state)) {
-        refreshSavePending = false;
-        refreshPhaseInvalidated = true;
         const recoveryAction = recoveryActionFor(currentState);
         if (!report.nextActions.includes(recoveryAction)) report.nextActions.push(recoveryAction);
         problem(report, "STATE_CHANGED", `Installation state changed during preflight. ${recoveryAction} to recompute the plan.`, 4);
         break applyOperation;
       }
+      refreshSavePending = admittedRefresh;
+      refreshPhaseInvalidated = false;
       let savedState = JSON.stringify(currentState);
       const saveStateIfChanged = () => {
         const next = JSON.stringify(nextState);
@@ -1209,19 +1224,26 @@ export async function execute(options, rt = createRuntime()) {
       }
     }
   } catch (error) {
+    if (lockedRereadStarted && !persistedStateObserved) lockedStateUnverified = true;
     stateBoundaryProblem(report, error, statePath, "read or write", {
-      recoveryAction: recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
+      recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
+        : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
     });
   } finally {
     try {
       releaseLock?.();
     } catch (error) {
       stateBoundaryProblem(report, error, statePath, "lock release", {
-        recoveryAction: recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
+        recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
+          : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
       });
     }
   }
   report.ok = report.conflicts.length === 0;
+  if (!report.ok && lockedStateUnverified) {
+    const guidance = lockedUnknownGuidance();
+    return recordFailureRecovery(guidance.action, guidance.command);
+  }
   return report.ok ? report : finalizeFailure(recoveryState(), {
     useRequestedRefresh: refreshSavePending,
     refreshInvalidated: refreshPhaseInvalidated,
