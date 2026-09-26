@@ -225,7 +225,7 @@ function readDescriptorSnapshot(descriptor, { readWhole, readChunk = readSync, p
 
 function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync,
   openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null, encoding = "utf8", readDescriptorData = readSync,
-  expectedParents = null, inspectReadDescriptor = fstatSync) {
+  expectedParents = null, inspectReadDescriptor = fstatSync, closeDescriptor = closeSync) {
   const parents = inspectFile === inspectManagedFile ? expectedParents ?? assertSafeManagedParents(path) : null;
   const initial = inspectFile(path, { bigint: true }, parents);
   if (!initial) return null;
@@ -235,6 +235,7 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
   }
   beforeOpen(path);
   let descriptor;
+  let operationError = null;
   try {
     try {
       descriptor = openReadDescriptor(path);
@@ -263,8 +264,17 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
     }
     assertReadIdentity();
     return encoding === null ? content : content.toString(encoding);
+  } catch (error) {
+    operationError = error;
+    throw error;
   } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
+    if (descriptor !== undefined) {
+      try {
+        closeDescriptor(descriptor);
+      } catch (closeError) {
+        throw operationError ? preferredBoundaryError(operationError, closeError) : closeError;
+      }
+    }
   }
 }
 
@@ -279,10 +289,11 @@ function assertManagedDestination(path, expectedIdentity, parents = null) {
   }
 }
 
-function captureManagedDestination(path, beforeOpen, openReadDescriptor, inspectReadDescriptor = fstatSync) {
+function captureManagedDestination(path, beforeOpen, openReadDescriptor, inspectReadDescriptor = fstatSync,
+  closeDescriptor = closeSync) {
   const parents = assertSafeManagedParents(path);
   const initial = inspectManagedFile(path, { bigint: true }, parents);
-  if (!initial) return { descriptor: null, identity: null, observation: "absent", parents };
+  if (!initial) return { descriptor: null, identity: null, observation: "absent", parents, closeDescriptor };
   const identity = fileIdentity(initial, true);
   let descriptor;
   try {
@@ -302,12 +313,15 @@ function captureManagedDestination(path, beforeOpen, openReadDescriptor, inspect
       },
       () => assertManagedDestination(path, identity, parents),
     ]);
-    return { descriptor, identity, observation: "held", parents };
+    return { descriptor, identity, observation: "held", parents, closeDescriptor };
   } catch (error) {
+    let finalError = error;
     if (descriptor !== undefined) {
-      try { closeSync(descriptor); } catch { /* Preserve the capture error. */ }
+      try { closeDescriptor(descriptor); } catch (closeError) {
+        finalError = preferredBoundaryError(error, closeError);
+      }
     }
-    throw error;
+    throw finalError;
   }
 }
 
@@ -316,7 +330,7 @@ function closeManagedDestination(destination) {
   const descriptor = destination.descriptor;
   destination.descriptor = null;
   destination.observation = "closed";
-  closeSync(descriptor);
+  (destination.closeDescriptor ?? closeSync)(descriptor);
 }
 
 function decodeStateBytes(bytes) {
@@ -335,16 +349,24 @@ function parseStateBytes(bytes) {
 }
 
 function prepareManagedParent(path, createManagedParent) {
-  assertSafeManagedParents(path);
+  const initialParents = assertSafeManagedParents(path);
+  const existingParents = initialParents.filter((parent) => parent.identity !== null);
   try {
     createManagedParent(dirname(resolve(path)), { recursive: true });
   } catch (error) {
-    rethrowAfterValidation(error, () => assertSafeManagedParents(path));
+    rethrowAfterValidation(error, () => validateEveryBoundary([
+      () => assertManagedParentSnapshot(existingParents),
+      () => assertSafeManagedParents(path),
+    ]));
   }
-  assertSafeManagedParents(path);
+  validateEveryBoundary([
+    () => assertManagedParentSnapshot(existingParents),
+    () => assertSafeManagedParents(path),
+  ]);
 }
 
-function openOwnedManagedFile(path, createOwnedFile, flags = "wx", inspectOwnedDescriptor = fstatSync) {
+function openOwnedManagedFile(path, createOwnedFile, flags = "wx", inspectOwnedDescriptor = fstatSync,
+  closeDescriptor = closeSync) {
   const parents = assertSafeManagedParents(path);
   let descriptor;
   try {
@@ -365,13 +387,17 @@ function openOwnedManagedFile(path, createOwnedFile, flags = "wx", inspectOwnedD
         }
       });
     }
-    const owned = { path, descriptor, identity: { dev: stat.dev, ino: stat.ino }, parents, inspectOwnedDescriptor };
+    const owned = {
+      path, descriptor, identity: { dev: stat.dev, ino: stat.ino }, parents, inspectOwnedDescriptor, closeDescriptor,
+    };
     assertOwnedFile(owned);
-    owned.parents = assertSafeManagedParents(path);
     return owned;
   } catch (error) {
-    try { closeSync(descriptor); } catch { /* Preserve the identity error. */ }
-    throw error;
+    let finalError = error;
+    try { closeDescriptor(descriptor); } catch (closeError) {
+      finalError = preferredBoundaryError(error, closeError);
+    }
+    throw finalError;
   }
 }
 
@@ -379,7 +405,7 @@ function closeOwnedFile(owned) {
   if (owned.descriptor === null) return;
   const descriptor = owned.descriptor;
   owned.descriptor = null;
-  closeSync(descriptor);
+  (owned.closeDescriptor ?? closeSync)(descriptor);
 }
 
 function assertOwnedPath(owned) {
@@ -437,16 +463,18 @@ function cleanupOwnedFile(owned, removeOwnedFile) {
   try {
     closeOwnedFile(owned);
   } catch (error) {
-    if (!operationError) operationError = error;
+    operationError = operationError ? preferredBoundaryError(operationError, error) : error;
   }
   if (operationError) throw operationError;
 }
 
-function readLockRecord(path, beforeOpen, readFileData, openReadDescriptor, owned = null) {
+function readLockRecord(path, beforeOpen, readFileData, openReadDescriptor, owned = null,
+  inspectReadDescriptor = fstatSync, closeDescriptor = closeSync) {
   let record;
   try {
     record = JSON.parse(readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeOpen, readFileData,
-      openReadDescriptor, owned?.identity ?? null, "utf8", readSync, owned?.parents ?? null));
+      openReadDescriptor, owned?.identity ?? null, "utf8", readSync, owned?.parents ?? null,
+      inspectReadDescriptor, closeDescriptor));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
@@ -521,6 +549,7 @@ export function createRuntime({
   beforeLockOpen = () => {},
   beforeManagedReadOpen = () => {},
   beforeOwnedLockRead = () => {},
+  closeDescriptor = closeSync,
   commitOwnedFile = renameSync,
   createManagedParent = mkdirSync,
   createOwnedFile = openSync,
@@ -539,7 +568,8 @@ export function createRuntime({
 } = {}) {
   const openStateTransaction = (path) => {
     prepareManagedParent(path, createManagedParent);
-    const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor, inspectReadDescriptor);
+    const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor,
+      inspectReadDescriptor, closeDescriptor);
     let expectedBytes = null;
     let state = null;
     let closed = false;
@@ -551,7 +581,7 @@ export function createRuntime({
       if (destination.observation === "closed-existing") {
         const currentBytes = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
           beforeManagedReadOpen, readFileData, openReadDescriptor, destination.identity, null, readDescriptorData,
-          destination.parents, inspectReadDescriptor);
+          destination.parents, inspectReadDescriptor, closeDescriptor);
         if (currentBytes === null || !Buffer.from(currentBytes).equals(expectedBytes)) {
           throw ownedFileConflict(path, "the validated state bytes changed after publication failed");
         }
@@ -571,7 +601,11 @@ export function createRuntime({
         state = parseStateBytes(expectedBytes);
       }
     } catch (error) {
-      closeManagedDestination(destination);
+      try {
+        closeManagedDestination(destination);
+      } catch (closeError) {
+        throw preferredBoundaryError(error, closeError);
+      }
       throw error;
     }
     return {
@@ -585,7 +619,7 @@ export function createRuntime({
         const temp = `${path}.${randomId()}.tmp`;
         let owned = null;
         try {
-          owned = openOwnedManagedFile(temp, createOwnedFile, "wx+", inspectOwnedDescriptor);
+          owned = openOwnedManagedFile(temp, createOwnedFile, "wx+", inspectOwnedDescriptor, closeDescriptor);
           writeStateData(owned.descriptor, data);
           assertOwnedFile(owned);
           assertExpectedDestination();
@@ -637,7 +671,7 @@ export function createRuntime({
         try {
           closeManagedDestination(destination);
         } catch (error) {
-          if (!operationError) operationError = error;
+          operationError = operationError ? preferredBoundaryError(operationError, error) : error;
         }
         if (operationError) throw operationError;
       },
@@ -684,7 +718,8 @@ export function createRuntime({
     plainFilePresent: (path) => Boolean(inspectPlainFile(path)),
     directoryPresent: inspectProjectDirectory,
     readPlainText: (path) => readVerifiedFile(path, inspectPlainFile, unsafeProjectPath,
-      undefined, readFileData, openReadDescriptor, null, "utf8", readDescriptorData),
+      undefined, readFileData, openReadDescriptor, null, "utf8", readDescriptorData, null,
+      inspectReadDescriptor, closeDescriptor),
     realpath: realpathSync,
     statePath: (root) => {
       const base = currentPlatform() === "win32"
@@ -696,7 +731,7 @@ export function createRuntime({
     readState: (path) => {
       const bytes = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
         beforeManagedReadOpen, readFileData, openReadDescriptor, null, null, readDescriptorData, null,
-        inspectReadDescriptor);
+        inspectReadDescriptor, closeDescriptor);
       if (bytes === null) return null;
       return parseStateBytes(Buffer.from(bytes));
     },
@@ -704,11 +739,13 @@ export function createRuntime({
     writeState: (path, state) => {
       validateState(state);
       prepareManagedParent(path, createManagedParent);
-      const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor, inspectReadDescriptor);
+      const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor,
+        inspectReadDescriptor, closeDescriptor);
       const temp = `${path}.${randomId()}.tmp`;
       let owned = null;
+      let operationError = null;
       try {
-        owned = openOwnedManagedFile(temp, createOwnedFile, "wx", inspectOwnedDescriptor);
+        owned = openOwnedManagedFile(temp, createOwnedFile, "wx", inspectOwnedDescriptor, closeDescriptor);
         writeStateData(owned.descriptor, `${JSON.stringify(state, null, 2)}\n`);
         assertOwnedFile(owned);
         assertManagedDestination(path, destination.identity, destination.parents);
@@ -719,21 +756,30 @@ export function createRuntime({
         owned = null;
         closeOwnedFile(committed);
       } catch (error) {
-        if (owned) {
-          try {
-            cleanupOwnedFile(owned, removeOwnedFile);
-          } catch (cleanupError) {
-            throw preferredBoundaryError(error, cleanupError);
+        try {
+          if (owned) {
+            try {
+              cleanupOwnedFile(owned, removeOwnedFile);
+            } catch (cleanupError) {
+              throw preferredBoundaryError(error, cleanupError);
+            }
           }
+          if (error?.code === "EEXIST") {
+            const collision = inspectManagedFile(temp);
+            if (collision) throw ownedFileConflict(temp, "a foreign temporary file already exists");
+            throw unsafeManagedPath(temp, "changed during exclusive temporary-file creation");
+          }
+          throw error;
+        } catch (finalError) {
+          operationError = finalError;
+          throw finalError;
         }
-        if (error?.code === "EEXIST") {
-          const collision = inspectManagedFile(temp);
-          if (collision) throw ownedFileConflict(temp, "a foreign temporary file already exists");
-          throw unsafeManagedPath(temp, "changed during exclusive temporary-file creation");
-        }
-        throw error;
       } finally {
-        closeManagedDestination(destination);
+        try {
+          closeManagedDestination(destination);
+        } catch (closeError) {
+          throw operationError ? preferredBoundaryError(operationError, closeError) : closeError;
+        }
       }
     },
     acquireLock: (statePath) => {
@@ -742,14 +788,15 @@ export function createRuntime({
       const lockPath = `${statePath}.lock`;
       const existingLock = inspectManagedFile(lockPath);
       if (existingLock) {
-        readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor);
+        readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor, null,
+          inspectReadDescriptor, closeDescriptor);
         throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
       }
       const token = randomId();
       let owned = null;
       try {
         beforeLockOpen(lockPath);
-        owned = openOwnedManagedFile(lockPath, createOwnedFile, "wx", inspectOwnedDescriptor);
+        owned = openOwnedManagedFile(lockPath, createOwnedFile, "wx", inspectOwnedDescriptor, closeDescriptor);
         writeLockData(owned.descriptor, JSON.stringify({ token, pid: process.pid }));
         assertOwnedFile(owned);
       } catch (error) {
@@ -763,7 +810,8 @@ export function createRuntime({
         if (error?.code === "EEXIST") {
           const racedLock = inspectManagedFile(lockPath);
           if (racedLock) {
-            readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor);
+            readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor, null,
+              inspectReadDescriptor, closeDescriptor);
             throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
           }
           throw unsafeManagedPath(lockPath, "changed during exclusive lock creation");
@@ -774,7 +822,8 @@ export function createRuntime({
         try {
           assertOwnedFile(owned);
           beforeOwnedLockRead(lockPath);
-          const current = readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor, owned);
+          const current = readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor, owned,
+            inspectReadDescriptor, closeDescriptor);
           if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
           cleanupOwnedFile(owned, removeOwnedFile);
         } catch (error) {
@@ -784,7 +833,9 @@ export function createRuntime({
               releaseError = preferredBoundaryError(error, ownershipError);
             }
           }
-          try { closeOwnedFile(owned); } catch { /* Preserve the release error. */ }
+          try { closeOwnedFile(owned); } catch (closeError) {
+            releaseError = preferredBoundaryError(releaseError, closeError);
+          }
           throw releaseError;
         }
       };

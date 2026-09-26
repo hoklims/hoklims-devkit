@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readSync, realpathSync, readdirSync, renameSync, rmdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readSync, realpathSync, readdirSync, renameSync, rmdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntime, validateState } from "../src/runtime.js";
@@ -693,6 +693,50 @@ test("runtime classifies a regular ancestor raced during parent creation as a co
   expect(deniedError?.code).toBe("EACCES");
 });
 
+test("runtime retains existing parent identity across managed directory creation", () => {
+  const state = { schemaVersion: 1, projectRoot: "/repo", components: {} };
+  for (const mode of ["changed", "changed-EIO", "unchanged-EIO"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-parent-create-${mode}-`)));
+    const profile = join(root, "profile");
+    const originalProfile = join(root, "profile-original");
+    const statePath = join(profile, "hoklims-devkit", "repository.json");
+    mkdirSync(profile);
+    writeFileSync(join(profile, "original-marker.txt"), "ORIGINAL-PARENT\n");
+    const mkdirError = Object.assign(new Error("managed mkdir EIO"), { code: "EIO" });
+    const rt = createRuntime({
+      createManagedParent: (target, options) => {
+        if (mode.startsWith("changed")) {
+          renameSync(profile, originalProfile);
+          mkdirSync(profile);
+          writeFileSync(join(profile, "foreign-marker.txt"), "FOREIGN-PARENT\n");
+        }
+        if (mode.endsWith("EIO")) throw mkdirError;
+        return mkdirSync(target, options);
+      },
+    });
+    let error;
+    try { rt.openStateTransaction(statePath); } catch (caught) { error = caught; }
+    if (mode.startsWith("changed")) {
+      expect(error?.code).toBe("STATE_CONFLICT");
+      expect(readFileSync(join(originalProfile, "original-marker.txt"), "utf8")).toBe("ORIGINAL-PARENT\n");
+      expect(readFileSync(join(profile, "foreign-marker.txt"), "utf8")).toBe("FOREIGN-PARENT\n");
+      expect(existsSync(statePath)).toBe(false);
+    } else {
+      expect(error).toBe(mkdirError);
+      expect(readFileSync(join(profile, "original-marker.txt"), "utf8")).toBe("ORIGINAL-PARENT\n");
+    }
+  }
+
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-parent-create-positive-")));
+  const statePath = join(root, "new", "profile", "hoklims-devkit", "repository.json");
+  const rt = createRuntime();
+  const transaction = rt.openStateTransaction(statePath);
+  expect(transaction.state).toBeNull();
+  transaction.write(state);
+  transaction.close();
+  expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual(state);
+});
+
 test("runtime rechecks parents after every exclusive owned-file open failure", () => {
   for (const kind of ["temporary", "lock"]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-${kind}-exclusive-parent-`)));
@@ -871,6 +915,56 @@ test("runtime revalidates lock ownership when descriptor reads fail", () => {
     expect(error?.code).toBe("STATE_CONFLICT");
     expect(readFileSync(lockPath, "utf8")).toBe("FOREIGN-BEFORE-READ\n");
     expect(existsSync(originalPath)).toBe(true);
+  }
+});
+
+test("runtime preserves primary boundary errors when descriptor close also fails", () => {
+  const state = { schemaVersion: 1, projectRoot: "/repo", components: {} };
+  for (const mode of ["unchanged-read", "changed-read", "capture", "write-state", "owned-release"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-close-precedence-${mode}-`)));
+    const statePath = join(root, "repository.json");
+    const originalPath = join(root, "original.json");
+    const readError = Object.assign(new Error(`${mode} read EIO`), { code: "EIO" });
+    const closeError = Object.assign(new Error(`${mode} close EIO`), { code: "EIO" });
+    const primaryConflict = Object.assign(new Error(`${mode} primary conflict`), { code: "STATE_CONFLICT" });
+    if (mode !== "owned-release") writeFileSync(statePath, JSON.stringify(state));
+    const replace = (target) => {
+      renameSync(target, originalPath);
+      writeFileSync(target, `FOREIGN-${mode}\n`);
+    };
+    const rt = createRuntime({
+      beforeManagedReadOpen: (target) => { if (mode === "capture") replace(target); },
+      closeDescriptor: (descriptor) => { closeSync(descriptor); throw closeError; },
+      readFileData: (descriptor, encoding, target) => {
+        if (mode === "unchanged-read") throw readError;
+        if (["changed-read", "owned-release"].includes(mode)) {
+          replace(target);
+          throw readError;
+        }
+        return readFileSync(descriptor, encoding);
+      },
+      writeStateData: mode === "write-state" ? () => { throw primaryConflict; } : writeFileSync,
+    });
+    let error;
+    try {
+      if (mode === "capture") rt.openStateTransaction(statePath);
+      else if (mode === "write-state") rt.writeState(statePath, state);
+      else if (mode === "owned-release") rt.acquireLock(statePath)();
+      else rt.readState(statePath);
+    } catch (caught) { error = caught; }
+    if (mode === "unchanged-read") {
+      expect(error).toBe(readError);
+      expect(readFileSync(statePath, "utf8")).toBe(JSON.stringify(state));
+    } else if (mode === "write-state") {
+      expect(error).toBe(primaryConflict);
+      expect(readFileSync(statePath, "utf8")).toBe(JSON.stringify(state));
+    } else {
+      expect(error?.code).toBe("STATE_CONFLICT");
+      const target = mode === "owned-release" ? `${statePath}.lock` : statePath;
+      expect(readFileSync(target, "utf8")).toBe(`FOREIGN-${mode}\n`);
+    }
+    expect(error?.suppressedErrors).toContain(closeError);
+    if (["changed-read", "owned-release"].includes(mode)) expect(error?.suppressedErrors).toContain(readError);
   }
 });
 
