@@ -1006,6 +1006,58 @@ describe("public CLI", () => {
     expect(constraintMismatch.writes).toHaveLength(0);
   });
 
+  test("malformed dependency groups block AssertLedger before every native preview", async () => {
+    for (const manifest of [[], "invalid", 7, false, null]) {
+      const rt = fakeRuntime({
+        tools: ["node", "npm"],
+        files: { [join("/repo", "package.json")]: JSON.stringify(manifest) },
+      });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("package.json must contain an object");
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+    const groups = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+    for (const group of groups) {
+      for (const value of [[], "invalid", 7, false, null]) {
+        const rt = fakeRuntime({
+          tools: ["node", "npm"],
+          files: { [join("/repo", "package.json")]: JSON.stringify({ packageManager: "npm@10.9.8", [group]: value }) },
+        });
+        const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+        expect(report.ok).toBe(false);
+        expect(report.conflicts.map((item) => item.detail).join("\n")).toContain(`${group} must be an object`);
+        expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec"))).toBe(false);
+        expect(rt.writes).toHaveLength(0);
+      }
+    }
+  });
+
+  test("missing and empty dependency groups remain valid AssertLedger manifests", async () => {
+    for (const manifest of [
+      { name: "fixture", packageManager: "npm@10.9.8" },
+      {
+        packageManager: "npm@10.9.8",
+        dependencies: {}, devDependencies: {}, optionalDependencies: {}, peerDependencies: {},
+      },
+      {
+        packageManager: "npm@10.9.8",
+        dependencies: { assertledger: "1.2.0" },
+        devDependencies: {}, optionalDependencies: {}, peerDependencies: {},
+      },
+    ]) {
+      const rt = fakeRuntime({
+        tools: ["node", "npm"],
+        files: { [join("/repo", "package.json")]: JSON.stringify(manifest) },
+      });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.ok).toBe(true);
+      expect(report.components.find((item) => item.name === "assertledger")?.version).toBe("1.2.0");
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
   test("AssertLedger declarations in optional and peer dependency groups are validated", async () => {
     const matching = fakeRuntime({
       tools: ["node", "npm"],

@@ -126,9 +126,9 @@ function compareVersions(left, right) {
   return 0;
 }
 
-function existingAssertVersion(rt, root) {
-  const manifestPath = join(root, "package.json");
-  if (!rt.plainFilePresent(manifestPath)) return null;
+const DEPENDENCY_GROUPS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+
+function readPackageManifest(rt, manifestPath) {
   let manifest;
   try {
     manifest = JSON.parse(rt.readPlainText(manifestPath));
@@ -136,7 +136,24 @@ function existingAssertVersion(rt, root) {
     if (!(error instanceof SyntaxError)) throw error;
     throw new Error("package.json is invalid JSON");
   }
-  const declarations = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]
+  if (!manifest || Array.isArray(manifest) || typeof manifest !== "object") {
+    throw new Error("package.json must contain an object");
+  }
+  for (const group of DEPENDENCY_GROUPS) {
+    if (!Object.hasOwn(manifest, group)) continue;
+    const value = manifest[group];
+    if (!value || Array.isArray(value) || typeof value !== "object") {
+      throw new Error(`${group} must be an object`);
+    }
+  }
+  return manifest;
+}
+
+function existingAssertVersion(rt, root) {
+  const manifestPath = join(root, "package.json");
+  if (!rt.plainFilePresent(manifestPath)) return null;
+  const manifest = readPackageManifest(rt, manifestPath);
+  const declarations = DEPENDENCY_GROUPS
     .filter((group) => manifest?.[group]?.assertledger !== undefined)
     .map((group) => ({ group, version: manifest[group].assertledger }));
   if (declarations.length === 0) return null;
@@ -169,7 +186,7 @@ function validExactPackageManagerVersion(value) {
 function packageManager(rt, root) {
   const manifestPath = join(root, "package.json");
   if (!rt.plainFilePresent(manifestPath)) throw new Error("AssertLedger setup needs an existing package.json");
-  const manifest = JSON.parse(rt.readPlainText(manifestPath));
+  const manifest = readPackageManifest(rt, manifestPath);
   const hasDeclaration = Object.hasOwn(manifest, "packageManager");
   if (hasDeclaration && typeof manifest.packageManager !== "string") {
     throw new Error(`packageManager must be a string in manager@version form; found ${String(manifest.packageManager)}`);
