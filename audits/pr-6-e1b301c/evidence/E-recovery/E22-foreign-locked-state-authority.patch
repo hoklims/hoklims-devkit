@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..5816dcb 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1449,7 +1449,7 @@ export async function execute(options, rt = createRuntime()) {
+       refreshSavePending = false;
+       refreshPhaseInvalidated = true;
+       stateTransaction = typeof rt.openStateTransaction === "function" ? rt.openStateTransaction(statePath) : null;
+-      const currentState = validateBoundState(stateTransaction ? stateTransaction.state : rt.readState(statePath), root);
++      const currentState = validateState(stateTransaction ? stateTransaction.state : rt.readState(statePath));
+       lockedRereadStarted = false;
+       persistedState = currentState ? structuredClone(currentState) : null;
+       persistedStateObserved = true;

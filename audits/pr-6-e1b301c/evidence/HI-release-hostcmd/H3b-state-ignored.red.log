@@ -1,0 +1,38 @@
+$ rtk proxy bun test test/release-report.test.js
+bun test v1.4.2 (744846f84)
+
+test/release-report.test.js:
+45 |       expectedFlags: plannedFlags,
+46 |     })).toBe(false);
+47 |     expect(validComponentReport(report([{ ...components()[0], state: "planned" }]), projectRoot, ["semctx"], {
+48 |       expectedState: null,
+49 |       expectedFlags: configuredFlags,
+50 |     })).toBe(false);
+             ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/release-report.test.js:50:9)
+(fail) validComponentReport > rejects planned reports without five flags and doctor reports with a plan state [0.31ms]
+69 |   test("rejects false readiness flags, wrong state, and wrong project root", () => {
+70 |     const exact = components();
+71 |     expect(validComponentReport(report(exact), projectRoot, expectedNames, configuredOptions)).toBe(true);
+72 |     expect(validComponentReport(report([{ ...exact[0], installed: "no" }, ...exact.slice(1)]), projectRoot, expectedNames, configuredOptions)).toBe(false);
+73 |     expect(validComponentReport(report([{ ...exact[0], configured: "unknown" }, ...exact.slice(1)]), projectRoot, expectedNames, configuredOptions)).toBe(false);
+74 |     expect(validComponentReport(report(exact), projectRoot, expectedNames, { expectedState: "planned", expectedFlags: configuredFlags })).toBe(false);
+                                                                                                                                               ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/release-report.test.js:74:139)
+(fail) validComponentReport > rejects false readiness flags, wrong state, and wrong project root [0.20ms]
+
+ 5 pass
+ 2 fail
+ 37 expect() calls
+Ran 7 tests across 1 file. [6.00ms]
+EXIT=1

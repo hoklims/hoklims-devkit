@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..cb7afe6 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -555,7 +555,7 @@ function validSemctxInstallReport(rt, parsed, root, hosts, version, selection, d
+   }
+   const statuses = dryRun ? ["planned"] : ["installed", "updated", "migrated"];
+   return optionalNativeRootMatches(rt, parsed, root) && workspaceRootMatches
+-    && parsed?.ok === true && parsed.version === version && parsed.dryRun === dryRun
++    && parsed?.ok === true && parsed.dryRun === dryRun
+     && parsed.selection === selection
+     && HOSTS.every((host) => parsed.hosts?.[host]?.requested === hosts.includes(host))
+     && hosts.every((host) => parsed.hosts[host].detected === true && statuses.includes(parsed.hosts[host].status));

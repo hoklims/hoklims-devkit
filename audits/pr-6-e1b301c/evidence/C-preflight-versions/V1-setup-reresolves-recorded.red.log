@@ -1,0 +1,44 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'setup keeps the recorded version; only upgrade resolves latest|adding a host cannot silently move an older Semctx install'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+511 |   test("setup keeps the recorded version; only upgrade resolves latest", async () => {
+512 |     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+513 |     const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5", state });
+514 |     const report = await execute({ ...setupOptions(), dryRun: true }, rt);
+515 |     expect(report.ok).toBe(true);
+516 |     expect(report.components[0].version).toBe("0.3.4");
+                                               ^
+error: expect(received).toBe(expected)
+
+Expected: "0.3.4"
+Received: "0.3.5"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:516:42)
+(fail) public CLI > setup keeps the recorded version; only upgrade resolves latest [9.61ms]
+596 | 
+597 |   test("adding a host cannot silently move an older Semctx install to current stable", async () => {
+598 |     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+599 |     const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5", state, tools: ["claude"] });
+600 |     const report = await execute(parseArgs(["setup", "/repo", "--host", "all"]), rt);
+601 |     expect(report.ok).toBe(false);
+                            ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:601:23)
+(fail) public CLI > adding a host cannot silently move an older Semctx install to current stable [2.08ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 3 expect() calls
+Ran 2 tests across 1 file. [60.00ms]
+EXIT CODE: 1

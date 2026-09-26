@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'an invalid locked reread invalidates refresh and requires state revalidation'
+bun test v1.4.2 (744846f84)
+
+ 1 pass
+ 158 filtered out
+ 0 fail
+ 14 expect() calls
+Ran 1 test across 1 file. [54.00ms]
+EXIT=0

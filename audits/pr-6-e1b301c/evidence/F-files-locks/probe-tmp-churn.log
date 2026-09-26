@@ -1,0 +1,2 @@
+quiet: {"ok":2000}
+with-/tmp-churn: {"ok":1986,"STATE_CONFLICT":14,"sample":"Unsafe managed state path: /tmp changed during managed parent inspection. Replace linked state paths with real"}

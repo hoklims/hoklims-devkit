@@ -1,0 +1,14 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..e00d1b9 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1101,8 +1101,7 @@ async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [ve
+   const exitCodes = { UNCHANGED: 0, WOULD_CREATE: 0, BLOCKED: 3, CONFLICT: 4 };
+   const admitted = checks.every((item, index) => {
+     const client = hosts[index] === "claude" ? "claude-code" : "codex";
+-    return item.exitCode === exitCodes[item.report?.status]
+-      && validAssertSetupReport(rt, item.report, root, client, "dry-run",
++    return validAssertSetupReport(rt, item.report, root, client, "dry-run",
+         Object.keys(exitCodes), ["UNCHANGED", "WOULD_CREATE", "CONFLICT"], {
+           initStatuses: ["UNCHANGED", "WOULD_CREATE", "BLOCKED", "CONFLICT"],
+           connectionStatuses: ["EMITTED", "CONFLICT"],

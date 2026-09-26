@@ -1,0 +1,30 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'conflicting AssertLedger declarations block every write'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 1 +
+ 1 file changed, 1 insertion(+)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+2137 |         dependencies: { assertledger: "1.3.0" },
+2138 |         devDependencies: { assertledger: "1.2.0" },
+2139 |       }) },
+2140 |     });
+2141 |     const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+2142 |     expect(report.ok).toBe(false);
+                             ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:2142:23)
+(fail) public CLI > conflicting AssertLedger declarations block every write [12.47ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [66.00ms]
+EXIT CODE: 1

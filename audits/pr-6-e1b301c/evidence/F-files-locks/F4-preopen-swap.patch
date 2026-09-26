@@ -1,0 +1,14 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..6070a94 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -193,8 +193,7 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
+     try {
+       descriptor = openReadDescriptor(path);
+     } catch (error) {
+-      rethrowAfterValidation(error, () => assertInspectedIdentity(path, inspectFile, conflict, identity,
+-        "the pathname changed before it could be opened for reading", parents, compareParentMetadata));
++      throw error;
+     }
+     const assertReadIdentity = () => {
+       const opened = fstatSync(descriptor, { bigint: true });

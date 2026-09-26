@@ -1,0 +1,39 @@
+$ rtk proxy bun test test/app.test.js -t 'a rejected shared-host refresh resumes the saved plan without refresh|a rejected refresh preflight resumes the saved plan without refresh'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+2904 |     const blocked = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]), rt);
+2905 |     const guidance = [blocked.conflicts.map((item) => item.detail).join("\n"), blocked.nextActions.join("\n")].join("\n");
+2906 |     expect(blocked.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+2907 |     expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+2908 |     expect(guidance).not.toContain("--host all");
+2909 |     expect(guidance).not.toContain("--refresh-pending");
+                                ^
+error: expect(received).not.toContain(expected)
+
+Expected to not contain: "--refresh-pending"
+Received: "semctx also serves codex,claude; the requested refresh cannot replace the recorded plan without every registered host. Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit upgrade /repo --host codex --with assertledger --refresh-pending.\nResolve the reported native conflict, then complete the recorded plan with hoklims-devkit upgrade /repo --host codex --with assertledger --refresh-pending"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:2909:26)
+(fail) public CLI > a rejected shared-host refresh resumes the saved plan without refresh [8.06ms]
+4036 |     const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.6", tools: ["node", "npm"], files });
+4037 |     const report = await execute(parseArgs([
+4038 |       "upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending",
+4039 |     ]), rt);
+4040 |     expect(report.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
+4041 |     expect(report.nextActions).toContain("Complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger before refreshing releases");
+                                      ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger before refreshing releases"
+Received: [ "Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit upgrade /repo --host codex --with assertledger --refresh-pending" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:4041:32)
+(fail) public CLI > a rejected refresh preflight resumes the saved plan without refresh [5.94ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 6 expect() calls
+Ran 2 tests across 1 file. [50.00ms]
+EXIT=1

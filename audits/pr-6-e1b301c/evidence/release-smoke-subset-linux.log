@@ -1,0 +1,18 @@
+cmd: bun pkgverify/smoke-subset.js (see smoke-subset.diff) consumer=/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/pkgverify/consumer tarball sha256=f3a777791e5f4a03b92e2b821e12d1e003270c647ab14f8dddceb6bfd8139823
+sam. 26 sept. 2026 18:27:03 UTC
+PASS codex semctx dry-run
+PASS codex semctx+assertledger dry-run
+18 |   };
+19 | }
+20 | 
+21 | export function assertSnapshotUnchanged(paths, before, label) {
+22 |   if (JSON.stringify(paths.map(snapshot)) !== JSON.stringify(before)) {
+23 |     throw new Error(`${label} dry-run modified the host profile or devkit state`);
+                   ^
+error: claude dry-run modified the host profile or devkit state
+      at assertSnapshotUnchanged (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/devkit-audit/scripts/profile-snapshot.js:23:15)
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/pkgverify/smoke-subset.js:97:5
+
+Bun v1.4.2 (Linux x64)
+exit=1
+sam. 26 sept. 2026 18:27:16 UTC

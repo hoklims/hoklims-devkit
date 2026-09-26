@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..487e098 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -965,7 +965,7 @@ async function applySemctx(rt, root, hosts, version, preflight) {
+   if (![0, 2, 3].includes(status.code) || !semctxStatusHasHosts(rt, delivery, root, hosts)
+     || hosts.some((host) => delivery.hosts[host].installed.version !== version
+       || delivery.hosts[host].marketplace?.matchesSemctx !== true
+-      || delivery.hosts[host].installed.contentMatchesSnapshot !== true)) {
++      )) {
+     throw new Error("Semctx installation could not be verified from plugin-status; inspect the native report before retrying");
+   }
+   return {

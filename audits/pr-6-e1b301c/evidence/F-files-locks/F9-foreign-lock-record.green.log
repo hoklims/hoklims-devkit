@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/runtime.test.js -t 'distinguishes malformed lock records from contention'
+bun test v1.4.2 (744846f84)
+
+ 1 pass
+ 37 filtered out
+ 0 fail
+ 10 expect() calls
+Ran 1 test across 1 file. [29.00ms]
+EXIT=0

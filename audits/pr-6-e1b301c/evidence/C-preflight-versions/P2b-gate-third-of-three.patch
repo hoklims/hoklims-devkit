@@ -1,0 +1,29 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..f8f942f 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1350,19 +1350,23 @@ export async function execute(options, rt = createRuntime()) {
+     if (report.conflicts.length) return rejectedPendingRefresh ? finalizeFailure(state) : report;
+   }
+   const previews = {};
++  let ignoredConflicts = 0;
++  let position = 0;
+   for (const name of COMPONENTS.filter((item) => versions[item])) {
+     const previous = state?.components?.[name];
+     const version = versions[name];
++    const conflictsBefore = report.conflicts.length;
+     if (name === "semctx") previews[name] = await preflightSemctx(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.semctx);
+     else if (name === "assertledger") {
+       previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.assertledger);
+     }
+     else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions["latent-compass"]);
++    if (position++ === 2) ignoredConflicts += report.conflicts.length - conflictsBefore;
+     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
+   }
+   recoveryPackageManager = previews.assertledger?.manager ?? recoveryPackageManager;
+   if (previews.assertledger) recordMissingAssertLedgerTools(report, rt, previews.assertledger.manager);
+-  if (report.conflicts.length || options.dryRun) {
++  if (report.conflicts.length - ignoredConflicts || options.dryRun) {
+     if (report.conflicts.length) finalizeFailure(state);
+     if (state?.inProgress && !options.refreshPending
+       && report.conflicts.some((item) => item.code === "RELEASE_SKEW_OR_UNAVAILABLE")) {

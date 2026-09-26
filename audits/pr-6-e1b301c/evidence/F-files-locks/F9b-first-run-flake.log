@@ -1,0 +1,6 @@
+$ rtk proxy bun test
+(fail) public CLI > state checkpoints stay bound to the locked filesystem observation [26.54ms]
+ 212 pass
+ 1 fail
+Ran 213 tests across 5 files. [773.00ms]
+EXIT=1

@@ -1,0 +1,21 @@
+cmd: bun scripts/release-smoke.js /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/pkgverify/consumer
+bun 1.4.2 node v24.21.0 git version 2.43.0 codex codex-cli 0.147.0 claude 2.1.229 (Claude Code) uv 0.12.5 (x86_64-unknown-linux-gnu)
+sam. 26 sept. 2026 18:26:37 UTC
+PASS codex semctx dry-run
+67 | 
+68 | function run(argv, cwd = consumer, runEnv = env) {
+69 |   const result = Bun.spawnSync({ cmd: argv, cwd, env: runEnv, stdout: "pipe", stderr: "pipe" });
+70 |   const stdout = result.stdout.toString();
+71 |   const stderr = result.stderr.toString();
+72 |   if (result.exitCode !== 0) throw new Error(`${argv.join(" ")} exited ${result.exitCode}\n${stdout}\n${stderr}`);
+                                            ^
+error: bunx --no-install hoklims-devkit setup /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/pkgverify/tmp/hoklims-devkit-release-smoke-yTb7FB/repository --host codex --with assertledger,latent-compass --dry-run --json exited 3
+{"schemaVersion":1,"command":"setup","ok":false,"projectRoot":"/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/pkgverify/tmp/hoklims-devkit-release-smoke-yTb7FB/repository","hosts":["codex"],"components":[],"plannedChanges":[],"conflicts":[{"code":"VERSION_UNAVAILABLE","detail":"latent-compass: https://pypi.org/pypi/latent-compass/json: HTTP 404. Resolve the reported conflict, then run hoklims-devkit setup /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/pkgverify/tmp/hoklims-devkit-release-smoke-yTb7FB/repository --host codex --with assertledger,latent-compass."}],"nextActions":["Resolve the reported conflict, then run hoklims-devkit setup /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/pkgverify/tmp/hoklims-devkit-release-smoke-yTb7FB/repository --host codex --with assertledger,latent-compass"],"exitCode":3}
+
+
+      at run (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/devkit-audit/scripts/release-smoke.js:72:40)
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/devkit-audit/scripts/release-smoke.js:87:20
+
+Bun v1.4.2 (Linux x64)
+exit=1
+sam. 26 sept. 2026 18:26:42 UTC

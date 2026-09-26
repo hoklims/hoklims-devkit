@@ -1,0 +1,12 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..edbcec0 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -86,7 +86,6 @@ function recordMissingAssertLedgerTools(report, rt, packageManager) {
+ function retryGuidance(rt, hosts, command, { components = [], packageManager } = {}) {
+   const missing = [];
+   const add = (label) => { if (!missing.includes(label)) missing.push(label); };
+-  if (!rt.which("bun") || !rt.which("bunx")) add("Bun");
+   for (const host of hosts) if (!rt.which(host)) add(`${host} CLI`);
+   if (components.includes("assertledger")) {
+     for (const name of missingAssertLedgerTools(rt, packageManager)) add(name === "node" ? "Node" : name);

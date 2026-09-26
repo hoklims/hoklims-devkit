@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..52ba5fe 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -758,7 +758,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
+     if (installed.version !== null && statusJson.hosts[host].marketplace?.matchesSemctx !== true) {
+       problem(report, "SEMCTX_MARKETPLACE_CONFLICT", `${host} Semctx plugin is not from the expected marketplace`);
+     }
+-    if (installed.version !== null && installed.contentMatchesSnapshot === false) {
++    if (installed.version !== null && installed.contentMatchesSnapshot === false && command !== "upgrade") {
+       // Never replace modified plugin bytes, including during an explicit upgrade.
+       problem(report, "SEMCTX_CONTENT_DRIFT", `${host} Semctx plugin bytes differ from its marketplace snapshot; inspect or repair with the native installer`);
+     } else if (installed.version !== null && installed.contentMatchesSnapshot !== true) {

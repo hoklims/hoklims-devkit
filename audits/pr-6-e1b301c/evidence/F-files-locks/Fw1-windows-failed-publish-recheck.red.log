@@ -1,0 +1,27 @@
+$ rtk proxy bun test test/runtime.test.js -t 'Windows destination bytes'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+790 |       writeError = error;
+791 |     }
+792 |     expect(platformObserved).toBe(true);
+793 |     expect(writeError?.code).toBe("EIO");
+794 |     if (scenario !== "unchanged") {
+795 |       expect(() => transaction.close()).toThrow(/validated|state bytes changed/u);
+                                              ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /validated|state bytes changed/u
+
+Received function did not throw
+Received value: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:795:41)
+(fail) runtime revalidates Windows destination bytes after publication fails [5.12ms]
+
+ 0 pass
+ 37 filtered out
+ 1 fail
+ 7 expect() calls
+Ran 1 test across 1 file. [49.00ms]
+EXIT=1

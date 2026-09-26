@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/runtime.test.js -t 'final checkpoint read|staged ownership after the final destination read'
+bun test v1.4.2 (744846f84)
+
+ 2 pass
+ 36 filtered out
+ 0 fail
+ 20 expect() calls
+Ran 2 tests across 1 file. [57.00ms]
+EXIT=0

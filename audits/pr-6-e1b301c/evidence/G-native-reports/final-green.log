@@ -1,0 +1,9 @@
+$ rtk proxy bun test
+# HEAD e1b301c88cf4e592d076b7ddf302db23f11e67ba tree 1c1279f7e314dba64811a7f26184f8e5e4de2a16 status=''
+bun test v1.4.2 (744846f84)
+
+ 213 pass
+ 0 fail
+ 1699 expect() calls
+Ran 213 tests across 5 files. [712.00ms]
+EXIT=0

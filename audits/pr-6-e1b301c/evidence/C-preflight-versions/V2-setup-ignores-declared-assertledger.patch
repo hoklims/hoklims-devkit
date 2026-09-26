@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..bef153e 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -714,7 +714,7 @@ async function resolveComponents(rt, options, state, root, report) {
+         } catch (error) {
+           throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
+         }
+-        versions[name] = existing ?? await resolveVersion(rt, name);
++        versions[name] = await resolveVersion(rt, name);
+       } else if (name === "latent-compass" && options.command === "setup" && rt.which("uv")) {
+         const listed = await rt.exec(["uv", "tool", "list"], root);
+         if (listed.code !== 0) throw new Error(`uv tool list: ${shortError(listed)}`);

@@ -1,0 +1,26 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..cdecc48 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1350,6 +1350,7 @@ export async function execute(options, rt = createRuntime()) {
+     if (report.conflicts.length) return rejectedPendingRefresh ? finalizeFailure(state) : report;
+   }
+   const previews = {};
++  let gatedConflicts = 0;
+   for (const name of COMPONENTS.filter((item) => versions[item])) {
+     const previous = state?.components?.[name];
+     const version = versions[name];
+@@ -1358,11 +1359,12 @@ export async function execute(options, rt = createRuntime()) {
+       previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.assertledger);
+     }
+     else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions["latent-compass"]);
++    if (name === "semctx") gatedConflicts = report.conflicts.length;
+     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
+   }
+   recoveryPackageManager = previews.assertledger?.manager ?? recoveryPackageManager;
+   if (previews.assertledger) recordMissingAssertLedgerTools(report, rt, previews.assertledger.manager);
+-  if (report.conflicts.length || options.dryRun) {
++  if (gatedConflicts || options.dryRun) {
+     if (report.conflicts.length) finalizeFailure(state);
+     if (state?.inProgress && !options.refreshPending
+       && report.conflicts.some((item) => item.code === "RELEASE_SKEW_OR_UNAVAILABLE")) {

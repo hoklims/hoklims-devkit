@@ -1,0 +1,12 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..5788b3f 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -381,7 +381,6 @@ function readLockRecord(path, beforeOpen, readFileData, openReadDescriptor, owne
+   if (!record || Array.isArray(record) || typeof record !== "object"
+     || Object.keys(record).length !== 2 || !Object.hasOwn(record, "token") || !Object.hasOwn(record, "pid")
+     || typeof record.token !== "string"
+-    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(record.token)
+     || !Number.isInteger(record.pid) || record.pid <= 0) {
+     throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
+   }

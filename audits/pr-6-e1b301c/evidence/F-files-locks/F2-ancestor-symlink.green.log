@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/runtime.test.js -t 'linked state directory|dangling state-directory links and linked profile roots'
+bun test v1.4.2 (744846f84)
+
+ 2 pass
+ 36 filtered out
+ 0 fail
+ 25 expect() calls
+Ran 2 tests across 1 file. [23.00ms]
+EXIT=0

@@ -1,0 +1,14 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..2c3acad 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -36,8 +36,7 @@ function ownedFileConflict(path, detail) {
+ }
+ 
+ function preferredBoundaryError(primary, secondary) {
+-  if (primary?.code === "STATE_CONFLICT" || secondary?.code !== "STATE_CONFLICT") return primary;
+-  return secondary;
++  return secondary ?? primary;
+ }
+ 
+ function rethrowAfterValidation(error, validate) {

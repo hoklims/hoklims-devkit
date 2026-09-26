@@ -1,0 +1,29 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/ -t '.'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+719 |       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+720 |     };
+721 |     const rt = fakeRuntime({ state, tools: ["node", "npm"], files, assertStatus: "CONFLICT" });
+722 |     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+723 |     const assertledger = report.components.find((item) => item.name === "assertledger");
+724 |     expect(assertledger.configured).toBe("no");
+                                          ^
+error: expect(received).toBe(expected)
+
+Expected: "no"
+Received: "yes"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:724:37)
+(fail) public CLI > doctor rejects AssertLedger native CONFLICT even when JSON is returned [1.79ms]
+
+ 212 pass
+ 1 fail
+ 1697 expect() calls
+Ran 213 tests across 5 files. [733.00ms]
+EXIT CODE: 1

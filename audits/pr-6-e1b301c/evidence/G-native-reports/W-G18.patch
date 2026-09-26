@@ -1,0 +1,13 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..4b7c312 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -593,7 +593,7 @@ export function createRuntime({
+           return { code: timedOut ? 5 : code, stdout, stderr: timedOut ? `Timed out after ${timeoutMs} ms` : stderr };
+         } catch (error) {
+           try { child.kill(); } catch { /* Preserve the stream failure. */ }
+-          return { code: 5, stdout: "", stderr: `Native process output read failed: ${String(error?.message ?? error)}` };
++          throw error;
+         }
+       } finally {
+         clearTimeout(timer);

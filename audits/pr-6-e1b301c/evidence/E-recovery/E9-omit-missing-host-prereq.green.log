@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'shared-host upgrade advice names a missing host prerequisite before its retry|late authority loss retains missing-host repair before its conditional retry'
+bun test v1.4.2 (744846f84)
+
+ 2 pass
+ 157 filtered out
+ 0 fail
+ 14 expect() calls
+Ran 2 tests across 1 file. [47.00ms]
+EXIT=0

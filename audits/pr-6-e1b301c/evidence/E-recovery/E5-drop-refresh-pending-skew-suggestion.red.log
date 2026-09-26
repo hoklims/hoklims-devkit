@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'an interrupted upgrade can explicitly refresh a now-unavailable stable plan'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+2588 |     };
+2589 |     const rt = fakeRuntime({ state, version: "0.3.6", stable: "0.3.6" });
+2590 |     const pinned = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+2591 |     expect(pinned.ok).toBe(false);
+2592 |     expect(pinned.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
+2593 |     expect(pinned.nextActions.join(" ")).toContain("--refresh-pending");
+                                                ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "--refresh-pending"
+Received: "Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit upgrade /repo --host codex Review the new stable releases, then run hoklims-devkit upgrade /repo --host codex"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:2593:42)
+(fail) public CLI > an interrupted upgrade can explicitly refresh a now-unavailable stable plan [10.07ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [40.00ms]
+EXIT=1

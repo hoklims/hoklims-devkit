@@ -1,0 +1,11 @@
+$ rtk proxy bun test   (full suite, H4a applied)
+bun test v1.4.2 (744846f84)
+
+ 213 pass
+ 0 fail
+ 1699 expect() calls
+Ran 213 tests across 5 files. [678.00ms]
+
+real	0m0,877s
+user	0m0,728s
+sys	0m0,165s

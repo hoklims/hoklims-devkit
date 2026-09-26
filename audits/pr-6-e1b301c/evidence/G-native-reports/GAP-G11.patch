@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..371189d 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -522,7 +522,7 @@ function validCompassInstallReport(rt, parsed, root, host, version, dryRun) {
+     }).length === 1)
+     && parsed.files.every((file) => typeof file?.path === "string" && file.path.length > 0
+       && ["create", "update", "unchanged"].includes(file.action))
+-    && Array.isArray(parsed.conflicts) && parsed.conflicts.length === 0
++    && true
+     && typeof parsed.states?.[host]?.installed === "boolean"
+     && typeof parsed.states?.[host]?.configured === "boolean";
+ }

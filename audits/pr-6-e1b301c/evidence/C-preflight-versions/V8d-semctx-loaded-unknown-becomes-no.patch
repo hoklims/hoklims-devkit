@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..8bb3014 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1066,7 +1066,7 @@ async function diagnoseSemctx(rt, root, hosts, version) {
+       && item?.installed?.contentMatchesSnapshot === true;
+   });
+   const workspaceStatus = semctxWorkspaceStatus(rt, root, checks[1], checks[2], version);
+-  const loaded = validDelivery && hosts.every((host) => delivery.hosts[host]?.session?.status === "observed") ? "yes" : "unknown";
++  const loaded = validDelivery && hosts.every((host) => delivery.hosts[host]?.session?.status === "observed") ? "yes" : "no";
+   const installed = validDelivery ? "yes"
+     : validStatus && hosts.every((host) => delivery.hosts[host].installed.version === null) ? "no" : "unknown";
+   return {

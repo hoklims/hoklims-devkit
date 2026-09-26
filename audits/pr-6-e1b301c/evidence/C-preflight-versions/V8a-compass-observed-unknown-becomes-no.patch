@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..d9060b5 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1137,7 +1137,7 @@ async function diagnoseCompass(rt, root, hosts, version) {
+       && item.report?.states?.[host]?.installed === true && item.report.states[host].configured === true;
+   });
+   const observations = healthy ? checks.map((item, index) => item.report.states[hosts[index]].observed) : [];
+-  const observed = !healthy || observations.some((value) => typeof value !== "boolean")
++  const observed = !healthy
+     ? "unknown" : observations.every((value) => value === true) ? "yes" : "no";
+   return {
+     name: "latent-compass", version, installed: "yes", configured: !recognizable ? "unknown" : healthy ? "yes" : "no",

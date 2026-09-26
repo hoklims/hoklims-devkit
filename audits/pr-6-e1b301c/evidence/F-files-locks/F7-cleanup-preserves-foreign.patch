@@ -1,0 +1,12 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..41e585d 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -356,7 +356,6 @@ function readOwnedSnapshot(owned, options) {
+ function cleanupOwnedFile(owned, removeOwnedFile) {
+   let operationError = null;
+   try {
+-    assertOwnedFile(owned);
+     removeOwnedFile(owned.path);
+   } catch (error) {
+     operationError = error;

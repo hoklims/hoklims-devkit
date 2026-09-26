@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..6f20fcc 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -688,7 +688,7 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
+     && health.kind === "index_health" && ["valid", "invalid", "absent"].includes(health.binding?.status)
+     && typeof health.freshness?.canRunHighRiskControl === "boolean"
+     && ["complete", "partial", "insufficient"].includes(health.coverage?.status);
+-  if (!doctorStructured || !healthStructured) return "unknown";
++  
+   const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
+     && Array.isArray(doctor.checks) && requiredChecks.every((name) => doctor.checks.some((check) =>
+       check && typeof check === "object" && check.name === name && check.ok === true

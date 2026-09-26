@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..82118fc 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1379,7 +1379,7 @@ export async function execute(options, rt = createRuntime()) {
+   const nextState = state ? structuredClone(state) : { schemaVersion: 1, projectRoot: root, components: {} };
+   let persistedState = state ? structuredClone(state) : null;
+   let persistedStateObserved = false;
+-  const recoveryState = () => persistedStateObserved ? persistedState : state;
++  const recoveryState = () => state;
+   let refreshSavePending = options.refreshPending;
+   let refreshPhaseInvalidated = false;
+   let lockedRereadStarted = false;

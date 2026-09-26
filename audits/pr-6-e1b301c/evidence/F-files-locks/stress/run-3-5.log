@@ -1,0 +1,22 @@
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3010 |     expect(JSON.parse(readFileSync(positive.statePath, "utf8")).inProgress).toBeUndefined();
+3011 | 
+3012 |     if (process.platform !== "win32") {
+3013 |       for (const replacement of ["foreign", "same"]) {
+3014 |         const raced = await run({ replacement });
+3015 |         expect(raced.replaced).toBe(true);
+                                      ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/app.test.js:3015:32)
+(fail) public CLI > state checkpoints stay bound to the locked filesystem observation [26.17ms]
+
+ 158 pass
+ 1 fail
+ 1319 expect() calls
+Ran 159 tests across 1 file. [636.00ms]

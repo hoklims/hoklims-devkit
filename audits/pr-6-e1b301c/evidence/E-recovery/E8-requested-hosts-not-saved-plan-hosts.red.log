@@ -1,0 +1,39 @@
+$ rtk proxy bun test test/app.test.js -t 'early Bun and Git failures recover the validated saved plan|STATE_CHANGED recovery restores a missing host from the latest locked plan'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+274 |         "upgrade", "/repo", "--host", "all", "--refresh-pending",
+275 |       ]), rt);
+276 |       const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+277 |       expect(report.ok).toBe(false);
+278 |       expect(reads).toBe(1);
+279 |       expect(guidance).toContain("hoklims-devkit setup /repo --host codex");
+                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "hoklims-devkit setup /repo --host codex"
+Received: "Bun >=1.4 is required. Install Bun >=1.4 and ensure bun and bunx are on PATH, then restore Bun on PATH before running hoklims-devkit setup /repo --host all.\nInstall Bun >=1.4 and ensure bun and bunx are on PATH, then restore Bun on PATH before running hoklims-devkit setup /repo --host all"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:279:24)
+(fail) public CLI > early Bun and Git failures recover the validated saved plan [8.26ms]
+3099 |     const report = await execute(setupOptions(), rt);
+3100 |     const detail = report.conflicts.map((item) => item.detail).join("\n");
+3101 |     const actions = report.nextActions.join("\n");
+3102 |     const expected = "Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude";
+3103 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+3104 |     expect(detail.toLowerCase()).toContain(expected.toLowerCase());
+                                        ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "restore the claude cli on path before running hoklims-devkit setup /repo --host claude"
+Received: "installation state changed during preflight. resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3104:34)
+(fail) public CLI > STATE_CHANGED recovery restores a missing host from the latest locked plan [4.91ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 5 expect() calls
+Ran 2 tests across 1 file. [40.00ms]
+EXIT=1

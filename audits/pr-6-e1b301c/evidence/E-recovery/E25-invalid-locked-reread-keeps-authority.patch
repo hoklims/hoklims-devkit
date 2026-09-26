@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..386150a 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1530,7 +1530,7 @@ export async function execute(options, rt = createRuntime()) {
+       }
+     }
+   } catch (error) {
+-    if ((lockedRereadStarted && !persistedStateObserved)
++    if ((false)
+       || (stateTransaction && error?.code === "STATE_CONFLICT")) {
+       invalidateLockedAuthority();
+     }

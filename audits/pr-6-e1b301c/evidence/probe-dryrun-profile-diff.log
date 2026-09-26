@@ -1,0 +1,9 @@
+== claude
+exit 0 {"schemaVersion":1,"command":"setup","ok":true,"projectRoot":"/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/pkgverify/tmp/diag-CtrerM/repository","hosts":["claude"],"components":[{"name":"semctx","version":"0.3.5","state":"planned","installed":"unknown
+CHANGED ~/.claude/.claude.json (created)
+CHANGED ~/.claude/backups (created)
+== codex
+exit 0 {"schemaVersion":1,"command":"setup","ok":true,"projectRoot":"/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/pkgverify/tmp/diag-1tSGUD/repository","hosts":["codex"],"components":[{"name":"semctx","version":"0.3.5","state":"planned","installed":"unknown"
+exit 0 {"schemaVersion":1,"command":"setup","ok":true,"projectRoot":"/tmp/claude-1000/-home-laegel--claude-session/e90c7
+CHANGED ~/.claude/.claude.json (created)
+CHANGED ~/.claude/backups (created)

@@ -1,0 +1,24 @@
+$ rtk proxy bun test test/app.test.js
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3039 |         if (replacement === "foreign") expect(readFileSync(noOp.statePath, "utf8")).toBe("FOREIGN NON-JSON BYTES");
+3040 |         else expect(JSON.parse(readFileSync(noOp.statePath, "utf8")).components.semctx.version).toBe("0.3.4");
+3041 |       }
+3042 | 
+3043 |       const failed = await run({ replacement: "foreign", seedCompleted: true, nativeFailure: true });
+3044 |       expect(failed.report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+                                                                      ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "APPLY_FAILED"
+Received: [ "STATE_CONFLICT" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/app.test.js:3044:64)
+(fail) public CLI > state checkpoints stay bound to the locked filesystem observation [25.75ms]
+
+ 158 pass
+ 1 fail
+ 1341 expect() calls
+Ran 159 tests across 1 file. [354.00ms]
+EXIT=1

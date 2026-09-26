@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..614eb0b 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1504,7 +1504,7 @@ export async function execute(options, rt = createRuntime()) {
+           component.state = result.ready === false ? "needs-attention" : "configured";
+           component.installed = "yes";
+           component.configured = result.ready === false ? "unknown" : "yes";
+-          component.loaded = result.activation;
++          component.loaded = component.configured;
+           report.nextActions.push(...result.next);
+           if (result.ready === false) {
+             const retry = recoveryCommandFor(recoveryState());

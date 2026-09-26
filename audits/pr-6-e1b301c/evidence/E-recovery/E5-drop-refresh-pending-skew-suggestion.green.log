@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'an interrupted upgrade can explicitly refresh a now-unavailable stable plan'
+bun test v1.4.2 (744846f84)
+
+ 1 pass
+ 158 filtered out
+ 0 fail
+ 8 expect() calls
+Ran 1 test across 1 file. [41.00ms]
+EXIT=0

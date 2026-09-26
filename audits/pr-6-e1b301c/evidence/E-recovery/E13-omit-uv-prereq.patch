@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..91c8efa 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -91,7 +91,7 @@ function retryGuidance(rt, hosts, command, { components = [], packageManager } =
+   if (components.includes("assertledger")) {
+     for (const name of missingAssertLedgerTools(rt, packageManager)) add(name === "node" ? "Node" : name);
+   }
+-  if (components.includes("latent-compass") && !rt.which("uv")) add("uv");
++
+   const prerequisites = [];
+   if (missing.length === 1 && missing[0].endsWith(" CLI")) prerequisites.push(`Restore the ${missing[0]} on PATH`);
+   else if (missing.length) prerequisites.push(`Restore ${missing.join(", ")} on PATH`);

@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..32ea939 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -335,7 +335,7 @@ function packageManager(rt, root) {
+   }
+   const yarnPresent = rt.plainFilePresent(join(root, "yarn.lock"));
+   if (declared) found.add(declared);
+-  if (found.size > 1) throw new Error(`Conflicting package managers: ${[...found].join(", ")}`);
++  if (found.size > 2) throw new Error(`Conflicting package managers: ${[...found].join(", ")}`);
+   const selected = [...found][0] ?? "npm";
+   if (yarnPresent) throw new Error("Yarn repositories must use AssertLedger's native setup until a verified Yarn adapter is available");
+   if (!["npm", "pnpm", "bun"].includes(selected)) throw new Error(`Unsupported package manager: ${selected}`);

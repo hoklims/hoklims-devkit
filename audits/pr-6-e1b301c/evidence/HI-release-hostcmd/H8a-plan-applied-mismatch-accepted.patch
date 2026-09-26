@@ -1,0 +1,13 @@
+diff --git a/scripts/release-upgrade.js b/scripts/release-upgrade.js
+index 11176f4..65f6255 100644
+--- a/scripts/release-upgrade.js
++++ b/scripts/release-upgrade.js
+@@ -30,8 +30,5 @@ export function assertNoopUpgradeUnchanged(paths, before, installedReport, upgra
+   }
+   const sameVersions = installed.every(([, version], index) => applied[index][1] === version);
+   if (sameVersions) assertSnapshotUnchanged(paths, before, label);
+-  if (planned.some(([, version], index) => applied[index][1] !== version)) {
+-    throw new Error("Applied upgrade component versions differ from the upgrade plan");
+-  }
+   return sameVersions;
+ }

@@ -1,0 +1,44 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'optional registry failure blocks all components before preflight writes|blocks published Semctx 0.3.3'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+171 |   test("blocks published Semctx 0.3.3 before invoking its unsafe dry-run", async () => {
+172 |     const rt = fakeRuntime({ version: "0.3.3" });
+173 |     const report = await execute(setupOptions(), rt);
+174 |     expect(report.ok).toBe(false);
+175 |     expect(report.conflicts[0].code).toBe("RELEASE_SKEW_OR_UNAVAILABLE");
+176 |     expect(rt.calls).toHaveLength(2);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 2
+Received length: 5
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:176:22)
+(fail) public CLI > blocks published Semctx 0.3.3 before invoking its unsafe dry-run [6.76ms]
+2306 | 
+2307 |   test("optional registry failure blocks all components before preflight writes", async () => {
+2308 |     const rt = fakeRuntime({ tools: ["uv"], failPyPi: true, uvInstalled: false });
+2309 |     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+2310 |     expect(report.conflicts.map((item) => item.code)).toContain("VERSION_UNAVAILABLE");
+2311 |     expect(rt.calls.some((args) => args.includes("setup"))).toBe(false);
+                                                                   ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:2311:61)
+(fail) public CLI > optional registry failure blocks all components before preflight writes [0.71ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 5 expect() calls
+Ran 2 tests across 1 file. [55.00ms]
+EXIT CODE: 1

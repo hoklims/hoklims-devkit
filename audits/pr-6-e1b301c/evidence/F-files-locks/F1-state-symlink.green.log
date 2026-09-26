@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/runtime.test.js -t 'dangling state symlink'
+bun test v1.4.2 (744846f84)
+
+ 2 pass
+ 36 filtered out
+ 0 fail
+ 6 expect() calls
+Ran 2 tests across 1 file. [30.00ms]
+EXIT=0

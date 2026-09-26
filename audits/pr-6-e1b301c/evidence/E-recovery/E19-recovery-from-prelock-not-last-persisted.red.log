@@ -1,0 +1,39 @@
+$ rtk proxy bun test test/app.test.js -t 'native failure resumes a successfully persisted refreshed plan without refreshing again|STATE_CHANGED treats a locked absence as authoritative'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3554 |     rt.readState = () => ++reads === 1 ? structuredClone(initialState) : null;
+3555 |     rt.acquireLock = () => () => { released = true; };
+3556 |     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+3557 |     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+3558 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+3559 |     expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "hoklims-devkit upgrade /repo --host codex"
+Received: "Installation state changed during preflight. Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex.\nResolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3559:22)
+(fail) public CLI > STATE_CHANGED treats a locked absence as authoritative [11.05ms]
+3855 |     });
+3856 |     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]), rt);
+3857 |     const detail = report.conflicts.map((item) => item.detail).join("\n");
+3858 |     expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+3859 |     expect(rt.writes[0].inProgress).toMatchObject({ command: "upgrade", selected: ["semctx", "assertledger"], hosts: ["codex"] });
+3860 |     expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+                          ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "hoklims-devkit upgrade /repo --host codex --with assertledger"
+Received: "assertledger: AssertLedger package install: package install failed. Complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger before refreshing releases."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3860:20)
+(fail) public CLI > native failure resumes a successfully persisted refreshed plan without refreshing again [11.16ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 5 expect() calls
+Ran 2 tests across 1 file. [60.00ms]
+EXIT=1

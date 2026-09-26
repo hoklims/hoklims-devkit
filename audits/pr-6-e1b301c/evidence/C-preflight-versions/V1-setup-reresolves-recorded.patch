@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..9952b23 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -705,7 +705,7 @@ async function resolveComponents(rt, options, state, root, report) {
+     try {
+       if (state?.inProgress?.versions[name] && !options.refreshPending) {
+         versions[name] = state.inProgress.versions[name];
+-      } else if (options.command !== "upgrade" && state?.components?.[name]?.version) {
++      } else if (false && options.command !== "upgrade" && state?.components?.[name]?.version) {
+         versions[name] = state.components[name].version;
+       } else if (name === "assertledger" && options.command === "setup") {
+         let existing;

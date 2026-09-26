@@ -1,0 +1,30 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'AssertLedger inspects the manifest and every lockfile detector before checkpointing'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+1151 |         inspected.push(name);
+1152 |         if (name === unsafeName) throw Object.assign(new Error(`${name} is linked`), { code: "STATE_CONFLICT" });
+1153 |         return Object.hasOwn(files, path);
+1154 |       };
+1155 |       const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+1156 |       expect(report.ok).toBe(false);
+                               ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:1156:25)
+(fail) public CLI > AssertLedger inspects the manifest and every lockfile detector before checkpointing [22.49ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 26 expect() calls
+Ran 1 test across 1 file. [75.00ms]
+EXIT CODE: 1

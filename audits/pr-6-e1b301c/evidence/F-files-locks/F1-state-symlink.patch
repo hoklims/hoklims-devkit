@@ -1,0 +1,14 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..682d5d9 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -104,8 +104,7 @@ function inspectManagedFile(path, options, expectedParents = null, compareParent
+     rethrowAfterValidation(error, () => assertSafeManagedParents(path, parents, compareParentMetadata));
+   }
+   assertSafeManagedParents(path, parents, compareParentMetadata);
+-  if (stat?.isSymbolicLink()) throw unsafeManagedPath(path, "is a symbolic link");
+-  if (stat && !stat.isFile()) throw unsafeManagedPath(path, "is not a regular file");
++  if (stat && !stat.isFile() && !stat.isSymbolicLink()) throw unsafeManagedPath(path, "is not a regular file");
+   return stat;
+ }
+ 

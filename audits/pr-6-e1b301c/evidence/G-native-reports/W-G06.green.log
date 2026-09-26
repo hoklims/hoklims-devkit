@@ -1,0 +1,10 @@
+$ rtk proxy bun test test/app.test.js -t 'doctor keeps invalid AssertLedger artifact evidence unknown'
+# git status --porcelain: ''
+bun test v1.4.2 (744846f84)
+
+ 1 pass
+ 158 filtered out
+ 0 fail
+ 11 expect() calls
+Ran 1 test across 1 file. [55.00ms]
+EXIT=0

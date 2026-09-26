@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'all and auto recoveries restore missing saved-plan hosts before the full retry'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+2858 |       const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+2859 |       const report = await execute(parseArgs(["setup", "/repo", "--host", host, "--with", "assertledger"]), rt);
+2860 |       const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+2861 |       expect(report.ok).toBe(false);
+2862 |       expect(guidance.toLowerCase()).toContain("restore claude cli, node, npm on path");
+2863 |       expect(guidance).toContain("Inspect the declared AssertLedger package manager and restore it on PATH if missing before running hoklims-devkit setup /repo --host all --with assertledger");
+                              ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Inspect the declared AssertLedger package manager and restore it on PATH if missing before running hoklims-devkit setup /repo --host all --with assertledger"
+Received: "Requested host is not on PATH: all. Resolve the reported native conflict, then restore claude CLI, Node, npm on PATH before running hoklims-devkit setup /repo --host all --with assertledger.\nResolve the reported native conflict, then restore claude CLI, Node, npm on PATH before running hoklims-devkit setup /repo --host all --with assertledger"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:2863:24)
+(fail) public CLI > all and auto recoveries restore missing saved-plan hosts before the full retry [11.71ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [56.00ms]
+EXIT=1

@@ -1,0 +1,28 @@
+$ rtk proxy bun test 
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+17 |     throw error;
+18 |   }
+19 | }
+20 | 
+21 | function unsafeManagedPath(path, detail) {
+22 |   return Object.assign(new Error(`Unsafe managed state path: ${path} ${detail}. Replace linked state paths with real local directories or files, then rerun.`), { code: "STATE_CONFLICT" });
+                                ^
+error: Unsafe managed state path: /tmp changed during managed parent inspection. Replace linked state paths with real local directories or files, then rerun.
+ code: "STATE_CONFLICT"
+
+      at unsafeManagedPath (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/src/runtime.js:22:28)
+      at assertManagedParentSnapshot (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/src/runtime.js:64:13)
+      at assertSafeManagedParents (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/src/runtime.js:93:5)
+      at openOwnedManagedFile (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/src/runtime.js:296:19)
+      at writeState (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/src/runtime.js:635:17)
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/app.test.js:2965:31)
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/app.test.js:3031:28)
+(fail) public CLI > state checkpoints stay bound to the locked filesystem observation [31.62ms]
+
+ 212 pass
+ 1 fail
+ 1687 expect() calls
+Ran 213 tests across 5 files. [879.00ms]
+EXIT=1

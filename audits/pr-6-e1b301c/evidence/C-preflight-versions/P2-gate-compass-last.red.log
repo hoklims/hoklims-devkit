@@ -1,0 +1,86 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'a Compass preview (without evidence|without planned files|for another host path|for another repository)|global preflight rechecks AssertLedger tools after later component previews'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+1582 |     };
+1583 |     const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger,latent-compass"]), rt);
+1584 |     const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+1585 |     expect(npmMissing).toBe(true);
+1586 |     expect(report.conflicts.map((item) => item.code)).toContain("NODE_REQUIRED");
+1587 |     expect(guidance).toContain("Restore npm on PATH");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Restore npm on PATH"
+Received: "Open a new Codex task or reload Claude plugins; then verify tool visibility\nResolve the reported native conflict, then restore npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger,latent-compass\n{\"ok\":true,\"version\":\"0.3.4\",\"dryRun\":true,\"selection\":\"codex\",\"hosts\":{\"codex\":{\"requested\":true,\"detected\":true,\"status\":\"planned\"},\"claude\":{\"requested\":false,\"detected\":true,\"status\":\"planned\"}},\"workspace\":{\"status\":\"skipped\",\"root\":\"/repo\"}}. Resolve the reported native conflict, then restore npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger,latent-compass.\nAssertLedger prerequisites missing from PATH: npm. Resolve the reported native conflict, then restore npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger,latent-compass.\nassertledger: AssertLedger prerequisite disappeared from PATH: npm. Resolve the reported native conflict, then restore npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger,latent-compass."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:1587:22)
+(fail) public CLI > global preflight rechecks AssertLedger tools after later component previews [22.29ms]
+2259 |       ? { code: 0, stdout: JSON.stringify({ dry_run: true, conflicts: [] }), stderr: "" }
+2260 |       : nativeExec(argv, cwd);
+2261 |     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+2262 |     expect(report.ok).toBe(false);
+2263 |     expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+2264 |     expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+                                                                                                    ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:2264:94)
+(fail) public CLI > a Compass preview without evidence for its requested host blocks every write [1.94ms]
+2272 |       ? { code: 0, stdout: JSON.stringify({ ...compassInstallReport(argv), files: [] }), stderr: "" }
+2273 |       : nativeExec(argv, cwd);
+2274 |     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+2275 |     expect(report.ok).toBe(false);
+2276 |     expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+2277 |     expect(rt.writes).toHaveLength(0);
+                             ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 0
+Received length: 2
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:2277:23)
+(fail) public CLI > a Compass preview without planned files blocks every write [1.35ms]
+2287 |       return { code: 0, stdout: JSON.stringify(plan), stderr: "" };
+2288 |     };
+2289 |     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+2290 |     expect(report.ok).toBe(false);
+2291 |     expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+2292 |     expect(rt.writes).toHaveLength(0);
+                             ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 0
+Received length: 2
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:2292:23)
+(fail) public CLI > a Compass preview for another host path blocks every write [1.43ms]
+2299 |       ? { code: 0, stdout: JSON.stringify({ ...compassInstallReport(argv), project_root: "/other" }), stderr: "" }
+2300 |       : nativeExec(argv, cwd);
+2301 |     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+2302 |     expect(report.ok).toBe(false);
+2303 |     expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+2304 |     expect(rt.writes).toHaveLength(0);
+                             ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 0
+Received length: 2
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:2304:23)
+(fail) public CLI > a Compass preview for another repository blocks every write [1.80ms]
+
+ 0 pass
+ 154 filtered out
+ 5 fail
+ 15 expect() calls
+Ran 5 tests across 1 file. [74.00ms]
+EXIT CODE: 1

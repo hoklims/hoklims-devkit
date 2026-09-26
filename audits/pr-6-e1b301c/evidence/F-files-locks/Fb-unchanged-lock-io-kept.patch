@@ -1,0 +1,13 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..75b9149 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -702,7 +702,7 @@ export function createRuntime({
+           if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
+           cleanupOwnedFile(owned, removeOwnedFile);
+         } catch (error) {
+-          let releaseError = error;
++          let releaseError = error?.code === "STATE_CONFLICT" ? error : ownedFileConflict(lockPath, "release failed");
+           if (owned.descriptor !== null) {
+             try { assertOwnedFile(owned); } catch (ownershipError) {
+               releaseError = preferredBoundaryError(error, ownershipError);
