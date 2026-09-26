@@ -62,7 +62,7 @@ function problem(report, code, detail, exitCode = 4) {
   return report;
 }
 
-function retryInstruction(rt, hosts, command, { components = [], packageManager } = {}) {
+function retryGuidance(rt, hosts, command, { components = [], packageManager } = {}) {
   const missing = [];
   const add = (label) => { if (!missing.includes(label)) missing.push(label); };
   if (!rt.which("bun") || !rt.which("bunx")) add("Bun");
@@ -78,7 +78,14 @@ function retryInstruction(rt, hosts, command, { components = [], packageManager 
   if (components.includes("assertledger") && !packageManager) {
     prerequisites.push("Inspect the declared AssertLedger package manager and restore it on PATH if missing");
   }
-  return prerequisites.length ? `${prerequisites.join(", then ")} before running ${command}` : `Run ${command}`;
+  return {
+    instruction: prerequisites.length ? `${prerequisites.join(", then ")} before running ${command}` : `Run ${command}`,
+    hasPrerequisites: prerequisites.length > 0,
+  };
+}
+
+function retryInstruction(rt, hosts, command, requirements) {
+  return retryGuidance(rt, hosts, command, requirements).instruction;
 }
 
 function stateIoProblem(report, error, statePath, operation, recoveryAction) {
@@ -134,15 +141,16 @@ function failureGuidance(rt, options, root, hosts, candidateState, recoveryOptio
   }
   const plan = stateRecoveryPlan(options, candidateState, hosts, effectiveOptions);
   const command = stateRecoveryCommand(options, root, candidateState, hosts, effectiveOptions);
-  const recoveryAction = retryInstruction(rt, plan.hosts, command, {
+  const retry = retryGuidance(rt, plan.hosts, command, {
     ...effectiveOptions,
     components: plan.selected,
   });
+  const recoveryAction = retry.instruction;
   const continuedAction = `${recoveryAction[0].toLowerCase()}${recoveryAction.slice(1)}`;
   if (effectiveOptions.repair) {
     return { action: `${effectiveOptions.repair}, then ${continuedAction}`, command };
   }
-  const missingPrerequisite = recoveryAction.startsWith("Restore ");
+  const missingPrerequisite = retry.hasPrerequisites;
   let action;
   if (candidateState?.inProgress) {
     if (options.refreshPending && !effectiveOptions.useRequestedRefresh && !effectiveOptions.refreshInvalidated) {
@@ -378,19 +386,20 @@ function localAssertEntry(rt, root) {
   if (!rt.directoryPresent(nodeModules)) return null;
   if (!rt.directoryPresent(packageRoot)) return null;
   assertPackageDirectories();
-  const readPackageFile = (path) => {
+  const guardedMetadata = (operation) => {
     assertPackageDirectories();
     try {
-      const content = rt.readPlainText(path);
+      const result = operation();
       assertPackageDirectories();
-      return content;
+      return result;
     } catch (error) {
       assertPackageDirectories();
       throw error;
     }
   };
-  const packagePresent = rt.pathPresent(packagePath);
-  const cliPresent = rt.pathPresent(cliPath);
+  const readPackageFile = (path) => guardedMetadata(() => rt.readPlainText(path));
+  const packagePresent = guardedMetadata(() => rt.pathPresent(packagePath));
+  const cliPresent = guardedMetadata(() => rt.pathPresent(cliPath));
   if (!packagePresent || !cliPresent) throw new Error("The project-local AssertLedger package is incomplete");
   const cli = readPackageFile(cliPath);
   if (typeof cli !== "string") throw new Error("The project-local AssertLedger CLI is not a readable regular file");
@@ -1182,6 +1191,10 @@ export async function execute(options, rt = createRuntime()) {
     stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: guidance.action });
     return recordFailureRecovery(guidance.action, guidance.command);
   }
+  if (options.with.includes("assertledger") || state?.components?.assertledger
+    || state?.inProgress?.selected.includes("assertledger")) {
+    try { recoveryPackageManager = inspectAssertProject(rt, root).manager; } catch { /* The owning command reports the concrete admission error. */ }
+  }
   if (hosts.length === 0 || hosts.some((host) => !rt.which(host))) {
     problem(report, "HOST_UNAVAILABLE", `Requested host is not on PATH: ${options.host}. ${recoveryActionFor(state)}`, 3);
     return finalizeFailure(state);
@@ -1221,9 +1234,6 @@ export async function execute(options, rt = createRuntime()) {
     return report.ok ? report : finalizeFailure(state);
   }
   const selected = selectedComponents(options, state);
-  if (selected.includes("assertledger") || state?.inProgress?.selected.includes("assertledger")) {
-    try { recoveryPackageManager = inspectAssertProject(rt, root).manager; } catch { /* Normal preflight reports the concrete admission error. */ }
-  }
   const refreshExpandsHosts = options.refreshPending && state?.inProgress
     && state.inProgress.hosts.every((host) => hosts.includes(host));
   if (state?.inProgress && ((state.inProgress.command !== options.command && !options.refreshPending)

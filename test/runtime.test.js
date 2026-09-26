@@ -178,6 +178,35 @@ test("runtime revalidates every pathname after descriptor reads", () => {
   }
 });
 
+test("runtime descriptor snapshots reject growth, shrink, and same-size mutation after reads", () => {
+  for (const scenario of ["unchanged", "growth", "shrink", "same-size"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-read-snapshot-")));
+    const statePath = join(root, "repository.json");
+    const original = JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} });
+    writeFileSync(statePath, original);
+    let mutated = false;
+    const rt = createRuntime({
+      readFileData: (descriptor, encoding, path) => {
+        const content = readFileSync(descriptor, encoding);
+        if (!mutated && path === statePath && scenario !== "unchanged") {
+          mutated = true;
+          if (scenario === "growth") writeFileSync(statePath, "X", { flag: "a" });
+          else if (scenario === "shrink") writeFileSync(statePath, original.slice(0, -1));
+          else {
+            writeFileSync(statePath, `${original.slice(0, -1)}X`);
+            utimesSync(statePath, new Date(1_000), new Date(2_000));
+          }
+        }
+        return content;
+      },
+    });
+    let error;
+    try { rt.readState(statePath); } catch (caught) { error = caught; }
+    if (scenario === "unchanged") expect(error).toBeUndefined();
+    else expect(error?.code).toBe("STATE_CONFLICT");
+  }
+});
+
 test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
   if (process.platform === "win32") return;
   const runtimeUrl = new URL("../src/runtime.js", import.meta.url).href;

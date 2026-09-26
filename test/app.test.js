@@ -1664,6 +1664,31 @@ describe("public CLI", () => {
       expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
       expect(rt.writes).toHaveLength(0);
     }
+    for (const phase of ["before-lstat", "after-lstat"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const directoryPresent = rt.directoryPresent;
+      const pathPresent = rt.pathPresent;
+      let distUnsafe = false;
+      rt.directoryPresent = (path) => {
+        if (path === distPath && distUnsafe) throw Object.assign(new Error("dist changed before CLI metadata inspection"), { code: "STATE_CONFLICT" });
+        return directoryPresent(path);
+      };
+      rt.pathPresent = (path) => {
+        if (path !== join(distPath, "cli.js")) return pathPresent(path);
+        if (phase === "before-lstat") {
+          distUnsafe = true;
+          throw Object.assign(new Error("CLI lstat failed with ENOTDIR"), { code: "ENOTDIR" });
+        }
+        const present = pathPresent(path);
+        distUnsafe = true;
+        return present;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(report.exitCode).toBe(4);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
   });
 
   test("AssertLedger CLI metadata, open, and read I/O failures remain STATE_IO_ERROR", async () => {
@@ -3096,6 +3121,30 @@ describe("public CLI", () => {
     const expected = "Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude";
     expect(detail).toContain(expected);
     expect(report.nextActions.join("\n").toLowerCase()).toContain(expected.toLowerCase());
+  });
+
+  test("doctor incomplete-plan recovery retains its declared pnpm prerequisite", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { assertledger: { version: "1.2.0", hosts: ["codex"] } },
+      inProgress: {
+        command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("INCOMPLETE_OPERATION");
+    expect(guidance.toLowerCase()).toContain("restore pnpm");
+    expect(guidance).not.toContain("Inspect the declared AssertLedger package manager");
+    expect(rt.writes).toHaveLength(0);
   });
 
   test("noncanonical persisted plan order is a state conflict", async () => {

@@ -89,8 +89,41 @@ function assertInspectedIdentity(path, inspectFile, conflict, identity, detail) 
   if (!current || current.dev !== identity.dev || current.ino !== identity.ino) throw conflict(path, detail);
 }
 
+function readDescriptorSnapshot(descriptor, { readWhole, readChunk = readSync, path } = {}) {
+  const before = fstatSync(descriptor, { bigint: true });
+  if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw Object.assign(new Error("Managed state file is not a readable regular file"), { code: "STATE_CONFLICT" });
+  }
+  let buffer;
+  if (readWhole) {
+    const content = readWhole(descriptor, null, path);
+    buffer = Buffer.isBuffer(content) ? content : Buffer.from(content);
+    if (buffer.length !== Number(before.size)) {
+      throw Object.assign(new Error("File extent changed while it was read"), { code: "STATE_CONFLICT" });
+    }
+  } else {
+    buffer = Buffer.alloc(Number(before.size));
+    let offset = 0;
+    while (offset < buffer.length) {
+      const count = readChunk(descriptor, buffer, offset, buffer.length - offset, offset);
+      if (count === 0) throw Object.assign(new Error("File changed while it was read"), { code: "STATE_CONFLICT" });
+      offset += count;
+    }
+  }
+  const extra = Buffer.alloc(1);
+  if (readChunk(descriptor, extra, 0, 1, buffer.length) !== 0) {
+    throw Object.assign(new Error("File grew while it was read"), { code: "STATE_CONFLICT" });
+  }
+  const after = fstatSync(descriptor, { bigint: true });
+  if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
+    || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
+    throw Object.assign(new Error("File metadata changed while it was read"), { code: "STATE_CONFLICT" });
+  }
+  return buffer;
+}
+
 function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync,
-  openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null, encoding = "utf8") {
+  openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null, encoding = "utf8", readDescriptorData = readSync) {
   const initial = inspectFile(path, { bigint: true });
   if (!initial) return null;
   const identity = expectedIdentity ?? { dev: initial.dev, ino: initial.ino };
@@ -117,9 +150,9 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
       }
     };
     assertReadIdentity();
-    const content = readFileData(descriptor, encoding, path);
+    const content = readDescriptorSnapshot(descriptor, { readWhole: readFileData, readChunk: readDescriptorData, path });
     assertReadIdentity();
-    return content;
+    return encoding === null ? content : content.toString(encoding);
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
@@ -169,30 +202,6 @@ function closeManagedDestination(destination) {
   destination.descriptor = null;
   destination.observation = "closed";
   closeSync(descriptor);
-}
-
-function readDescriptorBytes(descriptor, readDescriptorData = readSync) {
-  const before = fstatSync(descriptor, { bigint: true });
-  if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw Object.assign(new Error("Managed state file is not a readable regular file"), { code: "STATE_CONFLICT" });
-  }
-  const buffer = Buffer.alloc(Number(before.size));
-  let offset = 0;
-  while (offset < buffer.length) {
-    const count = readDescriptorData(descriptor, buffer, offset, buffer.length - offset, offset);
-    if (count === 0) throw Object.assign(new Error("Managed state file changed while it was read"), { code: "STATE_CONFLICT" });
-    offset += count;
-  }
-  const extra = Buffer.alloc(1);
-  if (readDescriptorData(descriptor, extra, 0, 1, buffer.length) !== 0) {
-    throw Object.assign(new Error("Managed state file grew while it was read"), { code: "STATE_CONFLICT" });
-  }
-  const after = fstatSync(descriptor, { bigint: true });
-  if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
-    || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
-    throw Object.assign(new Error("Managed state file metadata changed while it was read"), { code: "STATE_CONFLICT" });
-  }
-  return buffer;
 }
 
 function decodeStateBytes(bytes) {
@@ -383,7 +392,7 @@ export function createRuntime({
       }
       if (destination.observation === "closed-existing") {
         const currentBytes = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
-          beforeManagedReadOpen, readFileData, openReadDescriptor, destination.identity, null);
+          beforeManagedReadOpen, readFileData, openReadDescriptor, destination.identity, null, readDescriptorData);
         if (currentBytes === null || !Buffer.from(currentBytes).equals(expectedBytes)) {
           throw ownedFileConflict(path, "the validated state bytes changed after publication failed");
         }
@@ -392,7 +401,7 @@ export function createRuntime({
       if (destination.descriptor === null) throw ownedFileConflict(path, "the validated destination descriptor is unavailable");
       const held = { path, descriptor: destination.descriptor, identity: destination.identity };
       assertOwnedFile(held);
-      const currentBytes = readDescriptorBytes(destination.descriptor, readDescriptorData);
+      const currentBytes = readDescriptorSnapshot(destination.descriptor, { readChunk: readDescriptorData, path });
       assertOwnedFile(held);
       if (!currentBytes.equals(expectedBytes)) {
         throw ownedFileConflict(path, "the validated state bytes changed before the next checkpoint");
@@ -402,7 +411,7 @@ export function createRuntime({
       if (destination.descriptor !== null) {
         const held = { path, descriptor: destination.descriptor, identity: destination.identity };
         assertOwnedFile(held);
-        expectedBytes = readDescriptorBytes(destination.descriptor, readDescriptorData);
+        expectedBytes = readDescriptorSnapshot(destination.descriptor, { readChunk: readDescriptorData, path });
         assertOwnedFile(held);
         state = parseStateBytes(expectedBytes);
       }
@@ -515,7 +524,8 @@ export function createRuntime({
     pathPresent: (path) => Boolean(lstatIfPresent(path)),
     plainFilePresent: (path) => Boolean(inspectPlainFile(path)),
     directoryPresent: inspectProjectDirectory,
-    readPlainText: (path) => readVerifiedFile(path, inspectPlainFile, unsafeProjectPath, undefined, readFileData, openReadDescriptor),
+    readPlainText: (path) => readVerifiedFile(path, inspectPlainFile, unsafeProjectPath,
+      undefined, readFileData, openReadDescriptor, null, "utf8", readDescriptorData),
     realpath: realpathSync,
     statePath: (root) => {
       const base = currentPlatform() === "win32"
@@ -526,7 +536,7 @@ export function createRuntime({
     },
     readState: (path) => {
       const bytes = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
-        beforeManagedReadOpen, readFileData, openReadDescriptor, null, null);
+        beforeManagedReadOpen, readFileData, openReadDescriptor, null, null, readDescriptorData);
       if (bytes === null) return null;
       return parseStateBytes(Buffer.from(bytes));
     },
