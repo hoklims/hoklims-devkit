@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { homedir } from "node:os";
+import { mkdtempSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execute, parseArgs, quoteShellToken } from "../src/app.js";
-import { validateState } from "../src/runtime.js";
+import { createRuntime, validateState } from "../src/runtime.js";
 
 function compassInstallReport(argv, { installed = false, configured = false } = {}) {
   const host = argv[argv.indexOf("--host") + 1];
@@ -708,6 +709,39 @@ describe("public CLI", () => {
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
     expect(rt.calls.some((args) => args.includes("setup") || args.includes("install"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("an existing JSON null state is malformed while a missing file remains absent", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-null-state-")));
+    const statePath = join(root, "repository.json");
+    let verifiedReadExecuted = false;
+    const reader = createRuntime({
+      readFileData: (descriptor, encoding) => {
+        verifiedReadExecuted = true;
+        return readFileSync(descriptor, encoding);
+      },
+    });
+    const rt = fakeRuntime();
+    rt.statePath = () => statePath;
+    rt.readState = reader.readState;
+    writeFileSync(statePath, "null\n");
+    const malformedNull = await execute(setupOptions(), rt);
+    expect(verifiedReadExecuted).toBe(true);
+    expect(malformedNull.ok).toBe(false);
+    expect(malformedNull.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(readFileSync(statePath, "utf8")).toBe("null\n");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+
+    writeFileSync(statePath, "{}\n");
+    const malformedObject = await execute(setupOptions(), rt);
+    expect(malformedObject.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(rt.writes).toHaveLength(0);
+
+    unlinkSync(statePath);
+    const absent = await execute({ ...setupOptions(), dryRun: true }, rt);
+    expect(absent.ok).toBe(true);
     expect(rt.writes).toHaveLength(0);
   });
 
@@ -1598,13 +1632,16 @@ describe("public CLI", () => {
       },
     };
     const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+    const which = rt.which;
+    rt.which = (name) => name === "codex" ? null : which(name);
     const writeState = rt.writeState;
     rt.writeState = (path, value) => writeState(path, validateState(value));
     const blocked = await execute(parseArgs(["setup", "/repo", "--host", "claude"]), rt);
     expect(blocked.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
-    expect(blocked.nextActions).toContain("Review the new stable releases, then run hoklims-devkit upgrade /repo --host all --refresh-pending");
+    expect(blocked.nextActions).toContain("Review the new stable releases, then restore the codex CLI on PATH before running hoklims-devkit upgrade /repo --host all --refresh-pending");
     expect(rt.writes).toHaveLength(0);
 
+    rt.which = which;
     const nativeExec = rt.exec;
     let interrupt = true;
     rt.exec = async (argv, cwd, timeout) => interrupt && argv.includes("install") && !argv.includes("--dry-run")
@@ -2275,6 +2312,16 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
     expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex --refresh-pending");
     expect(guidance).not.toContain("hoklims-devkit setup");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("fresh refresh lock contention preserves the requested refresh phase", async () => {
+    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    rt.acquireLock = () => { throw Object.assign(new Error("Another operation is running"), { code: "RUN_LOCKED" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
+    expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex --refresh-pending");
     expect(rt.writes).toHaveLength(0);
   });
 

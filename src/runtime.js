@@ -375,7 +375,9 @@ export function createRuntime({
     readState: (path) => {
       const text = readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeManagedReadOpen, readFileData, openReadDescriptor);
       if (text === null) return null;
-      return validateState(JSON.parse(text));
+      const parsed = JSON.parse(text);
+      if (parsed === null) throw new Error("Invalid devkit state structure");
+      return validateState(parsed);
     },
     writeState: (path, state) => {
       validateState(state);

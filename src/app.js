@@ -1072,14 +1072,16 @@ export async function execute(options, rt = createRuntime()) {
       const optional = selected.filter((name) => name !== "semctx");
       const refreshHosts = HOSTS.filter((host) => hosts.includes(host)
         || selected.some((name) => state.components[name]?.hosts?.includes(host)));
-      report.nextActions.push(`Review the new stable releases, then run hoklims-devkit upgrade ${quoteShellToken(root)} --host ${refreshHosts.length === 2 ? "all" : refreshHosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`);
+      const refreshCommand = `hoklims-devkit upgrade ${quoteShellToken(root)} --host ${refreshHosts.length === 2 ? "all" : refreshHosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`;
+      const refreshInstruction = retryInstruction(rt, refreshHosts, refreshCommand);
+      report.nextActions.push(`Review the new stable releases, then ${refreshInstruction[0].toLowerCase()}${refreshInstruction.slice(1)}`);
     }
     report.ok = report.conflicts.length === 0;
     return report;
   }
   const nextState = state ? structuredClone(state) : { schemaVersion: 1, projectRoot: root, components: {} };
   let persistedState = state ? structuredClone(state) : null;
-  let refreshSavePending = options.refreshPending && Boolean(state?.inProgress);
+  let refreshSavePending = options.refreshPending;
   let releaseLock;
   try {
     releaseLock = rt.acquireLock(statePath);
