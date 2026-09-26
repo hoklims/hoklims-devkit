@@ -1615,6 +1615,32 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("AssertLedger dist ancestry distinguishes structural conflicts from I/O errors", async () => {
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const distPath = join("/repo", "node_modules", "assertledger", "dist");
+    for (const kind of ["structural", "io"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const directoryPresent = rt.directoryPresent;
+      rt.directoryPresent = (path) => {
+        if (path === distPath) {
+          throw Object.assign(new Error(kind === "io" ? "dist metadata EIO" : "dist is not a directory"),
+            { code: kind === "io" ? "EIO" : "STATE_CONFLICT" });
+        }
+        return directoryPresent(path);
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain(kind === "io" ? "STATE_IO_ERROR" : "PACKAGE_MANIFEST_CONFLICT");
+      expect(report.exitCode).toBe(kind === "io" ? 5 : 4);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
   test("AssertLedger CLI metadata, open, and read I/O failures remain STATE_IO_ERROR", async () => {
     const cliPath = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
     for (const phase of ["metadata", "open", "read"]) {
@@ -2836,6 +2862,52 @@ describe("public CLI", () => {
       expect(detail).not.toContain("complete the recorded plan");
     }
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("late authority loss retains missing-host repair before its conditional retry", async () => {
+    const root = "/repo  with 'quote";
+    for (const closeConflict of [false, true]) {
+      const rt = fakeRuntime();
+      rt.resolve = () => root;
+      rt.realpath = () => root;
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      let codexMissing = false;
+      rt.which = (name) => codexMissing && name === "codex" ? null : nativeWhich(name);
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+          codexMissing = true;
+          return { code: 5, stdout: "", stderr: "native setup failed" };
+        }
+        if (argv[0] !== "bunx" || !result.stdout) return result;
+        const parsed = JSON.parse(result.stdout);
+        if (Object.hasOwn(parsed, "repositoryRoot")) parsed.repositoryRoot = root;
+        if (parsed.workspace?.root) parsed.workspace.root = root;
+        return { ...result, stdout: JSON.stringify(parsed) };
+      };
+      rt.openStateTransaction = () => ({
+        state: null,
+        write: () => {},
+        close: () => {
+          if (closeConflict) throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" });
+        },
+      });
+      const report = await execute(parseArgs(["setup", root, "--host", "codex"]), rt);
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      const command = `hoklims-devkit setup ${quoteShellToken(root)} --host codex`;
+      expect(guidance.toLowerCase()).toContain(`restore the codex cli on path before running ${command}`.toLowerCase());
+      expect(guidance).not.toContain("Only if no saved plan exists, run.");
+      expect(guidance).not.toContain("before running.");
+      if (closeConflict) {
+        expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+        expect(report.nextActions).toHaveLength(1);
+        expect(report.nextActions[0]).toContain("inspect and validate the saved Devkit state");
+        for (const detail of report.conflicts.map((item) => item.detail)) {
+          expect(detail.toLowerCase()).toContain("restore the codex cli on path");
+        }
+      }
+    }
   });
 
   test("STATE_CHANGED treats a locked absence as authoritative", async () => {

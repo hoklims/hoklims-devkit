@@ -146,10 +146,11 @@ function validateBoundState(candidate, root) {
   return state;
 }
 
-function unverifiedStateGuidance(repair, currentCommand) {
+function unverifiedStateGuidance(repair, currentCommand, retry = `Run ${currentCommand}`) {
+  const continuedRetry = `${retry[0].toLowerCase()}${retry.slice(1)}`;
   return {
     command: currentCommand,
-    action: `${repair}, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, run ${currentCommand}`,
+    action: `${repair}, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, ${continuedRetry}`,
   };
 }
 
@@ -346,10 +347,12 @@ function installPackageCommand(manager, version) {
 function localAssertEntry(rt, root) {
   const nodeModules = join(root, "node_modules");
   const packageRoot = join(nodeModules, "assertledger");
+  const distRoot = join(packageRoot, "dist");
   const packagePath = join(packageRoot, "package.json");
   const cliPath = join(packageRoot, "dist", "cli.js");
   if (!rt.directoryPresent(nodeModules)) return null;
   if (!rt.directoryPresent(packageRoot)) return null;
+  if (!rt.directoryPresent(distRoot)) throw new Error("The project-local AssertLedger package is incomplete");
   const packagePresent = rt.pathPresent(packagePath);
   const cliPresent = rt.pathPresent(cliPath);
   if (!packagePresent || !cliPresent) throw new Error("The project-local AssertLedger package is incomplete");
@@ -1253,7 +1256,8 @@ export async function execute(options, rt = createRuntime()) {
   };
   const lockedUnknownGuidance = () => {
     const current = stateRecoveryCommand(options, root, null, requestedRecoveryHosts, { useRequestedRefresh: false });
-    return unverifiedStateGuidance("Resolve the locked state conflict", current);
+    return unverifiedStateGuidance("Resolve the locked state conflict", current,
+      retryInstruction(rt, requestedRecoveryHosts, current));
   };
   const replaceFailureRecovery = (guidance) => {
     const stale = [...staleRecoveryFragments].filter(Boolean).sort((left, right) => right.length - left.length);
@@ -1261,8 +1265,16 @@ export async function execute(options, rt = createRuntime()) {
       && !/hoklims-devkit|saved Devkit state|recorded plan/u.test(item));
     if (!report.nextActions.includes(guidance.action)) report.nextActions.push(guidance.action);
     for (const conflict of report.conflicts) {
-      let detail = conflict.detail;
-      for (const fragment of stale) detail = detail.replaceAll(fragment, "");
+      const currentGuidanceMarker = "\u0000CURRENT_RECOVERY_GUIDANCE\u0000";
+      let detail = conflict.detail.replaceAll(guidance.action, currentGuidanceMarker);
+      for (const fragment of stale) {
+        const authored = fragment.startsWith("hoklims-devkit ")
+          ? [`Only if no saved plan exists, run ${fragment}`, `After resolving the error: ${fragment}`, `After resolving the state conflict: ${fragment}`]
+          : [];
+        for (const sentence of authored) detail = detail.replaceAll(sentence, "");
+        detail = detail.replaceAll(fragment, "");
+      }
+      detail = detail.replaceAll(currentGuidanceMarker, guidance.action);
       detail = detail
         .replace(/\s+to recompute the plan\./gu, ".")
         .replace(/After resolving (?:the error|the state conflict):\s*\./gu, "")

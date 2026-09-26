@@ -315,6 +315,20 @@ test("runtime distinguishes absent, linked, and unsafe package directories", () 
   }
   expect(rt.directoryPresent(packagePath)).toBe(true);
   expect(rt.readPlainText(join(packagePath, "package.json"))).toBe("{\"version\":\"1.2.0\"}\n");
+  const distPath = join(packagePath, "dist");
+  const storeDist = join(storePackage, "dist");
+  writeFileSync(storeDist, "not a directory\n");
+  let regularDist;
+  try { rt.directoryPresent(distPath); } catch (error) { regularDist = error; }
+  expect(regularDist?.code).toBe("STATE_CONFLICT");
+  unlinkSync(storeDist);
+  symlinkSync(join(root, "missing-dist"), storeDist, process.platform === "win32" ? "junction" : undefined);
+  let danglingDist;
+  try { rt.directoryPresent(distPath); } catch (error) { danglingDist = error; }
+  expect(danglingDist?.code).toBe("STATE_CONFLICT");
+  unlinkSync(storeDist);
+  mkdirSync(storeDist);
+  expect(rt.directoryPresent(distPath)).toBe(true);
   unlinkSync(packagePath);
   symlinkSync(join(root, "missing-store"), packagePath, process.platform === "win32" ? "junction" : undefined);
   let dangling;
