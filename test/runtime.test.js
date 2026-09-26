@@ -121,7 +121,7 @@ test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
     } });
     let error;
     try { rt.readState(statePath); } catch (caught) { error = caught; }
-    const fifo = Bun.spawnSync({ cmd: ["/usr/bin/test", "-p", statePath], stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+    const fifo = Bun.spawnSync({ cmd: ["test", "-p", statePath], stdout: "pipe", stderr: "pipe" }).exitCode === 0;
     process.stdout.write(JSON.stringify({ code: error?.code ?? null, fifo }));
     rmSync(root, { recursive: true, force: true });
   `;
