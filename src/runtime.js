@@ -35,6 +35,20 @@ function ownedFileConflict(path, detail) {
   return Object.assign(new Error(`Managed state file ownership changed at ${path}: ${detail}. Preserve the foreign path, inspect it, then rerun.`), { code: "STATE_CONFLICT" });
 }
 
+function preferredBoundaryError(primary, secondary) {
+  if (primary?.code === "STATE_CONFLICT" || secondary?.code !== "STATE_CONFLICT") return primary;
+  return secondary;
+}
+
+function rethrowAfterValidation(error, validate) {
+  try {
+    validate();
+  } catch (validationError) {
+    throw preferredBoundaryError(error, validationError);
+  }
+  throw error;
+}
+
 function unsafeProjectPath(path, detail) {
   return Object.assign(new Error(`Unsafe project package path: ${path} ${detail}. Replace it with a regular local file, then rerun.`), { code: "STATE_CONFLICT" });
 }
@@ -71,8 +85,7 @@ function assertSafeManagedParents(path, expectedParents = null, compareMetadata 
     try {
       stat = inspectManagedEntry(candidate, { bigint: true });
     } catch (error) {
-      assertManagedParentSnapshot(observed, true);
-      throw error;
+      rethrowAfterValidation(error, () => assertManagedParentSnapshot(observed, true));
     }
     if (stat?.isSymbolicLink()) throw unsafeManagedPath(candidate, "is a symbolic link");
     if (stat && !stat.isDirectory()) throw unsafeManagedPath(candidate, "is not a directory");
@@ -88,8 +101,7 @@ function inspectManagedFile(path, options, expectedParents = null, compareParent
   try {
     stat = inspectManagedEntry(path, options);
   } catch (error) {
-    assertSafeManagedParents(path, parents, compareParentMetadata);
-    throw error;
+    rethrowAfterValidation(error, () => assertSafeManagedParents(path, parents, compareParentMetadata));
   }
   assertSafeManagedParents(path, parents, compareParentMetadata);
   if (stat?.isSymbolicLink()) throw unsafeManagedPath(path, "is a symbolic link");
@@ -181,9 +193,8 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
     try {
       descriptor = openReadDescriptor(path);
     } catch (error) {
-      assertInspectedIdentity(path, inspectFile, conflict, identity,
-        "the pathname changed before it could be opened for reading", parents, compareParentMetadata);
-      throw error;
+      rethrowAfterValidation(error, () => assertInspectedIdentity(path, inspectFile, conflict, identity,
+        "the pathname changed before it could be opened for reading", parents, compareParentMetadata));
     }
     const assertReadIdentity = () => {
       const opened = fstatSync(descriptor, { bigint: true });
@@ -200,8 +211,7 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
     try {
       content = readDescriptorSnapshot(descriptor, { readWhole: readFileData, readChunk: readDescriptorData, path });
     } catch (error) {
-      assertReadIdentity();
-      throw error;
+      rethrowAfterValidation(error, assertReadIdentity);
     }
     assertReadIdentity();
     return encoding === null ? content : content.toString(encoding);
@@ -232,9 +242,8 @@ function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
     try {
       descriptor = openReadDescriptor(path);
     } catch (error) {
-      assertInspectedIdentity(path, inspectManagedFile, ownedFileConflict, identity,
-        "the destination changed before its identity could be captured", parents, true);
-      throw error;
+      rethrowAfterValidation(error, () => assertInspectedIdentity(path, inspectManagedFile, ownedFileConflict, identity,
+        "the destination changed before its identity could be captured", parents, true));
     }
     const opened = fstatSync(descriptor, { bigint: true });
     if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
@@ -278,24 +287,22 @@ function prepareManagedParent(path, createManagedParent) {
   try {
     createManagedParent(dirname(resolve(path)), { recursive: true });
   } catch (error) {
-    assertSafeManagedParents(path);
-    throw error;
+    rethrowAfterValidation(error, () => assertSafeManagedParents(path));
   }
   assertSafeManagedParents(path);
 }
 
-function openOwnedManagedFile(path, createOwnedFile, flags = "wx") {
+function openOwnedManagedFile(path, createOwnedFile, flags = "wx", inspectOwnedDescriptor = fstatSync) {
   const parents = assertSafeManagedParents(path);
   let descriptor;
   try {
     descriptor = createOwnedFile(path, flags, 0o600);
   } catch (error) {
-    assertSafeManagedParents(path, parents);
-    throw error;
+    rethrowAfterValidation(error, () => assertSafeManagedParents(path, parents));
   }
   try {
-    const stat = fstatSync(descriptor, { bigint: true });
-    const owned = { path, descriptor, identity: { dev: stat.dev, ino: stat.ino }, parents };
+    const stat = inspectOwnedDescriptor(descriptor, { bigint: true });
+    const owned = { path, descriptor, identity: { dev: stat.dev, ino: stat.ino }, parents, inspectOwnedDescriptor };
     assertOwnedFile(owned);
     owned.parents = assertSafeManagedParents(path);
     return owned;
@@ -314,7 +321,7 @@ function closeOwnedFile(owned) {
 
 function assertOwnedFile(owned) {
   if (owned.descriptor === null) throw ownedFileConflict(owned.path, "the owned descriptor was closed before validation");
-  const opened = fstatSync(owned.descriptor, { bigint: true });
+  const opened = (owned.inspectOwnedDescriptor ?? fstatSync)(owned.descriptor, { bigint: true });
   if (!opened.isFile() || opened.dev !== owned.identity.dev || opened.ino !== owned.identity.ino) {
     throw ownedFileConflict(owned.path, "the opened file identity changed");
   }
@@ -324,8 +331,7 @@ function assertOwnedFile(owned) {
   try {
     stat = inspectManagedEntry(owned.path, { bigint: true });
   } catch (error) {
-    assertSafeManagedParents(owned.path, parents);
-    throw error;
+    rethrowAfterValidation(error, () => assertSafeManagedParents(owned.path, parents));
   }
   assertSafeManagedParents(owned.path, parents);
   if (!stat) throw ownedFileConflict(owned.path, "the owned path was removed");
@@ -343,8 +349,7 @@ function readOwnedSnapshot(owned, options) {
     assertOwnedFile(owned);
     return bytes;
   } catch (error) {
-    assertOwnedFile(owned);
-    throw error;
+    rethrowAfterValidation(error, () => assertOwnedFile(owned));
   }
 }
 
@@ -446,6 +451,7 @@ export function createRuntime({
   commitOwnedFile = renameSync,
   createManagedParent = mkdirSync,
   createOwnedFile = openSync,
+  inspectOwnedDescriptor = fstatSync,
   inspectPlainFile = inspectPlainProjectFile,
   openReadDescriptor = openVerifiedReadDescriptor,
   currentPlatform = platform,
@@ -504,7 +510,7 @@ export function createRuntime({
         const temp = `${path}.${randomId()}.tmp`;
         let owned = null;
         try {
-          owned = openOwnedManagedFile(temp, createOwnedFile, "wx+");
+          owned = openOwnedManagedFile(temp, createOwnedFile, "wx+", inspectOwnedDescriptor);
           writeStateData(owned.descriptor, data);
           assertOwnedFile(owned);
           assertExpectedDestination();
@@ -626,7 +632,7 @@ export function createRuntime({
       const temp = `${path}.${randomId()}.tmp`;
       let owned = null;
       try {
-        owned = openOwnedManagedFile(temp, createOwnedFile);
+        owned = openOwnedManagedFile(temp, createOwnedFile, "wx", inspectOwnedDescriptor);
         writeStateData(owned.descriptor, `${JSON.stringify(state, null, 2)}\n`);
         assertOwnedFile(owned);
         assertManagedDestination(path, destination.identity, destination.parents);
@@ -667,7 +673,7 @@ export function createRuntime({
       let owned = null;
       try {
         beforeLockOpen(lockPath);
-        owned = openOwnedManagedFile(lockPath, createOwnedFile);
+        owned = openOwnedManagedFile(lockPath, createOwnedFile, "wx", inspectOwnedDescriptor);
         writeLockData(owned.descriptor, JSON.stringify({ token, pid: process.pid }));
         assertOwnedFile(owned);
       } catch (error) {
@@ -698,7 +704,9 @@ export function createRuntime({
         } catch (error) {
           let releaseError = error;
           if (owned.descriptor !== null) {
-            try { assertOwnedFile(owned); } catch (ownershipError) { releaseError = ownershipError; }
+            try { assertOwnedFile(owned); } catch (ownershipError) {
+              releaseError = preferredBoundaryError(error, ownershipError);
+            }
           }
           try { closeOwnedFile(owned); } catch { /* Preserve the release error. */ }
           throw releaseError;

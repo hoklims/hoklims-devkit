@@ -641,31 +641,39 @@ test("runtime revalidates lock ownership when descriptor reads fail", () => {
     }
   }
 
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-lock-pre-read-swap-")));
-  const statePath = join(root, "repository.json");
-  const lockPath = `${statePath}.lock`;
-  const originalPath = `${lockPath}.original`;
-  let seamExecuted = false;
-  let foreignReadExecuted = false;
-  const rt = createRuntime({
-    beforeOwnedLockRead: () => {
-      seamExecuted = true;
-      renameSync(lockPath, originalPath);
-      writeFileSync(lockPath, "FOREIGN-BEFORE-READ\n");
-    },
-    readFileData: () => {
-      foreignReadExecuted = true;
-      throw Object.assign(new Error("foreign read EIO"), { code: "EIO" });
-    },
-  });
-  const release = rt.acquireLock(statePath);
-  let error;
-  try { release(); } catch (caught) { error = caught; }
-  expect(seamExecuted).toBe(true);
-  expect(foreignReadExecuted).toBe(false);
-  expect(error?.code).toBe("STATE_CONFLICT");
-  expect(readFileSync(lockPath, "utf8")).toBe("FOREIGN-BEFORE-READ\n");
-  expect(existsSync(originalPath)).toBe(true);
+  for (const secondaryFstatError of [false, true]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-lock-pre-read-swap-${secondaryFstatError}-`)));
+    const statePath = join(root, "repository.json");
+    const lockPath = `${statePath}.lock`;
+    const originalPath = `${lockPath}.original`;
+    let seamExecuted = false;
+    let foreignReadExecuted = false;
+    let failFstat = false;
+    const rt = createRuntime({
+      beforeOwnedLockRead: () => {
+        seamExecuted = true;
+        renameSync(lockPath, originalPath);
+        writeFileSync(lockPath, "FOREIGN-BEFORE-READ\n");
+        failFstat = secondaryFstatError;
+      },
+      inspectOwnedDescriptor: (descriptor, options) => {
+        if (failFstat) throw Object.assign(new Error("secondary owned descriptor EIO"), { code: "EIO" });
+        return fstatSync(descriptor, options);
+      },
+      readFileData: () => {
+        foreignReadExecuted = true;
+        throw Object.assign(new Error("foreign read EIO"), { code: "EIO" });
+      },
+    });
+    const release = rt.acquireLock(statePath);
+    let error;
+    try { release(); } catch (caught) { error = caught; }
+    expect(seamExecuted).toBe(true);
+    expect(foreignReadExecuted).toBe(false);
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(readFileSync(lockPath, "utf8")).toBe("FOREIGN-BEFORE-READ\n");
+    expect(existsSync(originalPath)).toBe(true);
+  }
 });
 
 test("runtime removes an owned partial temporary state file after a write failure", () => {
