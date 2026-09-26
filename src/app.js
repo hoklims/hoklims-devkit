@@ -268,7 +268,8 @@ function recognizableCompassStatus(rt, parsed, root, host, version) {
     || parsed.hosts[0]?.host !== host
     || !["NO_OBSERVATIONS", "OBSERVING", "OBSERVATION_UNKNOWN", "DEGRADED"].includes(parsed.hosts[0].status)
     || typeof parsed.states?.[host]?.installed !== "boolean"
-    || typeof parsed.states?.[host]?.configured !== "boolean") return false;
+    || typeof parsed.states?.[host]?.configured !== "boolean"
+    || (parsed.hosts[0].status === "OBSERVATION_UNKNOWN" && parsed.states[host].observed !== "UNKNOWN")) return false;
   try {
     return rt.realpath(parsed.project_root) === root;
   } catch {
