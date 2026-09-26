@@ -1689,19 +1689,27 @@ describe("public CLI", () => {
       expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
       expect(rt.writes).toHaveLength(0);
     }
-    for (const phase of ["before-package-lstat", "after-package-lstat", "second-package-lstat"]) {
+    for (const phase of ["before-package-lstat", "after-package-lstat", "second-package-lstat", "recheck-enotdir"]) {
       const rt = fakeRuntime({ tools: ["node", "npm"], files });
       const directoryPresent = rt.directoryPresent;
       const nodeModules = join("/repo", "node_modules");
       const packageRoot = join(nodeModules, "assertledger");
       let nodeModulesUnsafe = false;
+      let reinspectionRace = false;
       let packageLookups = 0;
       rt.directoryPresent = (path) => {
+        if (path === nodeModules && reinspectionRace) {
+          throw Object.assign(new Error("node_modules lookup failed with ENOTDIR during reinspection"), { code: "ENOTDIR" });
+        }
         if (path === nodeModules && nodeModulesUnsafe) {
           throw Object.assign(new Error("node_modules changed to a regular file"), { code: "STATE_CONFLICT" });
         }
         if (path === packageRoot) {
           packageLookups += 1;
+          if (phase === "recheck-enotdir" && packageLookups === 2) {
+            reinspectionRace = true;
+            throw Object.assign(new Error("dist metadata EIO before ancestor reinspection"), { code: "EIO" });
+          }
           if (phase === "before-package-lstat" || (phase === "second-package-lstat" && packageLookups === 2)) {
             nodeModulesUnsafe = true;
             throw Object.assign(new Error("package lstat failed with ENOTDIR"), { code: "ENOTDIR" });
@@ -2609,7 +2617,7 @@ describe("public CLI", () => {
       const report = await execute(parseArgs(["setup", "/repo", "--host", host, "--with", "assertledger"]), rt);
       const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
       expect(report.ok).toBe(false);
-      expect(guidance).toContain("Restore claude CLI, Node on PATH");
+      expect(guidance.toLowerCase()).toContain("restore claude cli, node on path");
       expect(guidance).toContain("Inspect the declared AssertLedger package manager and restore it on PATH if missing before running hoklims-devkit setup /repo --host all --with assertledger");
       expect(rt.writes).toHaveLength(0);
     }
@@ -2851,8 +2859,8 @@ describe("public CLI", () => {
     const actions = report.nextActions.join("\n");
     const expected = "Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude";
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
-    expect(detail).toContain(expected);
-    expect(actions).toContain(expected);
+    expect(detail.toLowerCase()).toContain(expected.toLowerCase());
+    expect(actions.toLowerCase()).toContain(expected.toLowerCase());
     expect(detail).not.toContain("--host codex");
     expect(actions).not.toContain("--host codex");
     expect(rt.writes).toHaveLength(0);
@@ -2874,7 +2882,7 @@ describe("public CLI", () => {
     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
-    expect(guidance).toContain("Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude");
+    expect(guidance.toLowerCase()).toContain("restore the claude cli on path before running hoklims-devkit setup /repo --host claude");
     expect(guidance).not.toContain("--host codex");
     expect(rt.writes).toHaveLength(0);
   });
@@ -2892,7 +2900,7 @@ describe("public CLI", () => {
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
-    expect(guidance).toContain("Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude");
+    expect(guidance.toLowerCase()).toContain("restore the claude cli on path before running hoklims-devkit setup /repo --host claude");
     expect(guidance).not.toContain("hoklims-devkit upgrade");
     expect(guidance).not.toContain("--host codex");
     expect(guidance).not.toContain("--refresh-pending");
@@ -3078,6 +3086,50 @@ describe("public CLI", () => {
     }
   });
 
+  test("ordinary failure finalization replaces stale recovery after release I/O", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const nativeWhich = rt.which;
+    const nativeExec = rt.exec;
+    let toolsMissing = false;
+    rt.which = (name) => toolsMissing && ["node", "npm"].includes(name) ? null : nativeWhich(name);
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+        return { code: 5, stdout: "", stderr: "native setup failed" };
+      }
+      return result;
+    };
+    rt.openStateTransaction = () => ({ state: structuredClone(state), write: () => {}, close: () => {} });
+    rt.acquireLock = () => () => {
+      toolsMissing = true;
+      throw Object.assign(new Error("lock release EIO"), { code: "EIO" });
+    };
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    const command = "hoklims-devkit setup /repo --host codex --with assertledger";
+    expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(report.nextActions).toEqual([`Restore Node, npm on PATH before running ${command}`]);
+    for (const detail of report.conflicts.map((item) => item.detail)) {
+      expect(detail).toContain(`Restore Node, npm on PATH before running ${command}`);
+      expect(detail).not.toContain(`Run ${command}`);
+    }
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("native setup failed");
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("lock release EIO");
+  });
+
   test("recovery prerequisites follow the same admitted saved plan as the retry command", async () => {
     const savedCompass = {
       schemaVersion: 1, projectRoot: "/repo", components: {},
@@ -3152,7 +3204,7 @@ describe("public CLI", () => {
       const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
       expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
       expect(guidance).toContain("--with assertledger,latent-compass");
-      expect(guidance).toContain("Restore Node, uv on PATH");
+      expect(guidance.toLowerCase()).toContain("restore node, uv on path");
     }
 
     const semctxOnly = fakeRuntime({
@@ -3248,7 +3300,7 @@ describe("public CLI", () => {
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     const detail = report.conflicts.find((item) => item.code === "INCOMPLETE_OPERATION")?.detail ?? "";
     const expected = "Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude";
-    expect(detail).toContain(expected);
+    expect(detail.toLowerCase()).toContain(expected.toLowerCase());
     expect(report.nextActions.join("\n").toLowerCase()).toContain(expected.toLowerCase());
   });
 

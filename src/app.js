@@ -379,9 +379,19 @@ function localAssertEntry(rt, root) {
   const packagePath = join(packageRoot, "package.json");
   const cliPath = join(packageRoot, "dist", "cli.js");
   const inspectDirectory = (path, ancestors = []) => {
+    const classifyDirectoryError = (error, failedPath) => {
+      if (error?.code === "ENOTDIR") {
+        throw new Error(`The project-local AssertLedger path has a non-directory component before ${failedPath}`);
+      }
+      throw error;
+    };
     const recheckAncestors = () => {
       for (const ancestor of ancestors) {
-        if (!rt.directoryPresent(ancestor)) throw new Error("The project-local AssertLedger package ancestry changed during admission");
+        try {
+          if (!rt.directoryPresent(ancestor)) throw new Error("The project-local AssertLedger package ancestry changed during admission");
+        } catch (error) {
+          classifyDirectoryError(error, ancestor);
+        }
       }
     };
     try {
@@ -390,8 +400,7 @@ function localAssertEntry(rt, root) {
       return present;
     } catch (error) {
       recheckAncestors();
-      if (error?.code === "ENOTDIR") throw new Error(`The project-local AssertLedger path has a non-directory component before ${path}`);
-      throw error;
+      classifyDirectoryError(error, path);
     }
   };
   const assertPackageDirectories = () => {
@@ -1127,13 +1136,33 @@ export async function execute(options, rt = createRuntime()) {
     rememberRecovery(guidance.command);
     return guidance;
   };
+  const stripRecoverySegments = (text, segments) => {
+    let cleaned = text;
+    for (const fragment of [...segments].filter(Boolean).sort((left, right) => right.length - left.length)) {
+      const authored = fragment.startsWith("hoklims-devkit ")
+        ? [`Only if no saved plan exists, run ${fragment}`, `After resolving the error: ${fragment}`, `After resolving the state conflict: ${fragment}`]
+        : [];
+      for (const sentence of authored) cleaned = cleaned.replaceAll(sentence, "");
+      cleaned = cleaned.replaceAll(fragment, "");
+    }
+    return cleaned
+      .replace(/\s+to recompute the plan\./gu, ".")
+      .replace(/(?:^|\.\s*)to complete the recorded plan[.\s]*/gu, "")
+      .replace(/After resolving (?:the error|the state conflict):\s*\./gu, "")
+      .trim()
+      .replace(/[.\s]+$/u, "");
+  };
   const recordFailureRecovery = (action, command) => {
+    const retired = new Set(authoredRecoverySegments);
+    report.nextActions = report.nextActions.filter((item) => ![...retired].some((segment) => segment && item.includes(segment)));
+    for (const conflict of report.conflicts) {
+      const fact = stripRecoverySegments(conflict.detail, retired);
+      conflict.detail = fact.includes(action) ? `${fact}.` : `${fact}. ${action}.`;
+    }
+    authoredRecoverySegments.clear();
     rememberRecovery(action);
     rememberRecovery(command);
     if (!report.nextActions.includes(action)) report.nextActions.push(action);
-    for (const conflict of report.conflicts) {
-      if (!conflict.detail.includes(command)) conflict.detail = `${conflict.detail.replace(/[.\s]+$/u, "")}. ${action}.`;
-    }
     report.ok = false;
     return report;
   };
