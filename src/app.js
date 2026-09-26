@@ -899,9 +899,11 @@ export async function execute(options, rt = createRuntime()) {
   let state;
   const statePath = rt.statePath(root);
   const recoveryCommandFor = (candidateState, recoveryOptions) => stateRecoveryCommand(options, root, candidateState, hosts, recoveryOptions);
-  const addSavedPlanRefreshRecovery = () => {
-    if (!options.refreshPending || !state?.inProgress) return;
-    const action = `Complete the recorded plan with ${recoveryCommandFor(state)} before refreshing releases`;
+  const addSavedPlanRecovery = () => {
+    if (!state?.inProgress) return;
+    const action = options.refreshPending
+      ? `Complete the recorded plan with ${recoveryCommandFor(state)} before refreshing releases`
+      : `Resolve the reported native conflict, then complete the recorded plan with ${recoveryCommandFor(state)}`;
     if (!report.nextActions.includes(action)) report.nextActions.push(action);
   };
   try {
@@ -947,7 +949,7 @@ export async function execute(options, rt = createRuntime()) {
   }
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) {
-    addSavedPlanRefreshRecovery();
+    addSavedPlanRecovery();
     return report;
   }
   if (options.command === "upgrade") {
@@ -956,7 +958,11 @@ export async function execute(options, rt = createRuntime()) {
       if (previous && previous.version !== versions[name] && previous.hosts.some((host) => !hosts.includes(host))) {
         const optional = selected.filter((item) => item !== "semctx");
         const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
-        problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; run ${retry} to change its shared version safely`);
+        const missingHosts = previous.hosts.filter((host) => !rt.which(host));
+        const instruction = missingHosts.length
+          ? `Restore the ${missingHosts.join(",")} CLI${missingHosts.length === 1 ? "" : "s"} on PATH before running ${retry}`
+          : `run ${retry}`;
+        problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; ${instruction} to change its shared version safely`);
       }
     }
     if (report.conflicts.length) return report;
@@ -973,7 +979,7 @@ export async function execute(options, rt = createRuntime()) {
     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
   if (report.conflicts.length || options.dryRun) {
-    if (report.conflicts.length) addSavedPlanRefreshRecovery();
+    if (report.conflicts.length) addSavedPlanRecovery();
     if (state?.inProgress && !options.refreshPending
       && report.conflicts.some((item) => item.code === "RELEASE_SKEW_OR_UNAVAILABLE")) {
       const optional = selected.filter((name) => name !== "semctx");

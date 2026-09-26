@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
 import { validComponentReport } from "./release-report.js";
+import { assertNoopUpgradeUnchanged } from "./release-upgrade.js";
 
 const PLANNED_FLAGS = { installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" };
 const CONFIGURED_FLAGS = { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" };
@@ -164,6 +165,7 @@ for (const host of ["codex", "claude", "all"]) {
     })) {
       throw new Error(`${host} upgrade did not configure every component: ${JSON.stringify(appliedUpgrade)}`);
     }
+    assertNoopUpgradeUnchanged(targets, beforeUpgradePlan, installed, upgrade, `${host} same-version upgrade`);
     const afterUpgrade = targets.map(snapshot);
     const diagnosedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
     if (!validComponentReport(diagnosedUpgrade, resolve(scenarioRepository), expected, {

@@ -1649,6 +1649,18 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("shared-host upgrade advice names a missing host prerequisite before its retry", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+    } };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+    expect(detail).toContain("Restore the claude CLI on PATH before running hoklims-devkit upgrade /repo --host all");
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("shared-host upgrade advice preserves explicit component selectors", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
       semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
@@ -2114,6 +2126,22 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
     expect(report.nextActions).toContain("Complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger before refreshing releases");
     expect(report.nextActions.join("\n")).not.toContain("--refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a saved pending plan always has a full retry after native preflight failure", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {},
+      inProgress: {
+        command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" },
+      },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.4", stable: "0.3.4", setup: { kind: "invalid-plan" } });
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_WORKSPACE_CONFLICT");
+    expect(report.nextActions).toContain("Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex");
     expect(rt.writes).toHaveLength(0);
   });
 
