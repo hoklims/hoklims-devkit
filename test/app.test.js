@@ -1834,6 +1834,36 @@ describe("public CLI", () => {
     expect(released).toBe(true);
   });
 
+  test("STATE_CHANGED recovery restores a missing host from the latest locked plan", async () => {
+    const lockedState = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {},
+      inProgress: {
+        command: "setup",
+        selected: ["semctx"],
+        hosts: ["claude"],
+        versions: { semctx: "0.3.4" },
+      },
+    };
+    const rt = fakeRuntime();
+    let reads = 0;
+    let released = false;
+    rt.readState = () => ++reads === 1 ? null : structuredClone(lockedState);
+    rt.acquireLock = () => () => { released = true; };
+    const report = await execute(setupOptions(), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    const actions = report.nextActions.join("\n");
+    const expected = "Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude";
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(detail).toContain(expected);
+    expect(actions).toContain(expected);
+    expect(detail).not.toContain("--host codex");
+    expect(actions).not.toContain("--host codex");
+    expect(rt.writes).toHaveLength(0);
+    expect(released).toBe(true);
+  });
+
   test("noncanonical persisted plan order is a state conflict", async () => {
     for (const state of [
       {

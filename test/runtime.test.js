@@ -286,6 +286,40 @@ test("runtime refuses dangling state-directory links and linked profile roots", 
   }
 });
 
+test("runtime classifies a regular ancestor raced during parent creation as a conflict", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-parent-race-")));
+  const foreignAncestor = join(root, "profile");
+  const statePath = join(foreignAncestor, "hoklims-devkit", "repository.json");
+  const foreign = "FOREIGN-PARENT\n";
+  let replacementExecuted = false;
+  const rt = createRuntime({
+    createManagedParent: (path, options) => {
+      replacementExecuted = true;
+      writeFileSync(foreignAncestor, foreign);
+      return mkdirSync(path, options);
+    },
+  });
+  let error;
+  try {
+    rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} });
+  } catch (caught) { error = caught; }
+  expect(replacementExecuted).toBe(true);
+  expect(error?.code).toBe("STATE_CONFLICT");
+  expect(readFileSync(foreignAncestor, "utf8")).toBe(foreign);
+  expect(existsSync(statePath)).toBe(false);
+
+  const io = Object.assign(new Error("parent creation denied"), { code: "EACCES" });
+  const denied = createRuntime({ createManagedParent: () => { throw io; } });
+  let deniedError;
+  try {
+    denied.writeState(join(root, "genuine-io", "repository.json"), {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+    });
+  } catch (caught) { deniedError = caught; }
+  expect(deniedError).toBe(io);
+  expect(deniedError?.code).toBe("EACCES");
+});
+
 test("runtime preserves a lock replaced by a third-party link during release", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-lock-link-")));
   const statePath = join(root, "repository.json");

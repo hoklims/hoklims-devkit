@@ -1029,7 +1029,9 @@ export async function execute(options, rt = createRuntime()) {
     // Revalidate under the exclusive lock before applying or recording anything.
     const currentState = validateState(rt.readState(statePath));
     if (JSON.stringify(currentState) !== JSON.stringify(state)) {
-      return problem(report, "STATE_CHANGED", `Installation state changed during preflight. Re-run ${recoveryCommandFor(currentState)} to recompute the plan.`, 4);
+      const recoveryAction = recoveryActionFor(currentState);
+      if (!report.nextActions.includes(recoveryAction)) report.nextActions.push(recoveryAction);
+      return problem(report, "STATE_CHANGED", `Installation state changed during preflight. ${recoveryAction} to recompute the plan.`, 4);
     }
     let savedState = JSON.stringify(currentState);
     persistedState = currentState ? structuredClone(currentState) : null;

@@ -160,9 +160,14 @@ function closeManagedDestination(destination) {
   closeSync(descriptor);
 }
 
-function prepareManagedParent(path) {
+function prepareManagedParent(path, createManagedParent) {
   assertSafeManagedParents(path);
-  mkdirSync(dirname(resolve(path)), { recursive: true });
+  try {
+    createManagedParent(dirname(resolve(path)), { recursive: true });
+  } catch (error) {
+    assertSafeManagedParents(path);
+    throw error;
+  }
   assertSafeManagedParents(path);
 }
 
@@ -294,6 +299,7 @@ export function createRuntime({
   beforeLockOpen = () => {},
   beforeManagedReadOpen = () => {},
   commitOwnedFile = renameSync,
+  createManagedParent = mkdirSync,
   randomId = randomUUID,
   readFileData = readFileSync,
   removeOwnedFile = unlinkSync,
@@ -360,7 +366,7 @@ export function createRuntime({
     },
     writeState: (path, state) => {
       validateState(state);
-      prepareManagedParent(path);
+      prepareManagedParent(path, createManagedParent);
       const destination = captureManagedDestination(path);
       const temp = `${path}.${randomId()}.tmp`;
       let owned = null;
@@ -394,7 +400,7 @@ export function createRuntime({
       }
     },
     acquireLock: (statePath) => {
-      prepareManagedParent(statePath);
+      prepareManagedParent(statePath, createManagedParent);
       inspectManagedFile(statePath);
       const lockPath = `${statePath}.lock`;
       const existingLock = inspectManagedFile(lockPath);
