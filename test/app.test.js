@@ -101,13 +101,16 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
       if (argv.includes("setup") && argv.includes("--dry-run")) {
         return { code: setup.kind === "setup_plan" ? 0 : 4, stdout: JSON.stringify(setup), stderr: "" };
       }
-      if (argv.includes("doctor")) return { code: 0, stdout: JSON.stringify(workspaceReady ? {
-        healthy: true, version,
+      if (argv.includes("doctor")) return { code: workspaceReady ? 0 : 1, stdout: JSON.stringify(workspaceReady ? {
+        healthy: true, version: argv[1]?.split("@").at(-1) ?? version,
         checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({ name, ok: true, ...(name === "index" ? { status: "healthy" } : {}) })),
-      } : { ok: true }), stderr: "" };
+      } : {
+        healthy: false, version: argv[1]?.split("@").at(-1) ?? version,
+        checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({ name, ok: name !== "workspace", ...(name === "index" ? { status: "healthy" } : {}) })),
+      }), stderr: "" };
       if (argv.includes("index-health")) return workspaceReady
         ? { code: 0, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { canRunHighRiskControl: true }, coverage: { status: "complete" } }), stderr: "" }
-        : { code: 2, stdout: JSON.stringify({ coverage: { status: "partial" } }), stderr: "" };
+        : { code: 2, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "absent" }, freshness: { canRunHighRiskControl: false }, coverage: { status: "partial" } }), stderr: "" };
       if (argv.includes("install")) {
         if (!argv.includes("--dry-run")) semctxInstalledVersion = version;
         return { code: 0, stdout: JSON.stringify({
@@ -864,6 +867,40 @@ describe("public CLI", () => {
     expect((await execute(setupOptions(), rt)).ok).toBe(true);
     expect(rt.writes).toHaveLength(writes);
     expect(rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run"))).toHaveLength(setupCalls);
+  });
+
+  test("setup preserves unknown Semctx workspace evidence as a typed conflict", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const setupWrites = (rt) => rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run")).length;
+
+    const malformed = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+    const malformedExec = malformed.exec;
+    malformed.exec = async (argv, cwd, timeout) => {
+      const result = await malformedExec(argv, cwd, timeout);
+      if (!argv.includes("doctor")) return result;
+      const native = JSON.parse(result.stdout);
+      native.checks.push(null);
+      return { ...result, stdout: JSON.stringify(native) };
+    };
+    const blocked = await execute(setupOptions(), malformed);
+    const guidance = [blocked.conflicts.map((item) => item.detail).join("\n"), blocked.nextActions.join("\n")].join("\n");
+    expect(blocked.conflicts.map((item) => item.code)).toContain("SEMCTX_WORKSPACE_STATUS_INVALID");
+    expect(blocked.components[0].configured).toBe("unknown");
+    expect(guidance).toContain("hoklims-devkit setup /repo --host codex");
+    expect(setupWrites(malformed)).toBe(0);
+    expect(malformed.writes).toHaveLength(0);
+
+    const ready = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+    expect((await execute(setupOptions(), ready)).ok).toBe(true);
+    expect(setupWrites(ready)).toBe(0);
+
+    const repairable = fakeRuntime({ state: structuredClone(state), workspaceReady: false });
+    expect((await execute(setupOptions(), repairable)).ok).toBe(true);
+    expect(setupWrites(repairable)).toBe(1);
   });
 
   test("release skew prevents writes", async () => {

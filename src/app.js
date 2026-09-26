@@ -643,7 +643,12 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     && setupJson.plannedChanges.length === 0 && report.conflicts.length === 0) {
     const doctor = await rt.exec(["bunx", `semctx@${version}`, "doctor", ...args], root);
     const health = await rt.exec(["bunx", `semctx@${version}`, "index-health", ...args], root);
-    skipSetup = semctxWorkspaceStatus(rt, root, doctor, health, version) === "yes";
+    const workspaceStatus = semctxWorkspaceStatus(rt, root, doctor, health, version);
+    if (workspaceStatus === "unknown") {
+      problem(report, "SEMCTX_WORKSPACE_STATUS_INVALID", "Semctx doctor or index-health returned malformed workspace evidence; inspect the native reports before retrying");
+      return null;
+    }
+    skipSetup = workspaceStatus === "yes";
   }
   report.plannedChanges.push({ component: "semctx", workspace: setupJson, hosts: hostJson.hosts });
   return { setup: setupJson, host: hostJson, hostInstallNeeded, skipSetup };
