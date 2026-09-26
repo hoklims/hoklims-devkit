@@ -199,6 +199,21 @@ function readPackageManifest(rt, manifestPath) {
   return manifest;
 }
 
+function projectAdmissionError(error, fallbackCode) {
+  const filesystem = isStateIoError(error);
+  return Object.assign(new Error(String(error?.message ?? error)), {
+    admissionCode: filesystem ? "STATE_IO_ERROR" : fallbackCode,
+    admissionExitCode: filesystem ? 5 : 4,
+    cause: error,
+    code: error?.code,
+  });
+}
+
+function recordProjectAdmissionProblem(report, error, fallbackCode) {
+  const classified = error?.admissionCode ? error : projectAdmissionError(error, fallbackCode);
+  problem(report, classified.admissionCode, String(classified.message ?? classified), classified.admissionExitCode);
+}
+
 function existingAssertVersion(rt, root) {
   const manifestPath = join(root, "package.json");
   if (!rt.plainFilePresent(manifestPath)) return null;
@@ -282,12 +297,12 @@ function inspectAssertProject(rt, root) {
   try {
     manager = packageManager(rt, root);
   } catch (error) {
-    throw Object.assign(new Error(String(error.message ?? error)), { admissionCode: "PACKAGE_MANAGER_CONFLICT" });
+    throw projectAdmissionError(error, "PACKAGE_MANAGER_CONFLICT");
   }
   try {
     return { manager, version: existingAssertVersion(rt, root) };
   } catch (error) {
-    throw Object.assign(new Error(String(error.message ?? error)), { admissionCode: "PACKAGE_MANIFEST_CONFLICT" });
+    throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
   }
 }
 
@@ -678,7 +693,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
   try {
     project = inspectAssertProject(rt, root);
   } catch (error) {
-    problem(report, error.admissionCode ?? "PACKAGE_MANIFEST_CONFLICT", String(error.message ?? error));
+    recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
     return null;
   }
   const { manager, version: current } = project;
@@ -690,7 +705,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
   try {
     localEntry = localAssertEntry(rt, root);
   } catch (error) {
-    problem(report, "PACKAGE_MANIFEST_CONFLICT", String(error.message ?? error));
+    recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
     return null;
   }
   let allowedVersions;
@@ -1078,7 +1093,11 @@ export async function execute(options, rt = createRuntime()) {
         else if (!ready) problem(report, "DOCTOR_NOT_READY", `${name}: installed=${diagnostic.installed}, configured=${diagnostic.configured}`, 3);
       } catch (error) {
         report.components.push({ name, version, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
-        problem(report, "DOCTOR_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
+        if (error?.admissionCode === "STATE_IO_ERROR" || isStateIoError(error)) {
+          problem(report, "STATE_IO_ERROR", `${name}: filesystem inspection failed: ${String(error.message ?? error)}. Check disk access and permissions`, 5);
+        } else {
+          problem(report, "DOCTOR_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
+        }
       }
     }
     if (state?.inProgress) {
@@ -1156,6 +1175,7 @@ export async function execute(options, rt = createRuntime()) {
     return unverifiedStateGuidance("Resolve the locked state read conflict", current);
   };
   let releaseLock;
+  let stateTransaction;
   try {
     releaseLock = rt.acquireLock(statePath);
   } catch (error) {
@@ -1173,7 +1193,8 @@ export async function execute(options, rt = createRuntime()) {
       lockedRereadStarted = true;
       refreshSavePending = false;
       refreshPhaseInvalidated = true;
-      const currentState = validateBoundState(rt.readState(statePath), root);
+      stateTransaction = typeof rt.openStateTransaction === "function" ? rt.openStateTransaction(statePath) : null;
+      const currentState = validateBoundState(stateTransaction ? stateTransaction.state : rt.readState(statePath), root);
       lockedRereadStarted = false;
       persistedState = currentState ? structuredClone(currentState) : null;
       persistedStateObserved = true;
@@ -1190,7 +1211,8 @@ export async function execute(options, rt = createRuntime()) {
         const next = JSON.stringify(nextState);
         if (next !== savedState) {
           try {
-            rt.writeState(statePath, nextState);
+            if (stateTransaction) stateTransaction.write(nextState);
+            else rt.writeState(statePath, nextState);
           } catch (error) {
             throw Object.assign(new Error(String(error?.message ?? error)), {
               cause: error,
@@ -1257,6 +1279,14 @@ export async function execute(options, rt = createRuntime()) {
         : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
     });
   } finally {
+    try {
+      stateTransaction?.close();
+    } catch (error) {
+      stateBoundaryProblem(report, error, statePath, "transaction close", {
+        recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
+          : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
+      });
+    }
     try {
       releaseLock?.();
     } catch (error) {

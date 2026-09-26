@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execute, parseArgs, quoteShellToken } from "../src/app.js";
@@ -1048,6 +1048,47 @@ describe("public CLI", () => {
       expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/packageManager must be a string/u);
       expect(rt.writes).toHaveLength(0);
     }
+  });
+
+  test("AssertLedger manifest I/O errors retain STATE_IO_ERROR classification", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: {
+        command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    const baseFiles = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const failedPath of [join("/repo", "package.json"), join("/repo", "node_modules", "assertledger", "package.json")]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files: baseFiles });
+      const readPlainText = rt.readPlainText;
+      rt.readPlainText = (path) => {
+        if (path === failedPath) throw Object.assign(new Error("simulated metadata I/O failure"), { code: "EIO" });
+        return readPlainText(path);
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("PACKAGE_MANAGER_CONFLICT");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(report.exitCode).toBe(5);
+      expect(guidance).toContain("hoklims-devkit setup /repo --host codex --with assertledger");
+      expect(rt.writes).toHaveLength(0);
+    }
+
+    const invalidJson = fakeRuntime({
+      state: structuredClone(state), tools: ["node", "npm"],
+      files: { ...baseFiles, [join("/repo", "package.json")]: "{" },
+    });
+    const invalid = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), invalidJson);
+    expect(invalid.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_CONFLICT");
+    expect(invalid.exitCode).toBe(4);
+    expect(invalidJson.writes).toHaveLength(0);
   });
 
   test("valid packageManager declarations retain supported manager selection", async () => {
@@ -2190,6 +2231,69 @@ describe("public CLI", () => {
     expect([codex, claude].find((report) => !report.ok).conflicts[0].code).toMatch(/^(RUN_LOCKED|STATE_CHANGED)$/u);
     expect(runtimes.flatMap((rt) => rt.writes)).toHaveLength(3);
     expect(persisted.components.semctx.hosts).toHaveLength(1);
+  });
+
+  test("state checkpoints stay bound to the locked filesystem observation", async () => {
+    const run = async (replacement) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "devkit-state-transaction-")));
+      const statePath = join(root, "profile", "state.json");
+      let commits = 0;
+      let replaced = false;
+      let distinctIdentity = false;
+      const native = createRuntime({
+        commitOwnedFile: (source, destination) => { commits += 1; renameSync(source, destination); },
+      });
+      const rt = fakeRuntime();
+      for (const name of ["readState", "writeState", "openStateTransaction", "acquireLock"]) rt[name] = native[name];
+      rt.resolve = () => root;
+      rt.realpath = realpathSync;
+      rt.statePath = () => statePath;
+      const fakeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === "git") return { code: 0, stdout: `${root}\n`, stderr: "" };
+        const result = await fakeExec(argv, cwd, timeout);
+        if (replacement && !replaced && argv.includes("install") && !argv.includes("--dry-run")) {
+          const before = lstatSync(statePath, { bigint: true });
+          const ownedBytes = readFileSync(statePath);
+          unlinkSync(statePath);
+          writeFileSync(statePath, replacement === "same" ? ownedBytes : "FOREIGN NON-JSON BYTES");
+          const after = lstatSync(statePath, { bigint: true });
+          distinctIdentity = before.dev !== after.dev || before.ino !== after.ino;
+          replaced = true;
+        }
+        try {
+          const parsed = JSON.parse(result.stdout);
+          if (parsed.repositoryRoot === "/repo") parsed.repositoryRoot = root;
+          if (parsed.workspace?.root === "/repo") parsed.workspace.root = root;
+          return { ...result, stdout: JSON.stringify(parsed) };
+        } catch {
+          return result;
+        }
+      };
+      const report = await execute(parseArgs(["setup", root, "--host", "codex"]), rt);
+      return { report, statePath, commits, replaced, distinctIdentity };
+    };
+
+    const positive = await run(null);
+    expect(positive.report.ok).toBe(true);
+    expect(positive.commits).toBe(3);
+    expect(JSON.parse(readFileSync(positive.statePath, "utf8")).inProgress).toBeUndefined();
+
+    if (process.platform !== "win32") {
+      for (const replacement of ["foreign", "same"]) {
+        const raced = await run(replacement);
+        expect(raced.replaced).toBe(true);
+        expect(raced.distinctIdentity).toBe(true);
+        expect(raced.report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+        expect(raced.report.components[0]).toMatchObject({ installed: "unknown", configured: "unknown" });
+        expect(raced.commits).toBe(1);
+        const bytes = readFileSync(raced.statePath);
+        if (replacement === "foreign") expect(bytes.toString("utf8")).toBe("FOREIGN NON-JSON BYTES");
+        else expect(JSON.parse(bytes.toString("utf8")).inProgress).toEqual({
+          command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" },
+        });
+      }
+    }
   });
 
   test("STATE_CHANGED recovery uses the latest locked reread plan", async () => {

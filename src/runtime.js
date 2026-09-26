@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -166,6 +166,27 @@ function closeManagedDestination(destination) {
   closeSync(descriptor);
 }
 
+function readDescriptorText(descriptor) {
+  const stat = fstatSync(descriptor, { bigint: true });
+  if (!stat.isFile() || stat.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw Object.assign(new Error("Managed state file is not a readable regular file"), { code: "STATE_CONFLICT" });
+  }
+  const buffer = Buffer.alloc(Number(stat.size));
+  let offset = 0;
+  while (offset < buffer.length) {
+    const count = readSync(descriptor, buffer, offset, buffer.length - offset, offset);
+    if (count === 0) throw Object.assign(new Error("Managed state file changed while it was read"), { code: "STATE_CONFLICT" });
+    offset += count;
+  }
+  return buffer.toString("utf8");
+}
+
+function parseStateText(text) {
+  const parsed = JSON.parse(text);
+  if (parsed === null) throw new Error("Invalid devkit state structure");
+  return validateState(parsed);
+}
+
 function prepareManagedParent(path, createManagedParent) {
   assertSafeManagedParents(path);
   try {
@@ -177,10 +198,10 @@ function prepareManagedParent(path, createManagedParent) {
   assertSafeManagedParents(path);
 }
 
-function openOwnedManagedFile(path, createOwnedFile) {
+function openOwnedManagedFile(path, createOwnedFile, flags = "wx") {
   let descriptor;
   try {
-    descriptor = createOwnedFile(path, "wx", 0o600);
+    descriptor = createOwnedFile(path, flags, 0o600);
   } catch (error) {
     assertSafeManagedParents(path);
     throw error;
@@ -322,6 +343,89 @@ export function createRuntime({
   writeLockData = writeFileSync,
   writeStateData = writeFileSync,
 } = {}) {
+  const openStateTransaction = (path) => {
+    prepareManagedParent(path, createManagedParent);
+    const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor);
+    let expectedText = null;
+    let state = null;
+    let closed = false;
+    const assertExpectedDestination = () => {
+      if (destination.descriptor === null) {
+        assertManagedDestination(path, null);
+        return;
+      }
+      const held = { path, descriptor: destination.descriptor, identity: destination.identity };
+      assertOwnedFile(held);
+      const currentText = readDescriptorText(destination.descriptor);
+      assertOwnedFile(held);
+      if (currentText !== expectedText) {
+        throw ownedFileConflict(path, "the validated state bytes changed before the next checkpoint");
+      }
+    };
+    try {
+      if (destination.descriptor !== null) {
+        const held = { path, descriptor: destination.descriptor, identity: destination.identity };
+        assertOwnedFile(held);
+        expectedText = readDescriptorText(destination.descriptor);
+        assertOwnedFile(held);
+        state = parseStateText(expectedText);
+      }
+    } catch (error) {
+      closeManagedDestination(destination);
+      throw error;
+    }
+    return {
+      state,
+      write: (nextState) => {
+        if (closed) throw ownedFileConflict(path, "the state transaction is already closed");
+        validateState(nextState);
+        prepareManagedParent(path, createManagedParent);
+        assertExpectedDestination();
+        const data = `${JSON.stringify(nextState, null, 2)}\n`;
+        const temp = `${path}.${randomId()}.tmp`;
+        let owned = null;
+        try {
+          owned = openOwnedManagedFile(temp, createOwnedFile, "wx+");
+          writeStateData(owned.descriptor, data);
+          assertOwnedFile(owned);
+          assertExpectedDestination();
+          const previousDescriptor = destination.descriptor;
+          // Windows cannot replace an open destination. Close only after the final identity and byte
+          // check; the already-open owned temporary file becomes the next guard without reopening the path.
+          if (platform() === "win32" && previousDescriptor !== null) {
+            closeSync(previousDescriptor);
+            destination.descriptor = null;
+          }
+          commitOwnedFile(temp, path);
+          owned.path = path;
+          destination.descriptor = owned.descriptor;
+          destination.identity = owned.identity;
+          expectedText = data;
+          owned = null;
+          if (platform() !== "win32" && previousDescriptor !== null) closeSync(previousDescriptor);
+        } catch (error) {
+          if (owned) {
+            try {
+              cleanupOwnedFile(owned, removeOwnedFile);
+            } catch (cleanupError) {
+              throw cleanupError;
+            }
+          }
+          if (error?.code === "EEXIST") {
+            const collision = inspectManagedFile(temp);
+            if (collision) throw ownedFileConflict(temp, "a foreign temporary file already exists");
+            throw unsafeManagedPath(temp, "changed during exclusive temporary-file creation");
+          }
+          throw error;
+        }
+      },
+      close: () => {
+        if (closed) return;
+        closed = true;
+        closeManagedDestination(destination);
+      },
+    };
+  };
   return {
     which: (name) => Bun.which(name),
     exec: async (argv, cwd, timeoutMs = 120_000) => {
@@ -377,10 +481,9 @@ export function createRuntime({
     readState: (path) => {
       const text = readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeManagedReadOpen, readFileData, openReadDescriptor);
       if (text === null) return null;
-      const parsed = JSON.parse(text);
-      if (parsed === null) throw new Error("Invalid devkit state structure");
-      return validateState(parsed);
+      return parseStateText(text);
     },
+    openStateTransaction,
     writeState: (path, state) => {
       validateState(state);
       prepareManagedParent(path, createManagedParent);
