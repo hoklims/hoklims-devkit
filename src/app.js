@@ -266,9 +266,10 @@ function recognizableCompassStatus(rt, parsed, root, host, version) {
   if (parsed?.schema_version !== 1 || parsed.operation !== "status" || parsed.version !== version
     || typeof parsed.project_root !== "string" || !Array.isArray(parsed.hosts) || parsed.hosts.length !== 1
     || parsed.hosts[0]?.host !== host
-    || !["NO_OBSERVATIONS", "OBSERVING", "DEGRADED"].includes(parsed.hosts[0].status)
+    || !["NO_OBSERVATIONS", "OBSERVING", "OBSERVATION_UNKNOWN", "DEGRADED"].includes(parsed.hosts[0].status)
     || typeof parsed.states?.[host]?.installed !== "boolean"
-    || typeof parsed.states?.[host]?.configured !== "boolean") return false;
+    || typeof parsed.states?.[host]?.configured !== "boolean"
+    || (parsed.hosts[0].status === "OBSERVATION_UNKNOWN" && parsed.states[host].observed !== "UNKNOWN")) return false;
   try {
     return rt.realpath(parsed.project_root) === root;
   } catch {
@@ -653,7 +654,7 @@ async function applyCompass(rt, root, hosts, version, preflight) {
     const status = await rt.exec([entry.executable, "host", "status", "--project-root", root, "--host", host, "--json"], root);
     const observed = parseJsonOutput(status);
     if (status.code !== 0 || !recognizableCompassStatus(rt, observed, root, host, version)
-      || !["NO_OBSERVATIONS", "OBSERVING"].includes(observed.hosts[0].status)
+      || !["NO_OBSERVATIONS", "OBSERVING", "OBSERVATION_UNKNOWN"].includes(observed.hosts[0].status)
       || observed.states?.[host]?.installed !== true || observed.states?.[host]?.configured !== true) {
       throw new Error(`Latent Compass post-install status (${host}): ${shortError(status)}`);
     }
@@ -731,7 +732,7 @@ async function diagnoseCompass(rt, root, hosts, version) {
   const healthy = recognizable && checks.every((item, index) => {
     const host = hosts[index];
     const status = item.report?.hosts?.find((entry) => entry.host === host)?.status;
-    return item.exitCode === 0 && ["NO_OBSERVATIONS", "OBSERVING"].includes(status)
+    return item.exitCode === 0 && ["NO_OBSERVATIONS", "OBSERVING", "OBSERVATION_UNKNOWN"].includes(status)
       && item.report?.states?.[host]?.installed === true && item.report.states[host].configured === true;
   });
   const observations = healthy ? checks.map((item, index) => item.report.states[hosts[index]].observed) : [];
