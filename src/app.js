@@ -509,7 +509,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     if (installed.version !== null && installed.contentMatchesSnapshot === false) {
       // Never replace modified plugin bytes, including during an explicit upgrade.
       problem(report, "SEMCTX_CONTENT_DRIFT", `${host} Semctx plugin bytes differ from its marketplace snapshot; inspect or repair with the native installer`);
-    } else if (previous && installed.version !== null && installed.contentMatchesSnapshot !== true) {
+    } else if (installed.version !== null && installed.contentMatchesSnapshot !== true) {
       problem(report, "SEMCTX_CONTENT_UNVERIFIED", `${host} Semctx plugin content is unverified; inspect semctx plugin-status before retrying`);
     }
   }
@@ -922,7 +922,7 @@ export async function execute(options, rt = createRuntime()) {
       const previous = state?.components?.[name];
       if (previous && previous.version !== versions[name] && previous.hosts.some((host) => !hosts.includes(host))) {
         const optional = selected.filter((item) => item !== "semctx");
-        const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}`;
+        const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
         problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; run ${retry} to change its shared version safely`);
       }
     }

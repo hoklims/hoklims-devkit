@@ -1269,6 +1269,23 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("Semctx setup never replaces installed bytes without positive content attestation", async () => {
+    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5", installedSemctxVersion: "0.3.5" });
+    const nativeExec = rt.exec;
+    let statusCalls = 0;
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (!argv.includes("plugin-status") || ++statusCalls !== 1) return result;
+      const status = JSON.parse(result.stdout);
+      status.hosts.codex.installed.contentMatchesSnapshot = null;
+      return { ...result, stdout: JSON.stringify(status) };
+    };
+    const report = await execute(setupOptions(), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_UNVERIFIED");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("a pinned same-version upgrade does not overwrite modified Semctx plugin bytes", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
@@ -1565,6 +1582,41 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.detail).join("\n"))
       .toContain("hoklims-devkit upgrade /repo --host all --with assertledger");
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("shared-host refresh advice preserves refresh and runs as printed", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm", "claude"], files });
+    const blocked = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]), rt);
+    const detail = blocked.conflicts.map((item) => item.detail).join("\n");
+    expect(blocked.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+    expect(detail).toContain("hoklims-devkit upgrade /repo --host all --with assertledger --refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+
+    const retried = await execute(parseArgs(["upgrade", "/repo", "--host", "all", "--with", "assertledger", "--refresh-pending"]), rt);
+    expect(retried.ok).toBe(true);
+    expect(retried.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+    expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.5", hosts: ["codex", "claude"] });
+    expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex", "claude"] });
   });
 
   test("concurrent host setups cannot overwrite a completed state record", async () => {
