@@ -761,10 +761,23 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
   const previews = [];
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
+    let admission;
+    try {
+      admission = assertAssertAdmission(rt, root, manager, admittedVersions, admittedVersions, needsInstall);
+    } catch (error) {
+      recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
+      return null;
+    }
     const previewCommand = !needsInstall
-      ? localAssertCommand(localEntry, ["setup", root, "--client", client, "--dry-run", "--json"])
+      ? localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"])
       : ["npm", "exec", "--yes", "--ignore-scripts", `--package=assertledger@${version}`, "--", "assertledger", "setup", root, "--client", client, "--dry-run", "--json"];
     const result = await rt.exec(previewCommand, root);
+    try {
+      assertAssertAdmission(rt, root, manager, admittedVersions, admittedVersions, needsInstall);
+    } catch (error) {
+      recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
+      return null;
+    }
     const parsed = nativeResult(result, `assertledger setup (${client})`, report);
     if (!parsed) continue;
     if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
@@ -982,8 +995,10 @@ async function diagnoseAssert(rt, root, hosts, version) {
   const checks = [];
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
-    const argv = localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]);
+    const admission = assertAssertAdmission(rt, root, project.manager, [version], [version]);
+    const argv = localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]);
     const result = await rt.exec(argv, root);
+    assertAssertAdmission(rt, root, project.manager, [version], [version]);
     checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result) });
   }
   const exitCodes = { UNCHANGED: 0, WOULD_CREATE: 0, BLOCKED: 3, CONFLICT: 4 };

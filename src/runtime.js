@@ -134,7 +134,7 @@ function assertManagedDestination(path, expectedIdentity) {
 
 function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
   const initial = inspectManagedFile(path, { bigint: true });
-  if (!initial) return { descriptor: null, identity: null };
+  if (!initial) return { descriptor: null, identity: null, observation: "absent" };
   const identity = { dev: initial.dev, ino: initial.ino };
   let descriptor;
   try {
@@ -150,7 +150,7 @@ function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
       throw ownedFileConflict(path, "the destination changed while its identity was captured");
     }
     assertManagedDestination(path, identity);
-    return { descriptor, identity };
+    return { descriptor, identity, observation: "held" };
   } catch (error) {
     if (descriptor !== undefined) {
       try { closeSync(descriptor); } catch { /* Preserve the capture error. */ }
@@ -163,6 +163,7 @@ function closeManagedDestination(destination) {
   if (destination.descriptor === null) return;
   const descriptor = destination.descriptor;
   destination.descriptor = null;
+  destination.observation = "closed";
   closeSync(descriptor);
 }
 
@@ -337,6 +338,7 @@ export function createRuntime({
   createManagedParent = mkdirSync,
   createOwnedFile = openSync,
   openReadDescriptor = openVerifiedReadDescriptor,
+  currentPlatform = platform,
   randomId = randomUUID,
   readFileData = readFileSync,
   removeOwnedFile = unlinkSync,
@@ -351,10 +353,15 @@ export function createRuntime({
     let state = null;
     let closed = false;
     const assertExpectedDestination = () => {
-      if (destination.descriptor === null) {
+      if (destination.observation === "absent") {
         assertManagedDestination(path, null);
         return;
       }
+      if (destination.observation === "closed-existing") {
+        assertManagedDestination(path, destination.identity);
+        return;
+      }
+      if (destination.descriptor === null) throw ownedFileConflict(path, "the validated destination descriptor is unavailable");
       const held = { path, descriptor: destination.descriptor, identity: destination.identity };
       assertOwnedFile(held);
       const currentText = readDescriptorText(destination.descriptor);
@@ -393,17 +400,19 @@ export function createRuntime({
           const previousDescriptor = destination.descriptor;
           // Windows cannot replace an open destination. Close only after the final identity and byte
           // check; the already-open owned temporary file becomes the next guard without reopening the path.
-          if (platform() === "win32" && previousDescriptor !== null) {
+          if (currentPlatform() === "win32" && previousDescriptor !== null) {
             closeSync(previousDescriptor);
             destination.descriptor = null;
+            destination.observation = "closed-existing";
           }
           commitOwnedFile(temp, path);
           owned.path = path;
           destination.descriptor = owned.descriptor;
           destination.identity = owned.identity;
+          destination.observation = "held";
           expectedText = data;
           owned = null;
-          if (platform() !== "win32" && previousDescriptor !== null) closeSync(previousDescriptor);
+          if (currentPlatform() !== "win32" && previousDescriptor !== null) closeSync(previousDescriptor);
         } catch (error) {
           if (owned) {
             try {
@@ -490,7 +499,7 @@ export function createRuntime({
     readPlainText: (path) => readVerifiedFile(path, inspectPlainProjectFile, unsafeProjectPath, undefined, readFileData, openReadDescriptor),
     realpath: realpathSync,
     statePath: (root) => {
-      const base = platform() === "win32"
+      const base = currentPlatform() === "win32"
         ? process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local")
         : process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
       const key = createHash("sha256").update(root).digest("hex");

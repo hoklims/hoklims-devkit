@@ -1192,15 +1192,25 @@ describe("public CLI", () => {
     expect(ioDoctor.writes).toHaveLength(0);
 
     for (const failure of ["io", "json"]) {
-      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const localFiles = { ...files };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files: localFiles });
       const read = rt.readPlainText;
-      let localReads = 0;
+      const nativeExec = rt.exec;
+      let denyLocalRead = false;
+      let previews = 0;
       rt.readPlainText = (path) => {
-        if (path === join("/repo", "node_modules", "assertledger", "package.json") && ++localReads === 2) {
-          if (failure === "io") throw Object.assign(new Error("apply local manifest EIO"), { code: "EIO" });
-          return "{";
+        if (denyLocalRead && path === join("/repo", "node_modules", "assertledger", "package.json")) {
+          throw Object.assign(new Error("apply local manifest EIO"), { code: "EIO" });
         }
         return read(path);
+      };
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "node" && argv.includes("setup") && argv.includes("--dry-run") && ++previews === 2) {
+          if (failure === "io") denyLocalRead = true;
+          else localFiles[join("/repo", "node_modules", "assertledger", "package.json")] = "{";
+        }
+        return result;
       };
       const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
       expect(report.conflicts.map((item) => item.code)).toContain(failure === "io" ? "STATE_IO_ERROR" : "PACKAGE_MANIFEST_CONFLICT");
@@ -1305,6 +1315,7 @@ describe("public CLI", () => {
       const read = rt.readPlainText;
       let denyLocalRead = false;
       let mutated = false;
+      let previews = 0;
       rt.readPlainText = (path) => {
         if (denyLocalRead && path === join("/repo", "node_modules", "assertledger", "package.json")) {
           throw Object.assign(new Error("local metadata EIO before write"), { code: "EIO" });
@@ -1313,7 +1324,7 @@ describe("public CLI", () => {
       };
       rt.exec = async (argv, cwd, timeout) => {
         const result = await nativeExec(argv, cwd, timeout);
-        if (!mutated && argv[0] === "node" && argv.includes("setup") && argv.includes("--dry-run")) {
+        if (!mutated && argv[0] === "node" && argv.includes("setup") && argv.includes("--dry-run") && ++previews === 2) {
           mutated = true;
           if (mutation.name === "foreign") files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "9.9.9" });
           else if (mutation.name === "malformed") files[join("/repo", "node_modules", "assertledger", "package.json")] = "{";
@@ -1334,6 +1345,80 @@ describe("public CLI", () => {
     expect(validUpgrade.calls.filter((argv) => argv[0] === "npm" && argv.includes("install"))).toHaveLength(1);
     expect(JSON.parse(validUpgrade.readPlainText(join("/repo", "node_modules", "assertledger", "package.json"))).version).toBe("1.3.0");
     expect(validUpgrade.writes.at(-1).components.assertledger.version).toBe("1.3.0");
+  });
+
+  test("AssertLedger multi-host previews revalidate every project and local boundary", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+        assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+      },
+    };
+    const filesAt = () => ({
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    });
+    const mutations = [
+      { name: "local-version", code: "INSTALLED_VERSION_DRIFT" },
+      { name: "local-malformed", code: "PACKAGE_MANIFEST_CONFLICT" },
+      { name: "project-malformed", code: "PACKAGE_MANIFEST_CONFLICT" },
+      { name: "manager-lock", code: "PACKAGE_MANAGER_CONFLICT" },
+      { name: "local-io", code: "STATE_IO_ERROR" },
+      { name: "missing-cli", code: "PACKAGE_MANIFEST_CONFLICT" },
+    ];
+    for (const command of ["setup", "doctor"]) {
+      for (const mutation of mutations) {
+        const files = filesAt();
+        const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm", "claude"], files });
+        const nativeExec = rt.exec;
+        const read = rt.readPlainText;
+        let denyLocalRead = false;
+        let mutated = false;
+        rt.readPlainText = (path) => {
+          if (denyLocalRead && path === join("/repo", "node_modules", "assertledger", "package.json")) {
+            throw Object.assign(new Error("local metadata unavailable"), { code: "EIO" });
+          }
+          return read(path);
+        };
+        rt.exec = async (argv, cwd, timeout) => {
+          const result = await nativeExec(argv, cwd, timeout);
+          if (!mutated && argv[0] === "node" && argv[1].endsWith(join("assertledger", "dist", "cli.js"))
+            && argv.includes("codex") && argv.includes("--dry-run")) {
+            mutated = true;
+            if (mutation.name === "local-version") files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "9.9.9" });
+            else if (mutation.name === "local-malformed") files[join("/repo", "node_modules", "assertledger", "package.json")] = "{";
+            else if (mutation.name === "project-malformed") files[join("/repo", "package.json")] = "{";
+            else if (mutation.name === "manager-lock") files[join("/repo", "pnpm-lock.yaml")] = "lockfileVersion: 9";
+            else if (mutation.name === "local-io") denyLocalRead = true;
+            else delete files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")];
+          }
+          return result;
+        };
+        const args = command === "setup"
+          ? ["setup", "/repo", "--host", "all", "--with", "assertledger", "--dry-run"]
+          : ["doctor", "/repo", "--host", "all", "--with", "assertledger"];
+        const report = await execute(parseArgs(args), rt);
+        expect(mutated).toBe(true);
+        expect(report.ok).toBe(false);
+        expect(report.conflicts.map((item) => item.code)).toContain(mutation.code);
+        expect(rt.calls.filter((argv) => argv[0] === "node" && argv[1]?.endsWith(join("assertledger", "dist", "cli.js")) && argv.includes("claude-code"))).toHaveLength(0);
+        expect(rt.writes).toHaveLength(0);
+      }
+    }
+
+    for (const command of ["setup", "doctor"]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm", "claude"], files: filesAt() });
+      const args = command === "setup"
+        ? ["setup", "/repo", "--host", "all", "--with", "assertledger", "--dry-run"]
+        : ["doctor", "/repo", "--host", "all", "--with", "assertledger"];
+      const report = await execute(parseArgs(args), rt);
+      if (command === "setup") expect(report.ok).toBe(true);
+      else expect(report.components.find((item) => item.name === "assertledger").configured).toBe("yes");
+      expect(rt.calls.filter((argv) => argv[0] === "node" && argv[1]?.endsWith(join("assertledger", "dist", "cli.js")) && argv.includes("claude-code"))).toHaveLength(1);
+    }
   });
 
   test("valid packageManager declarations retain supported manager selection", async () => {

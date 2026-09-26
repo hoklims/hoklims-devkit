@@ -583,6 +583,31 @@ test("runtime preserves a state destination replaced during temporary write", ()
   }
 });
 
+test("runtime keeps an existing destination authoritative after a Windows publication I/O failure", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-windows-publish-")));
+  const statePath = join(root, "repository.json");
+  const original = `${JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }, null, 2)}\n`;
+  writeFileSync(statePath, original);
+  let platformObserved = false;
+  const rt = createRuntime({
+    currentPlatform: () => { platformObserved = true; return "win32"; },
+    randomId: () => "candidate",
+    commitOwnedFile: () => { throw Object.assign(new Error("Windows rename failed"), { code: "EIO" }); },
+  });
+  const transaction = rt.openStateTransaction(statePath);
+  let writeError;
+  try {
+    transaction.write({ schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } });
+  } catch (error) {
+    writeError = error;
+  }
+  expect(platformObserved).toBe(true);
+  expect(writeError?.code).toBe("EIO");
+  expect(readFileSync(statePath, "utf8")).toBe(original);
+  expect(() => transaction.close()).not.toThrow();
+  expect(readFileSync(statePath, "utf8")).toBe(original);
+});
+
 test("runtime preserves and classifies every foreign temporary-file collision", () => {
   for (const kind of ["file", "directory", "symlink"]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-state-${kind}-collision-`)));
