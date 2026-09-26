@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntime, validateState } from "../src/runtime.js";
@@ -141,13 +141,15 @@ test("runtime preserves a state destination replaced during temporary write", ()
     const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-destination-")));
     const statePath = join(root, "repository.json");
     const tempPath = `${statePath}.candidate.tmp`;
+    const foreignPath = join(root, "foreign-replacement.json");
     if (initiallyPresent) writeFileSync(statePath, "original state\n");
+    writeFileSync(foreignPath, "foreign replacement\n");
     const rt = createRuntime({
       randomId: () => "candidate",
       writeStateData: (fd, data) => {
         writeFileSync(fd, data);
         if (existsSync(statePath)) unlinkSync(statePath);
-        writeFileSync(statePath, "foreign replacement\n");
+        renameSync(foreignPath, statePath);
       },
     });
     let error;
