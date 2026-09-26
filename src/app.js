@@ -89,19 +89,15 @@ export function quoteShellToken(value) {
   return `'${text.replaceAll("'", `'"'"'`)}'`;
 }
 
-function stateRecoveryCommand(options, root, state, hosts) {
+function stateRecoveryCommand(options, root, state, hosts, { useRequestedRefresh = false } = {}) {
   const pending = state?.inProgress;
   const requestedSelected = ["semctx", ...options.with];
-  const pendingMatchesRequest = pending?.command === options.command
-    && JSON.stringify(pending.hosts) === JSON.stringify(hosts)
-    && JSON.stringify(pending.selected) === JSON.stringify(requestedSelected);
-  const refreshRequired = options.refreshPending && Boolean(pending) && !pendingMatchesRequest;
-  const command = pending && !refreshRequired ? pending.command : options.command;
-  const selected = pending && !refreshRequired ? pending.selected : requestedSelected;
-  const selectedHosts = pending && !refreshRequired ? pending.hosts : hosts;
+  const command = pending && !useRequestedRefresh ? pending.command : options.command;
+  const selected = pending && !useRequestedRefresh ? pending.selected : requestedSelected;
+  const selectedHosts = pending && !useRequestedRefresh ? pending.hosts : hosts;
   const host = selectedHosts.length === 2 ? "all" : selectedHosts[0];
   const optional = selected.filter((name) => name !== "semctx");
-  return `hoklims-devkit ${command} ${quoteShellToken(root)} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}${refreshRequired ? " --refresh-pending" : ""}`;
+  return `hoklims-devkit ${command} ${quoteShellToken(root)} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}${useRequestedRefresh ? " --refresh-pending" : ""}`;
 }
 
 function nativeResult(result, name, report) {
@@ -820,7 +816,7 @@ export async function execute(options, rt = createRuntime()) {
   report.hosts = hosts;
   let state;
   const statePath = rt.statePath(root);
-  const recoveryCommandFor = (candidateState) => stateRecoveryCommand(options, root, candidateState, hosts);
+  const recoveryCommandFor = (candidateState, recoveryOptions) => stateRecoveryCommand(options, root, candidateState, hosts, recoveryOptions);
   try {
     state = validateState(rt.readState(statePath));
     if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
@@ -891,6 +887,7 @@ export async function execute(options, rt = createRuntime()) {
   }
   const nextState = state ? structuredClone(state) : { schemaVersion: 1, projectRoot: root, components: {} };
   let persistedState = state ? structuredClone(state) : null;
+  let refreshSavePending = options.refreshPending && Boolean(state?.inProgress);
   let releaseLock;
   try {
     releaseLock = rt.acquireLock(statePath);
@@ -936,6 +933,7 @@ export async function execute(options, rt = createRuntime()) {
         versions: Object.fromEntries(selected.map((name) => [name, versions[name]])),
       };
       saveStateIfChanged();
+      refreshSavePending = false;
     }
     for (const component of report.components) {
       const { name, version } = component;
@@ -969,12 +967,16 @@ export async function execute(options, rt = createRuntime()) {
       saveStateIfChanged();
     }
   } catch (error) {
-    stateBoundaryProblem(report, error, statePath, "read or write", { recoveryCommand: recoveryCommandFor(persistedState) });
+    stateBoundaryProblem(report, error, statePath, "read or write", {
+      recoveryCommand: recoveryCommandFor(persistedState, { useRequestedRefresh: refreshSavePending }),
+    });
   } finally {
     try {
       releaseLock?.();
     } catch (error) {
-      stateBoundaryProblem(report, error, statePath, "lock release", { recoveryCommand: recoveryCommandFor(persistedState) });
+      stateBoundaryProblem(report, error, statePath, "lock release", {
+        recoveryCommand: recoveryCommandFor(persistedState, { useRequestedRefresh: refreshSavePending }),
+      });
     }
   }
   report.ok = report.conflicts.length === 0;

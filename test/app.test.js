@@ -1050,6 +1050,10 @@ describe("public CLI", () => {
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("PENDING_PLAN_CONFLICT");
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(detail).toContain("hoklims-devkit setup /repo --host all");
+    expect(detail).not.toContain("hoklims-devkit upgrade");
+    expect(detail).not.toContain("--refresh-pending");
     expect(rt.writes).toHaveLength(0);
   });
 
@@ -1342,6 +1346,37 @@ describe("public CLI", () => {
     expect(laterFailure.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
     expect(laterDetail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
     expect(laterDetail).not.toContain("--refresh-pending");
+  });
+
+  test("native failure resumes a successfully persisted refreshed plan without refreshing again", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: {
+        command: "setup",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const rt = fakeRuntime({
+      state,
+      version: "0.3.5",
+      stable: "0.3.5",
+      tools: ["node", "npm"],
+      failAssertInstall: true,
+      files: {
+        [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+      },
+    });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(rt.writes[0].inProgress).toMatchObject({ command: "upgrade", selected: ["semctx", "assertledger"], hosts: ["codex"] });
+    expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(detail).not.toContain("--refresh-pending");
   });
 
   test("doctor state I/O recovery repeats doctor", async () => {
