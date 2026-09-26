@@ -184,22 +184,23 @@ function readPackageManifest(rt, manifestPath) {
     manifest = JSON.parse(rt.readPlainText(manifestPath));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
-    throw new Error("package.json is invalid JSON");
+    throw projectAdmissionError(new Error("package.json is invalid JSON"), "PACKAGE_MANIFEST_CONFLICT");
   }
   if (!manifest || Array.isArray(manifest) || typeof manifest !== "object") {
-    throw new Error("package.json must contain an object");
+    throw projectAdmissionError(new Error("package.json must contain an object"), "PACKAGE_MANIFEST_CONFLICT");
   }
   for (const group of DEPENDENCY_GROUPS) {
     if (!Object.hasOwn(manifest, group)) continue;
     const value = manifest[group];
     if (!value || Array.isArray(value) || typeof value !== "object") {
-      throw new Error(`${group} must be an object`);
+      throw projectAdmissionError(new Error(`${group} must be an object`), "PACKAGE_MANIFEST_CONFLICT");
     }
   }
   return manifest;
 }
 
 function projectAdmissionError(error, fallbackCode) {
+  if (error?.admissionCode) return error;
   const filesystem = isStateIoError(error);
   return Object.assign(new Error(String(error?.message ?? error)), {
     admissionCode: filesystem ? "STATE_IO_ERROR" : fallbackCode,
@@ -846,7 +847,12 @@ async function applyAssert(rt, root, hosts, version, preflight) {
     const install = await rt.exec(installPackageCommand(preflight.manager, version), root, 300_000);
     if (install.code !== 0) throw new Error(`AssertLedger package install: ${shortError(install)}`);
   }
-  const entry = localAssertEntry(rt, root);
+  let entry;
+  try {
+    entry = localAssertEntry(rt, root);
+  } catch (error) {
+    throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
+  }
   if (entry?.version !== version) throw new Error(`AssertLedger project executable is not the requested ${version}`);
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
@@ -934,7 +940,12 @@ async function diagnoseAssert(rt, root, hosts, version) {
   if (project.version !== version) {
     return { name: "assertledger", version, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
   }
-  const entry = localAssertEntry(rt, root);
+  let entry;
+  try {
+    entry = localAssertEntry(rt, root);
+  } catch (error) {
+    throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
+  }
   if (entry?.version !== version) {
     return { name: "assertledger", version, installed: "no", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
   }
@@ -1100,7 +1111,9 @@ export async function execute(options, rt = createRuntime()) {
         else if (!ready) problem(report, "DOCTOR_NOT_READY", `${name}: installed=${diagnostic.installed}, configured=${diagnostic.configured}`, 3);
       } catch (error) {
         report.components.push({ name, version, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
-        if (error?.admissionCode === "STATE_IO_ERROR" || isStateIoError(error)) {
+        if (error?.admissionCode) {
+          recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
+        } else if (isStateIoError(error)) {
           problem(report, "STATE_IO_ERROR", `${name}: filesystem inspection failed: ${String(error.message ?? error)}. Check disk access and permissions`, 5);
         } else {
           problem(report, "DOCTOR_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
@@ -1177,6 +1190,13 @@ export async function execute(options, rt = createRuntime()) {
   let refreshPhaseInvalidated = false;
   let lockedRereadStarted = false;
   let lockedStateUnverified = false;
+  const invalidateLockedAuthority = () => {
+    lockedStateUnverified = true;
+    persistedStateObserved = false;
+    persistedState = null;
+    refreshSavePending = false;
+    refreshPhaseInvalidated = true;
+  };
   const lockedUnknownGuidance = () => {
     const current = stateRecoveryCommand(options, root, null, requestedRecoveryHosts, { useRequestedRefresh: false });
     return unverifiedStateGuidance("Resolve the locked state conflict", current);
@@ -1270,7 +1290,8 @@ export async function execute(options, rt = createRuntime()) {
           component.state = "partial";
           component.installed = "unknown";
           component.configured = "unknown";
-          problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error: ${recoveryActionFor(recoveryState())}.`, 5);
+          if (error?.admissionCode) recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
+          else problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error: ${recoveryActionFor(recoveryState())}.`, 5);
           break;
         }
       }
@@ -1282,11 +1303,7 @@ export async function execute(options, rt = createRuntime()) {
   } catch (error) {
     if ((lockedRereadStarted && !persistedStateObserved)
       || (stateTransaction && error?.code === "STATE_CONFLICT")) {
-      lockedStateUnverified = true;
-      persistedStateObserved = false;
-      persistedState = null;
-      refreshSavePending = false;
-      refreshPhaseInvalidated = true;
+      invalidateLockedAuthority();
     }
     stateBoundaryProblem(report, error, statePath, "read or write", {
       recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
@@ -1296,6 +1313,7 @@ export async function execute(options, rt = createRuntime()) {
     try {
       stateTransaction?.close();
     } catch (error) {
+      if (error?.code === "STATE_CONFLICT") invalidateLockedAuthority();
       stateBoundaryProblem(report, error, statePath, "transaction close", {
         recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
           : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
@@ -1304,6 +1322,7 @@ export async function execute(options, rt = createRuntime()) {
     try {
       releaseLock?.();
     } catch (error) {
+      if (error?.code === "STATE_CONFLICT") invalidateLockedAuthority();
       stateBoundaryProblem(report, error, statePath, "lock release", {
         recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
           : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),

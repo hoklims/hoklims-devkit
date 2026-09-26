@@ -340,6 +340,7 @@ export function createRuntime({
   randomId = randomUUID,
   readFileData = readFileSync,
   removeOwnedFile = unlinkSync,
+  spawnProcess,
   writeLockData = writeFileSync,
   writeStateData = writeFileSync,
 } = {}) {
@@ -422,7 +423,18 @@ export function createRuntime({
       close: () => {
         if (closed) return;
         closed = true;
-        closeManagedDestination(destination);
+        let operationError = null;
+        try {
+          assertExpectedDestination();
+        } catch (error) {
+          operationError = error;
+        }
+        try {
+          closeManagedDestination(destination);
+        } catch (error) {
+          if (!operationError) operationError = error;
+        }
+        if (operationError) throw operationError;
       },
     };
   };
@@ -431,7 +443,8 @@ export function createRuntime({
     exec: async (argv, cwd, timeoutMs = 120_000) => {
       let child;
       try {
-        child = Bun.spawn({ cmd: argv, cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+        const spawn = spawnProcess ?? Bun.spawn;
+        child = spawn({ cmd: argv, cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
       } catch (error) {
         return { code: 5, stdout: "", stderr: String(error) };
       }
@@ -441,12 +454,17 @@ export function createRuntime({
         child.kill();
       }, timeoutMs);
       try {
-        const [stdout, stderr, code] = await Promise.all([
-          new Response(child.stdout).text(),
-          new Response(child.stderr).text(),
-          child.exited,
-        ]);
-        return { code: timedOut ? 5 : code, stdout, stderr: timedOut ? `Timed out after ${timeoutMs} ms` : stderr };
+        try {
+          const [stdout, stderr, code] = await Promise.all([
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+            child.exited,
+          ]);
+          return { code: timedOut ? 5 : code, stdout, stderr: timedOut ? `Timed out after ${timeoutMs} ms` : stderr };
+        } catch (error) {
+          try { child.kill(); } catch { /* Preserve the stream failure. */ }
+          return { code: 5, stdout: "", stderr: `Native process output read failed: ${String(error?.message ?? error)}` };
+        }
       } finally {
         clearTimeout(timer);
       }

@@ -195,6 +195,38 @@ describe("public CLI", () => {
     expect(preflight.writes).toHaveLength(0);
   });
 
+  test("native stream failures retain the validated report and saved retry", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const streamError = Object.assign(new Error("simulated stdout read failure"), { code: "EIO" });
+    const native = createRuntime({
+      spawnProcess: () => ({
+        stdout: new ReadableStream({ start(controller) { controller.error(streamError); } }),
+        stderr: new ReadableStream({ start(controller) { controller.close(); } }),
+        exited: Promise.resolve(0),
+        kill: () => {},
+      }),
+    });
+    const rt = fakeRuntime({ state });
+    const exec = rt.exec;
+    rt.exec = (argv, cwd, timeout) => argv.includes("plugin-status")
+      ? native.exec(argv, cwd, timeout) : exec(argv, cwd, timeout);
+    const report = await execute(setupOptions(), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("NATIVE_REPORT_INVALID");
+    expect(report.conflicts.map((item) => item.code)).not.toContain("UNEXPECTED_ERROR");
+    expect(report.projectRoot).toBe("/repo");
+    expect(report.hosts).toEqual(["codex"]);
+    expect(guidance).toContain("hoklims-devkit setup /repo --host codex");
+    expect(rt.writes).toHaveLength(0);
+
+    const control = fakeRuntime({ state: structuredClone(state) });
+    expect((await execute({ ...setupOptions(), dryRun: true }, control)).ok).toBe(true);
+    expect(control.writes).toHaveLength(0);
+  });
+
   test("early Bun and Git failures recover the validated saved plan", async () => {
     const state = {
       schemaVersion: 1,
@@ -1086,7 +1118,7 @@ describe("public CLI", () => {
       files: { ...baseFiles, [join("/repo", "package.json")]: "{" },
     });
     const invalid = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), invalidJson);
-    expect(invalid.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_CONFLICT");
+    expect(invalid.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
     expect(invalid.exitCode).toBe(4);
     expect(invalidJson.writes).toHaveLength(0);
 
@@ -1106,6 +1138,60 @@ describe("public CLI", () => {
     const readableReport = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, readable);
     expect(readableReport.ok).toBe(true);
     expect(readable.writes).toHaveLength(0);
+  });
+
+  test("AssertLedger doctor and apply share manifest error classification", async () => {
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const managed = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { assertledger: { version: "1.2.0", hosts: ["codex"] } },
+    };
+    const malformedDoctor = fakeRuntime({
+      state: managed,
+      files: { ...files, [join("/repo", "package.json")]: "{" },
+    });
+    const malformedReport = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), malformedDoctor);
+    expect(malformedReport.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+    expect(malformedReport.conflicts.map((item) => item.code)).not.toContain("DOCTOR_UNAVAILABLE");
+    expect(malformedReport.exitCode).toBe(4);
+    expect(malformedDoctor.writes).toHaveLength(0);
+
+    const ioDoctor = fakeRuntime({ state: managed, files });
+    const doctorRead = ioDoctor.readPlainText;
+    ioDoctor.readPlainText = (path) => {
+      if (path === join("/repo", "node_modules", "assertledger", "package.json")) {
+        throw Object.assign(new Error("doctor local manifest EIO"), { code: "EIO" });
+      }
+      return doctorRead(path);
+    };
+    const ioReport = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), ioDoctor);
+    expect(ioReport.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(ioReport.conflicts.map((item) => item.code)).not.toContain("DOCTOR_UNAVAILABLE");
+    expect(ioReport.exitCode).toBe(5);
+    expect(ioDoctor.writes).toHaveLength(0);
+
+    for (const failure of ["io", "json"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const read = rt.readPlainText;
+      let localReads = 0;
+      rt.readPlainText = (path) => {
+        if (path === join("/repo", "node_modules", "assertledger", "package.json") && ++localReads === 2) {
+          if (failure === "io") throw Object.assign(new Error("apply local manifest EIO"), { code: "EIO" });
+          return "{";
+        }
+        return read(path);
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain(failure === "io" ? "STATE_IO_ERROR" : "PACKAGE_MANIFEST_CONFLICT");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("APPLY_FAILED");
+      expect(report.exitCode).toBe(failure === "io" ? 5 : 4);
+      expect(rt.writes.at(-1).inProgress.selected).toEqual(["semctx", "assertledger"]);
+    }
   });
 
   test("valid packageManager declarations retain supported manager selection", async () => {
@@ -2251,7 +2337,7 @@ describe("public CLI", () => {
   });
 
   test("state checkpoints stay bound to the locked filesystem observation", async () => {
-    const run = async (replacement) => {
+    const run = async ({ replacement = null, seedCompleted = false, nativeFailure = false } = {}) => {
       const root = realpathSync(mkdtempSync(join(tmpdir(), "devkit-state-transaction-")));
       const statePath = join(root, "profile", "state.json");
       let commits = 0;
@@ -2260,8 +2346,19 @@ describe("public CLI", () => {
       const native = createRuntime({
         commitOwnedFile: (source, destination) => { commits += 1; renameSync(source, destination); },
       });
-      const rt = fakeRuntime();
-      for (const name of ["readState", "writeState", "openStateTransaction", "acquireLock"]) rt[name] = native[name];
+      const seededState = seedCompleted ? {
+        schemaVersion: 1, projectRoot: root,
+        components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      } : null;
+      if (seededState) native.writeState(statePath, seededState);
+      commits = 0;
+      const rt = fakeRuntime({ state: seededState, workspaceReady: seedCompleted });
+      for (const name of ["readState", "writeState", "acquireLock"]) rt[name] = native[name];
+      let transactionOpened = false;
+      rt.openStateTransaction = (path) => {
+        transactionOpened = true;
+        return native.openStateTransaction(path);
+      };
       rt.resolve = () => root;
       rt.realpath = realpathSync;
       rt.statePath = () => statePath;
@@ -2269,7 +2366,10 @@ describe("public CLI", () => {
       rt.exec = async (argv, cwd, timeout) => {
         if (argv[0] === "git") return { code: 0, stdout: `${root}\n`, stderr: "" };
         const result = await fakeExec(argv, cwd, timeout);
-        if (replacement && !replaced && argv.includes("install") && !argv.includes("--dry-run")) {
+        const replacementPoint = seedCompleted
+          ? transactionOpened && argv.includes("plugin-status")
+          : argv.includes("install") && !argv.includes("--dry-run");
+        if (replacement && !replaced && replacementPoint) {
           const before = lstatSync(statePath, { bigint: true });
           const ownedBytes = readFileSync(statePath);
           unlinkSync(statePath);
@@ -2277,6 +2377,7 @@ describe("public CLI", () => {
           const after = lstatSync(statePath, { bigint: true });
           distinctIdentity = before.dev !== after.dev || before.ino !== after.ino;
           replaced = true;
+          if (nativeFailure) return { code: 5, stdout: "", stderr: "simulated native status failure" };
         }
         try {
           const parsed = JSON.parse(result.stdout);
@@ -2291,14 +2392,14 @@ describe("public CLI", () => {
       return { report, statePath, commits, replaced, distinctIdentity };
     };
 
-    const positive = await run(null);
+    const positive = await run();
     expect(positive.report.ok).toBe(true);
     expect(positive.commits).toBe(3);
     expect(JSON.parse(readFileSync(positive.statePath, "utf8")).inProgress).toBeUndefined();
 
     if (process.platform !== "win32") {
       for (const replacement of ["foreign", "same"]) {
-        const raced = await run(replacement);
+        const raced = await run({ replacement });
         expect(raced.replaced).toBe(true);
         expect(raced.distinctIdentity).toBe(true);
         expect(raced.report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
@@ -2313,6 +2414,27 @@ describe("public CLI", () => {
           command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" },
         });
       }
+
+      for (const replacement of ["foreign", "same"]) {
+        const noOp = await run({ replacement, seedCompleted: true });
+        expect(noOp.replaced).toBe(true);
+        expect(noOp.distinctIdentity).toBe(true);
+        expect(noOp.commits).toBe(0);
+        expect(noOp.report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+        const guidance = [noOp.report.conflicts.map((item) => item.detail).join("\n"), noOp.report.nextActions.join("\n")].join("\n");
+        expect(guidance).toContain("inspect and validate the saved Devkit state");
+        expect(guidance).not.toContain("complete the recorded plan");
+        if (replacement === "foreign") expect(readFileSync(noOp.statePath, "utf8")).toBe("FOREIGN NON-JSON BYTES");
+        else expect(JSON.parse(readFileSync(noOp.statePath, "utf8")).components.semctx.version).toBe("0.3.4");
+      }
+
+      const failed = await run({ replacement: "foreign", seedCompleted: true, nativeFailure: true });
+      expect(failed.report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+      expect(failed.report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+      const failedGuidance = [failed.report.conflicts.map((item) => item.detail).join("\n"), failed.report.nextActions.join("\n")].join("\n");
+      expect(failedGuidance).toContain("inspect and validate the saved Devkit state");
+      expect(failedGuidance).not.toContain("complete the recorded plan");
+      expect(readFileSync(failed.statePath, "utf8")).toBe("FOREIGN NON-JSON BYTES");
     }
   });
 
@@ -2779,6 +2901,23 @@ describe("public CLI", () => {
     expect(failedRelease.ok).toBe(false);
     expect(failedRelease.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
     expect(failedRelease.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+
+    const pending = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const interruptedRelease = fakeRuntime({ state: pending });
+    const nativeExec = interruptedRelease.exec;
+    interruptedRelease.exec = async (argv, cwd, timeout) => argv.includes("setup") && !argv.includes("--dry-run")
+      ? { code: 5, stdout: "", stderr: "simulated native failure" }
+      : nativeExec(argv, cwd, timeout);
+    interruptedRelease.acquireLock = () => () => { throw conflict("lock was replaced before release"); };
+    const interrupted = await execute(setupOptions(), interruptedRelease);
+    const guidance = [interrupted.conflicts.map((item) => item.detail).join("\n"), interrupted.nextActions.join("\n")].join("\n");
+    expect(interrupted.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(interrupted.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).not.toContain("complete the recorded plan");
   });
 
   test("genuine lock contention remains RUN_LOCKED", async () => {
