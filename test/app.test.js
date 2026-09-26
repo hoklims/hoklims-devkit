@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execute, main, parseArgs, quoteShellToken } from "../src/app.js";
@@ -866,6 +866,73 @@ describe("public CLI", () => {
     expect(admitted.components.find((item) => item.name === "assertledger").configured).toBe("yes");
     expect(admitted.conflicts.filter((item) => item.detail.startsWith("assertledger:"))).toHaveLength(0);
     expect(valid.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(true);
+  });
+
+  test("AssertLedger admission preserves secondary filesystem diagnostics in every phase", async () => {
+    const manifestPath = join("/repo", "package.json");
+    const manifestBytes = JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" });
+    const baseFiles = () => ({
+      [manifestPath]: manifestBytes,
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    });
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] }, assertledger: { version: "1.2.0", hosts: ["codex"] } },
+    };
+    for (const phase of ["doctor", "preflight", "apply"]) {
+      for (const closeFails of [false, true]) {
+        const root = realpathSync(mkdtempSync(join(tmpdir(), `devkit-assert-admission-${phase}-${closeFails}-`)));
+        const actualManifest = join(root, "package.json");
+        writeFileSync(actualManifest, manifestBytes);
+        const readError = Object.assign(new Error(`${phase} manifest read EIO`), { code: "EIO" });
+        const closeError = Object.assign(new Error(`${phase} manifest close EBUSY`), {
+          code: "EBUSY", path: actualManifest,
+        });
+        const native = createRuntime({
+          closeDescriptor: (descriptor) => {
+            closeSync(descriptor);
+            if (closeFails) throw closeError;
+          },
+          readFileData: () => { throw readError; },
+        });
+        const files = baseFiles();
+        const rt = fakeRuntime({ state: phase === "doctor" ? structuredClone(state) : null, tools: ["node", "npm"], files });
+        const fakeRead = rt.readPlainText;
+        const nativeExec = rt.exec;
+        let failManifestRead = phase !== "apply";
+        rt.readPlainText = (path) => path === manifestPath && failManifestRead
+          ? native.readPlainText(actualManifest) : fakeRead(path);
+        rt.exec = async (argv, cwd, timeout) => {
+          const result = await nativeExec(argv, cwd, timeout);
+          if (phase === "apply" && argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+            failManifestRead = true;
+          }
+          return result;
+        };
+        const options = phase === "doctor" ? parseArgs(["doctor", "/repo", "--host", "codex"])
+          : { ...setupOptions(), with: ["assertledger"], dryRun: phase === "preflight" };
+        const report = await execute(options, rt);
+        const conflict = report.conflicts.find((item) => item.code === "STATE_IO_ERROR");
+        expect(conflict, `${phase}:${closeFails}`).toBeDefined();
+        expect(report.exitCode).toBe(5);
+        expect(conflict.detail).toContain(readError.message);
+        expect(report.nextActions.join("\n")).toContain("hoklims-devkit");
+        if (closeFails) {
+          expect(conflict.diagnostics).toEqual([{ code: "EBUSY", message: closeError.message, path: actualManifest }]);
+          expect(conflict.detail).toContain(closeError.message);
+          expect(JSON.stringify(report)).toContain(closeError.message);
+        } else {
+          expect(conflict.diagnostics).toBeUndefined();
+          expect(conflict.detail).not.toContain("close EBUSY");
+        }
+        expect(readFileSync(actualManifest, "utf8")).toBe(manifestBytes);
+        if (phase === "apply") {
+          expect(rt.calls.filter((argv) => argv[0] === "node" && argv.includes("--write"))).toHaveLength(0);
+        }
+      }
+    }
   });
 
   test("doctor distinguishes an absent AssertLedger install from drift, partial metadata, and I/O failure", async () => {

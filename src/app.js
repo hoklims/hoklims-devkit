@@ -148,10 +148,10 @@ function recordSuppressedStateDiagnostics(report, error) {
   return diagnostics;
 }
 
-function withSuppressedDiagnosticDetail(detail, diagnostics) {
+function withSuppressedDiagnosticDetail(detail, diagnostics, label = "Secondary state cleanup failures") {
   if (diagnostics.length === 0) return detail;
   const rendered = diagnostics.map((item) => `${item.code}${item.path ? ` at ${item.path}` : ""}: ${item.message}`).join("; ");
-  return `${detail} Secondary state cleanup failures: ${rendered}.`;
+  return `${detail} ${label}: ${rendered}.`;
 }
 
 function stateIoProblem(report, error, statePath, operation, recoveryAction, diagnostics = null) {
@@ -312,7 +312,10 @@ function projectAdmissionError(error, fallbackCode) {
 
 function recordProjectAdmissionProblem(report, error, fallbackCode) {
   const classified = error?.admissionCode ? error : projectAdmissionError(error, fallbackCode);
-  problem(report, classified.admissionCode, String(classified.message ?? classified), classified.admissionExitCode);
+  const diagnostics = suppressedErrorDiagnostics(classified);
+  const detail = withSuppressedDiagnosticDetail(String(classified.message ?? classified), diagnostics,
+    "Secondary filesystem failures during project admission");
+  problem(report, classified.admissionCode, detail, classified.admissionExitCode, diagnostics);
 }
 
 function existingAssertVersion(rt, root) {
