@@ -116,7 +116,7 @@ test("runtime preserves a lock replaced by a third-party link during release", (
     if (error?.code === "EPERM") return;
     throw error;
   }
-  expect(release).toThrow(/Unsafe managed state path/u);
+  expect(release).toThrow(/ownership changed/u);
   expect(lstatSync(lockPath).isSymbolicLink()).toBe(true);
   expect(existsSync(outsideTarget)).toBe(false);
 });
@@ -145,4 +145,80 @@ test("runtime preserves a foreign temporary-file collision", () => {
   expect(() => rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} })).toThrow();
   expect(readFileSync(foreignTemp, "utf8")).toBe("foreign\n");
   expect(existsSync(statePath)).toBe(false);
+});
+
+test("runtime preserves a replacement temporary file when the writer fails", () => {
+  if (process.platform === "win32") return;
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-replaced-failure-")));
+  const statePath = join(root, "repository.json");
+  const tempPath = `${statePath}.replaced.tmp`;
+  const rt = createRuntime({
+    randomId: () => "replaced",
+    writeStateData: () => {
+      unlinkSync(tempPath);
+      writeFileSync(tempPath, "foreign replacement\n");
+      throw Object.assign(new Error("disk write failed"), { code: "ENOSPC" });
+    },
+  });
+  expect(() => rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} })).toThrow(/ownership changed/u);
+  expect(readFileSync(tempPath, "utf8")).toBe("foreign replacement\n");
+  expect(existsSync(statePath)).toBe(false);
+});
+
+test("runtime never commits a replacement temporary file after a successful callback", () => {
+  if (process.platform === "win32") return;
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-replaced-success-")));
+  const statePath = join(root, "repository.json");
+  const tempPath = `${statePath}.replaced.tmp`;
+  const rt = createRuntime({
+    randomId: () => "replaced",
+    writeStateData: () => {
+      unlinkSync(tempPath);
+      writeFileSync(tempPath, "foreign replacement\n");
+    },
+  });
+  expect(() => rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} })).toThrow(/ownership changed/u);
+  expect(readFileSync(tempPath, "utf8")).toBe("foreign replacement\n");
+  expect(existsSync(statePath)).toBe(false);
+});
+
+test("runtime removes an owned partial lock after its write fails", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-lock-partial-")));
+  const statePath = join(root, "repository.json");
+  const lockPath = `${statePath}.lock`;
+  const rt = createRuntime({
+    writeLockData: (fd, data) => {
+      writeFileSync(fd, data.slice(0, 5));
+      throw Object.assign(new Error("lock write failed"), { code: "ENOSPC" });
+    },
+  });
+  expect(() => rt.acquireLock(statePath)).toThrow(/lock write failed/u);
+  expect(existsSync(lockPath)).toBe(false);
+});
+
+test("runtime preserves a replacement lock after its writer returns", () => {
+  if (process.platform === "win32") return;
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-lock-replaced-")));
+  const statePath = join(root, "repository.json");
+  const lockPath = `${statePath}.lock`;
+  const rt = createRuntime({
+    writeLockData: () => {
+      unlinkSync(lockPath);
+      writeFileSync(lockPath, "foreign lock\n");
+    },
+  });
+  expect(() => rt.acquireLock(statePath)).toThrow(/ownership changed/u);
+  expect(readFileSync(lockPath, "utf8")).toBe("foreign lock\n");
+});
+
+test("runtime propagates an owned lock unlink failure", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-lock-unlink-")));
+  const statePath = join(root, "repository.json");
+  const lockPath = `${statePath}.lock`;
+  const rt = createRuntime({
+    removeOwnedFile: () => { throw Object.assign(new Error("lock unlink denied"), { code: "EACCES" }); },
+  });
+  const release = rt.acquireLock(statePath);
+  expect(release).toThrow(/lock unlink denied/u);
+  expect(existsSync(lockPath)).toBe(true);
 });

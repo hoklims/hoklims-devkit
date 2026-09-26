@@ -67,6 +67,11 @@ function stateIoProblem(report, error, statePath, operation) {
   return problem(report, "STATE_IO_ERROR", `Devkit state ${operation} failed at ${statePath}: ${detail}. Check disk space and permissions, replace linked state paths with real local directories or files, then rerun setup.`, 5);
 }
 
+function isStateIoError(error) {
+  return error?.code === "STATE_IO_ERROR"
+    || (typeof error?.code === "string" && /^E[A-Z0-9_]+$/u.test(error.code));
+}
+
 function nativeResult(result, name, report) {
   const json = parseJsonOutput(result);
   if (!json) {
@@ -783,6 +788,7 @@ export async function execute(options, rt = createRuntime()) {
     state = validateState(rt.readState(statePath));
     if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
   } catch (error) {
+    if (isStateIoError(error)) return stateIoProblem(report, error, statePath, "initial read");
     return problem(report, "STATE_CONFLICT", String(error.message ?? error));
   }
   if (options.command === "doctor") {

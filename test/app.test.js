@@ -1239,6 +1239,25 @@ describe("public CLI", () => {
     expect(failedReread.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
     expect(failedReread.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
     expect(rereadReleased).toBe(true);
+
+    const releaseFailure = fakeRuntime();
+    releaseFailure.acquireLock = () => () => { throw Object.assign(new Error("lock unlink denied"), { code: "EACCES" }); };
+    const failedRelease = await execute(setupOptions(), releaseFailure);
+    expect(failedRelease.ok).toBe(false);
+    expect(failedRelease.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(failedRelease.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
+    expect(failedRelease.conflicts.map((item) => item.detail).join("\n")).toMatch(/lock release/u);
+  });
+
+  test("an initial state read permission failure is STATE_IO_ERROR", async () => {
+    const rt = fakeRuntime();
+    rt.readState = () => { throw Object.assign(new Error("state access denied"), { code: "EACCES" }); };
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_CONFLICT");
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/disk space|permissions/u);
+    expect(rt.writes).toHaveLength(0);
   });
 
   test("genuine lock contention remains RUN_LOCKED", async () => {

@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const COMPONENT_NAMES = new Set(["semctx", "assertledger", "latent-compass"]);
 const HOST_NAMES = new Set(["codex", "claude"]);
 
-function lstatIfPresent(path) {
+function lstatIfPresent(path, options) {
   try {
-    return lstatSync(path);
+    return lstatSync(path, options);
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
@@ -16,7 +16,11 @@ function lstatIfPresent(path) {
 }
 
 function unsafeManagedPath(path, detail) {
-  return new Error(`Unsafe managed state path: ${path} ${detail}. Replace linked state paths with real local directories or files, then rerun.`);
+  return Object.assign(new Error(`Unsafe managed state path: ${path} ${detail}. Replace linked state paths with real local directories or files, then rerun.`), { code: "STATE_CONFLICT" });
+}
+
+function ownedFileConflict(path, detail) {
+  return Object.assign(new Error(`Managed state file ownership changed at ${path}: ${detail}. Preserve the foreign path, inspect it, then rerun.`), { code: "STATE_IO_ERROR" });
 }
 
 function assertSafeManagedParents(path) {
@@ -43,6 +47,47 @@ function prepareManagedParent(path) {
   assertSafeManagedParents(path);
   mkdirSync(dirname(resolve(path)), { recursive: true });
   assertSafeManagedParents(path);
+}
+
+function openOwnedManagedFile(path) {
+  const descriptor = openSync(path, "wx", 0o600);
+  try {
+    const stat = fstatSync(descriptor, { bigint: true });
+    return { path, descriptor, identity: { dev: stat.dev, ino: stat.ino } };
+  } catch (error) {
+    try { closeSync(descriptor); } catch { /* Preserve the identity error. */ }
+    throw error;
+  }
+}
+
+function closeOwnedFile(owned) {
+  if (owned.descriptor === null) return;
+  const descriptor = owned.descriptor;
+  owned.descriptor = null;
+  closeSync(descriptor);
+}
+
+function assertOwnedFile(owned) {
+  assertSafeManagedParents(owned.path);
+  const stat = lstatIfPresent(owned.path, { bigint: true });
+  if (!stat) throw ownedFileConflict(owned.path, "the owned path was removed");
+  if (stat.isSymbolicLink() || !stat.isFile()
+    || stat.dev !== owned.identity.dev || stat.ino !== owned.identity.ino) {
+    throw ownedFileConflict(owned.path, "the pathname now identifies another file");
+  }
+  return stat;
+}
+
+function cleanupOwnedFile(owned, removeOwnedFile) {
+  let closeError = null;
+  try {
+    closeOwnedFile(owned);
+  } catch (error) {
+    closeError = error;
+  }
+  assertOwnedFile(owned);
+  removeOwnedFile(owned.path);
+  if (closeError) throw closeError;
 }
 
 export class RunLockedError extends Error {
@@ -89,7 +134,12 @@ export function validateState(state) {
   return state;
 }
 
-export function createRuntime({ randomId = randomUUID, writeStateData = writeFileSync } = {}) {
+export function createRuntime({
+  randomId = randomUUID,
+  removeOwnedFile = unlinkSync,
+  writeLockData = writeFileSync,
+  writeStateData = writeFileSync,
+} = {}) {
   return {
     which: (name) => Bun.which(name),
     exec: async (argv, cwd, timeoutMs = 120_000) => {
@@ -140,21 +190,29 @@ export function createRuntime({ randomId = randomUUID, writeStateData = writeFil
       prepareManagedParent(path);
       inspectManagedFile(path);
       const temp = `${path}.${randomId()}.tmp`;
-      let descriptor = null;
-      let ownsTemp = false;
+      let owned = null;
       try {
-        descriptor = openSync(temp, "wx", 0o600);
-        ownsTemp = true;
-        writeStateData(descriptor, `${JSON.stringify(state, null, 2)}\n`);
-        closeSync(descriptor);
-        descriptor = null;
-        inspectManagedFile(path);
-        renameSync(temp, path);
-      } finally {
-        if (descriptor !== null) {
-          try { closeSync(descriptor); } catch { /* Preserve the original write error. */ }
+        owned = openOwnedManagedFile(temp);
+        try {
+          writeStateData(owned.descriptor, `${JSON.stringify(state, null, 2)}\n`);
+        } finally {
+          closeOwnedFile(owned);
         }
-        if (ownsTemp && inspectManagedFile(temp)?.isFile()) unlinkSync(temp);
+        assertOwnedFile(owned);
+        inspectManagedFile(path);
+        // Node has no portable identity-bound rename/CAS. This final identity check narrows, but cannot
+        // eliminate, a hostile pathname swap between validation and rename by a peer outside this lock.
+        renameSync(temp, path);
+        owned = null;
+      } catch (error) {
+        if (owned) {
+          try {
+            cleanupOwnedFile(owned, removeOwnedFile);
+          } catch (cleanupError) {
+            throw cleanupError;
+          }
+        }
+        throw error;
       }
     },
     acquireLock: (statePath) => {
@@ -164,19 +222,39 @@ export function createRuntime({ randomId = randomUUID, writeStateData = writeFil
       const existingLock = inspectManagedFile(lockPath);
       if (existingLock) throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
       const token = randomId();
+      let owned = null;
       try {
-        writeFileSync(lockPath, JSON.stringify({ token, pid: process.pid }), { flag: "wx", mode: 0o600 });
+        owned = openOwnedManagedFile(lockPath);
+        try {
+          writeLockData(owned.descriptor, JSON.stringify({ token, pid: process.pid }));
+        } finally {
+          closeOwnedFile(owned);
+        }
+        assertOwnedFile(owned);
       } catch (error) {
-        if (error?.code === "EEXIST") throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
+        if (owned) {
+          try {
+            cleanupOwnedFile(owned, removeOwnedFile);
+          } catch (cleanupError) {
+            throw cleanupError;
+          }
+        }
+        if (error?.code === "EEXIST") {
+          throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
+        }
         throw error;
       }
       return () => {
-        const lockStat = inspectManagedFile(lockPath);
-        if (lockStat) {
-          try {
-            if (JSON.parse(readFileSync(lockPath, "utf8")).token === token) unlinkSync(lockPath);
-          } catch { /* Preserve a lock changed by another process. */ }
+        assertOwnedFile(owned);
+        let current;
+        try {
+          current = JSON.parse(readFileSync(lockPath, "utf8"));
+        } catch (error) {
+          if (error instanceof SyntaxError) throw ownedFileConflict(lockPath, "the lock content is no longer valid JSON");
+          throw error;
         }
+        if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
+        removeOwnedFile(lockPath);
       };
     },
     resolve,
