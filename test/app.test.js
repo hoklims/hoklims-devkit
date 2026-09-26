@@ -1224,6 +1224,48 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("suggested refresh preserves pending selection while expanding shared hosts", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "setup",
+        selected: ["semctx"],
+        hosts: ["claude"],
+        versions: { semctx: "0.3.4" },
+      },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+    const writeState = rt.writeState;
+    rt.writeState = (path, value) => writeState(path, validateState(value));
+    const blocked = await execute(parseArgs(["setup", "/repo", "--host", "claude"]), rt);
+    expect(blocked.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
+    expect(blocked.nextActions).toContain("Review the new stable releases, then run hoklims-devkit upgrade /repo --host all --refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+
+    const nativeExec = rt.exec;
+    let interrupt = true;
+    rt.exec = async (argv, cwd, timeout) => interrupt && argv.includes("install") && !argv.includes("--dry-run")
+      ? { code: 5, stdout: "", stderr: "simulated interruption" }
+      : nativeExec(argv, cwd, timeout);
+    const refreshed = await execute(parseArgs(["upgrade", "/repo", "--host", "all", "--refresh-pending"]), rt);
+    expect(refreshed.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(rt.writes[0].inProgress).toEqual({
+      command: "upgrade", selected: ["semctx"], hosts: ["codex", "claude"], versions: { semctx: "0.3.5" },
+    });
+    expect(rt.writes[0].components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
+    interrupt = false;
+    const resumed = await execute(parseArgs(["upgrade", "/repo", "--host", "all"]), rt);
+    expect(resumed.ok).toBe(true);
+    expect(resumed.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+    expect(rt.calls.some((argv) => argv.includes("assertledger"))).toBe(false);
+    expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
+  });
+
   test("an interrupted upgrade accepts its already installed pinned Compass version", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
@@ -1450,20 +1492,6 @@ describe("public CLI", () => {
           command: "setup",
           selected: ["semctx"],
           hosts: ["claude", "codex"],
-          versions: { semctx: "0.3.5" },
-        },
-      },
-      {
-        schemaVersion: 1,
-        projectRoot: "/repo",
-        components: {
-          semctx: { version: "0.3.5", hosts: ["codex"] },
-          assertledger: { version: "1.3.0", hosts: ["codex"] },
-        },
-        inProgress: {
-          command: "upgrade",
-          selected: ["semctx"],
-          hosts: ["codex"],
           versions: { semctx: "0.3.5" },
         },
       },

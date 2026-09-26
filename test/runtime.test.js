@@ -339,10 +339,10 @@ test("state validation accepts only canonical component and host order", () => {
   explicitUpgradeSubset.inProgress.versions = { semctx: "0.3.6", assertledger: "1.3.0" };
   expect(validateState(explicitUpgradeSubset)).toBe(explicitUpgradeSubset);
 
-  const unresumableSemctxOnlyUpgrade = structuredClone(canonical);
-  unresumableSemctxOnlyUpgrade.inProgress.selected = ["semctx"];
-  unresumableSemctxOnlyUpgrade.inProgress.versions = { semctx: "0.3.5" };
-  expect(() => validateState(unresumableSemctxOnlyUpgrade)).toThrow(/Invalid in-progress installation plan/u);
+  const semctxOnlyUpgrade = structuredClone(canonical);
+  semctxOnlyUpgrade.inProgress.selected = ["semctx"];
+  semctxOnlyUpgrade.inProgress.versions = { semctx: "0.3.5" };
+  expect(validateState(semctxOnlyUpgrade)).toBe(semctxOnlyUpgrade);
 
   const narrowedVersionChange = {
     schemaVersion: 1,

@@ -93,7 +93,8 @@ export function quoteShellToken(value) {
 
 function stateRecoveryCommand(options, root, state, hosts, { useRequestedRefresh = false } = {}) {
   const pending = state?.inProgress;
-  const requestedSelected = ["semctx", ...options.with];
+  const requestedSelected = options.refreshPending && pending && options.with.length === 0
+    ? pending.selected : ["semctx", ...options.with];
   const command = pending && !useRequestedRefresh ? pending.command : options.command;
   const selected = pending && !useRequestedRefresh ? pending.selected : requestedSelected;
   const selectedHosts = pending && !useRequestedRefresh ? pending.hosts : hosts;
@@ -395,8 +396,10 @@ async function checkSemctxChannel(rt, version) {
 }
 
 function selectedComponents(options, state) {
-  const selected = new Set(["semctx", ...options.with]);
-  if (options.command !== "setup" && options.with.length === 0) {
+  const pendingSelection = state?.inProgress && options.with.length === 0
+    ? state.inProgress.selected : null;
+  const selected = new Set(pendingSelection ?? ["semctx", ...options.with]);
+  if (!pendingSelection && options.command !== "setup" && options.with.length === 0) {
     for (const name of Object.keys(state?.components ?? {})) selected.add(name);
     for (const name of state?.inProgress?.selected ?? []) selected.add(name);
   }
@@ -892,8 +895,10 @@ export async function execute(options, rt = createRuntime()) {
     return report;
   }
   const selected = selectedComponents(options, state);
+  const refreshExpandsHosts = options.refreshPending && state?.inProgress
+    && state.inProgress.hosts.every((host) => hosts.includes(host));
   if (state?.inProgress && ((state.inProgress.command !== options.command && !options.refreshPending)
-    || JSON.stringify(state.inProgress.hosts) !== JSON.stringify(hosts)
+    || (JSON.stringify(state.inProgress.hosts) !== JSON.stringify(hosts) && !refreshExpandsHosts)
     || JSON.stringify(state.inProgress.selected) !== JSON.stringify(selected))) {
     return problem(report, "PENDING_PLAN_CONFLICT", `Complete the recorded plan with ${recoveryCommandFor(state)} before changing selectors`, 4);
   }
@@ -923,7 +928,9 @@ export async function execute(options, rt = createRuntime()) {
     if (state?.inProgress && !options.refreshPending
       && report.conflicts.some((item) => item.code === "RELEASE_SKEW_OR_UNAVAILABLE")) {
       const optional = selected.filter((name) => name !== "semctx");
-      report.nextActions.push(`Review the new stable releases, then run hoklims-devkit upgrade ${quoteShellToken(root)} --host ${hosts.length === 2 ? "all" : hosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`);
+      const refreshHosts = HOSTS.filter((host) => hosts.includes(host)
+        || selected.some((name) => state.components[name]?.hosts?.includes(host)));
+      report.nextActions.push(`Review the new stable releases, then run hoklims-devkit upgrade ${quoteShellToken(root)} --host ${refreshHosts.length === 2 ? "all" : refreshHosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`);
     }
     report.ok = report.conflicts.length === 0;
     return report;

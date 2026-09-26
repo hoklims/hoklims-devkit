@@ -159,8 +159,6 @@ export function validateState(state) {
         const existing = state.components[name];
         return existing && existing.version !== plan.versions[name];
       }))
-      || (plan.command === "upgrade" && plan.selected.length === 1
-        && Object.keys(state.components).some((name) => !plan.selected.includes(name)))
       || (plan.command === "upgrade" && plan.selected.some((name) => {
         const existing = state.components[name];
         return existing && existing.version !== plan.versions[name]
