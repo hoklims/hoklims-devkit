@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { homedir } from "node:os";
+import { closeSync, lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { execute, parseArgs } from "../src/app.js";
+import { execute, main, parseArgs, quoteShellToken } from "../src/app.js";
+import { createRuntime, validateState } from "../src/runtime.js";
 
 function compassInstallReport(argv, { installed = false, configured = false } = {}) {
   const host = argv[argv.indexOf("--host") + 1];
@@ -81,7 +83,23 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("--version")) return { code: 0, stdout: "latent-compass 0.3.0\n", stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo", hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
       if (argv[0] === "npm" && argv.includes("exec")) return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
-      if (argv[0] === "npm" && argv.includes("install")) return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
+      const assertSpec = argv.find((arg) => /^assertledger@/u.test(arg));
+      if (assertSpec && ((argv[0] === "npm" && argv.includes("install"))
+        || (argv[0] === "pnpm" && argv.includes("add")) || (argv[0] === "bun" && argv.includes("add")))) {
+        if (!failAssertInstall) {
+          const manifestPath = join("/repo", "package.json");
+          const manifest = JSON.parse(files[manifestPath]);
+          const installedVersion = assertSpec.slice("assertledger@".length);
+          for (const group of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+            if (manifest[group]) delete manifest[group].assertledger;
+          }
+          manifest.devDependencies = { ...(manifest.devDependencies ?? {}), assertledger: installedVersion };
+          files[manifestPath] = JSON.stringify(manifest);
+          files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: installedVersion });
+          files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")] = "cli";
+        }
+        return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
+      }
       if (argv.includes("plugin-status")) {
         return {
           code: semctxInstalledVersion && semctxStatusCode === 3 ? 0 : semctxStatusCode,
@@ -99,21 +117,27 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
       if (argv.includes("setup") && argv.includes("--dry-run")) {
         return { code: setup.kind === "setup_plan" ? 0 : 4, stdout: JSON.stringify(setup), stderr: "" };
       }
-      if (argv.includes("doctor")) return { code: 0, stdout: JSON.stringify(workspaceReady ? {
-        healthy: true, version,
+      if (argv.includes("doctor")) return { code: workspaceReady ? 0 : 1, stdout: JSON.stringify(workspaceReady ? {
+        healthy: true, version: argv[1]?.split("@").at(-1) ?? version,
         checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({ name, ok: true, ...(name === "index" ? { status: "healthy" } : {}) })),
-      } : { ok: true }), stderr: "" };
+      } : {
+        healthy: false, version: argv[1]?.split("@").at(-1) ?? version,
+        checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({ name, ok: name !== "workspace", ...(name === "index" ? { status: "healthy" } : {}) })),
+      }), stderr: "" };
       if (argv.includes("index-health")) return workspaceReady
         ? { code: 0, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { canRunHighRiskControl: true }, coverage: { status: "complete" } }), stderr: "" }
-        : { code: 2, stdout: JSON.stringify({ coverage: { status: "partial" } }), stderr: "" };
+        : { code: 2, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "absent" }, freshness: { canRunHighRiskControl: false }, coverage: { status: "partial" } }), stderr: "" };
       if (argv.includes("install")) {
         if (!argv.includes("--dry-run")) semctxInstalledVersion = version;
+        const dryRun = argv.includes("--dry-run");
+        const selection = argv[argv.indexOf("--host") + 1];
         return { code: 0, stdout: JSON.stringify({
-          ok: true, version, dryRun: argv.includes("--dry-run"), selection: argv[argv.indexOf("--host") + 1],
+          ok: true, version, dryRun, selection,
           hosts: {
-            codex: { requested: true, detected: true, status: "planned" },
-            claude: { requested: true, detected: true, status: "planned" },
+            codex: { requested: ["codex", "all"].includes(selection), detected: true, status: dryRun ? "planned" : "installed" },
+            claude: { requested: ["claude", "all"].includes(selection), detected: true, status: dryRun ? "planned" : "installed" },
           },
+          workspace: { status: "skipped", root: "/repo" },
         }), stderr: "" };
       }
       if (argv.includes("setup")) return { code: setupReady ? 0 : 1, stdout: JSON.stringify({
@@ -124,13 +148,50 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
       throw new Error(`Unexpected command: ${argv.join(" ")}`);
     },
     exists: (path) => Object.hasOwn(files, path),
+    pathPresent: (path) => Object.hasOwn(files, path),
+    plainFilePresent: (path) => Object.hasOwn(files, path),
+    directoryPresent: (path) => Object.keys(files).some((candidate) => candidate.startsWith(`${path}${process.platform === "win32" ? "\\" : "/"}`)),
     readText: (path) => files[path],
+    readPlainText: (path) => files[path],
     join: (...parts) => parts.join("/"),
   };
   return rt;
 }
 
 const setupOptions = () => parseArgs(["setup", "/repo", "--host", "codex"]);
+
+function decodePowerShellOutput(bytes) {
+  const buffer = Buffer.from(bytes);
+  if (buffer[0] === 0xff && buffer[1] === 0xfe) return new TextDecoder("utf-16le").decode(buffer.subarray(2));
+  if (buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return new TextDecoder().decode(buffer.subarray(3));
+  }
+  return new TextDecoder().decode(buffer);
+}
+
+function parseWithPowerShell(engine, source) {
+  const payload = Buffer.from(source, "utf8").toString("base64");
+  const script = `
+    $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))
+    $tokens = $null
+    $parseErrors = $null
+    $tree = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$parseErrors)
+    $strings = @($tree.FindAll({ param($item) $item -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value })
+    $commands = @($tree.FindAll({ param($item) $item -is [System.Management.Automation.Language.CommandAst] }, $true))
+    @{ errors = @($parseErrors | ForEach-Object { $_.ErrorId }); values = $strings; commands = $commands.Count; statements = $tree.EndBlock.Statements.Count } | ConvertTo-Json -Compress
+  `;
+  const result = Bun.spawnSync({
+    cmd: [engine, "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 10_000,
+  });
+  const stdout = decodePowerShellOutput(result.stdout).trim();
+  const json = stdout.split(/\r?\n/u).findLast((line) => line.trimStart().startsWith("{"));
+  expect(result.exitCode, decodePowerShellOutput(result.stderr)).toBe(0);
+  expect(json, stdout).toBeDefined();
+  return JSON.parse(json);
+}
 
 describe("public CLI", () => {
   test("parses the default profile and rejects unrecognized components", () => {
@@ -145,6 +206,164 @@ describe("public CLI", () => {
     const report = await execute(setupOptions(), rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts[0].code).toBe("RELEASE_SKEW_OR_UNAVAILABLE");
+    expect(rt.calls).toHaveLength(2);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("fresh registry and preflight failures include the complete admitted retry", async () => {
+    const missingBun = fakeRuntime();
+    missingBun.which = () => null;
+    const failedRuntime = await execute(setupOptions(), missingBun);
+    expect(failedRuntime.nextActions.join("\n")).toContain("hoklims-devkit setup /repo --host codex");
+    expect(failedRuntime.conflicts.map((item) => item.detail).join("\n")).toContain("Install Bun >=1.4");
+
+    const root = process.platform === "win32"
+      ? "C:\\repo  Val's ‘left’ ‚low‛ $() ` tick; Write-Output INJECTED"
+      : "/tmp/repo with 'quote";
+    const registry = fakeRuntime({ tools: ["node", "npm"] });
+    registry.resolve = () => root;
+    registry.realpath = (path) => path;
+    registry.statePath = () => join(root, ".state.json");
+    const registryExec = registry.exec;
+    registry.exec = async (argv, cwd) => argv[0] === "git"
+      ? { code: 0, stdout: `${root}\n`, stderr: "" } : registryExec(argv, cwd);
+    registry.fetchJson = async () => { throw new Error("registry offline"); };
+    const options = parseArgs(["upgrade", root, "--host", "codex", "--with", "assertledger", "--refresh-pending"]);
+    const failedRegistry = await execute(options, registry);
+    const registryRetry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host codex --with assertledger --refresh-pending`;
+    expect(failedRegistry.ok).toBe(false);
+    expect(failedRegistry.nextActions.join("\n")).toContain(registryRetry);
+    expect(failedRegistry.conflicts.map((item) => item.detail).join("\n")).toContain(registryRetry);
+    expect(registry.writes).toHaveLength(0);
+    if (process.platform === "win32") {
+      for (const engine of ["powershell.exe", "pwsh.exe"].filter((candidate) => Bun.which(candidate))) {
+        const parsedRetry = parseWithPowerShell(engine, registryRetry);
+        expect(parsedRetry.errors).toEqual([]);
+        expect(parsedRetry.values).toContain(root);
+        expect(parsedRetry.commands).toBe(1);
+        expect(parsedRetry.statements).toBe(1);
+      }
+    }
+
+    const preflight = fakeRuntime({ semctxStatusCode: 5 });
+    const failedPreflight = await execute(setupOptions(), preflight);
+    const preflightRetry = "hoklims-devkit setup /repo --host codex";
+    expect(failedPreflight.ok).toBe(false);
+    expect(failedPreflight.nextActions.join("\n")).toContain(preflightRetry);
+    expect(failedPreflight.conflicts.map((item) => item.detail).join("\n")).toContain(preflightRetry);
+    expect(preflight.writes).toHaveLength(0);
+  }, 30_000);
+
+  test("native stream failures retain the validated report and saved retry", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const streamError = Object.assign(new Error("simulated stdout read failure"), { code: "EIO" });
+    const native = createRuntime({
+      spawnProcess: () => ({
+        stdout: new ReadableStream({ start(controller) { controller.error(streamError); } }),
+        stderr: new ReadableStream({ start(controller) { controller.close(); } }),
+        exited: Promise.resolve(0),
+        kill: () => {},
+      }),
+    });
+    const rt = fakeRuntime({ state });
+    const exec = rt.exec;
+    rt.exec = (argv, cwd, timeout) => argv.includes("plugin-status")
+      ? native.exec(argv, cwd, timeout) : exec(argv, cwd, timeout);
+    const report = await execute(setupOptions(), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("NATIVE_REPORT_INVALID");
+    expect(report.conflicts.map((item) => item.code)).not.toContain("UNEXPECTED_ERROR");
+    expect(report.projectRoot).toBe("/repo");
+    expect(report.hosts).toEqual(["codex"]);
+    expect(guidance).toContain("hoklims-devkit setup /repo --host codex");
+    expect(rt.writes).toHaveLength(0);
+
+    const control = fakeRuntime({ state: structuredClone(state) });
+    expect((await execute({ ...setupOptions(), dryRun: true }, control)).ok).toBe(true);
+    expect(control.writes).toHaveLength(0);
+  });
+
+  test("early Bun and Git failures recover the validated saved plan", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {},
+      inProgress: {
+        command: "setup",
+        selected: ["semctx"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4" },
+      },
+    };
+    for (const failure of ["bun", "git"]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["claude"] });
+      let reads = 0;
+      const readState = rt.readState;
+      rt.readState = (path) => { reads += 1; return readState(path); };
+      if (failure === "bun") {
+        const which = rt.which;
+        rt.which = (name) => ["bun", "bunx"].includes(name) ? null : which(name);
+      } else {
+        const exec = rt.exec;
+        rt.exec = async (argv, cwd) => {
+          if (argv[0] !== "git") return exec(argv, cwd);
+          rt.calls.push(argv);
+          return { code: 2, stdout: "", stderr: "not a repository" };
+        };
+      }
+      const report = await execute(parseArgs([
+        "upgrade", "/repo", "--host", "all", "--refresh-pending",
+      ]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.ok).toBe(false);
+      expect(reads).toBe(1);
+      expect(guidance).toContain("hoklims-devkit setup /repo --host codex");
+      expect(guidance).not.toContain("hoklims-devkit upgrade");
+      expect(guidance).not.toContain("--refresh-pending");
+      expect(rt.calls.some((argv) => argv[0] === "git")).toBe(failure === "git");
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("an unverifiable early state makes the current retry explicitly conditional", async () => {
+    const rt = fakeRuntime({ tools: ["claude"] });
+    rt.which = (name) => ["codex", "claude"].includes(name) ? `/bin/${name}` : null;
+    rt.realpath = () => { throw Object.assign(new Error("profile access denied"), { code: "EACCES" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "all", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("BUN_REQUIRED");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).toContain("If a saved plan is present, follow it");
+    expect(guidance).toContain("Only if no saved plan exists, restore Bun on PATH before running hoklims-devkit upgrade /repo --host all --refresh-pending");
+    expect(rt.calls).toHaveLength(0);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a missing-Bun subdirectory lookup cannot prove repository state absence", async () => {
+    const rt = fakeRuntime();
+    rt.resolve = () => "/repo/subdir";
+    rt.realpath = (value) => value;
+    rt.which = (name) => name === "codex" ? "/bin/codex" : null;
+    const report = await execute(parseArgs(["upgrade", "/repo/subdir", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).toContain("If a saved plan is present, follow it");
+    expect(guidance).toContain("Only if no saved plan exists, restore Bun on PATH before running hoklims-devkit upgrade /repo/subdir --host codex --refresh-pending");
+    expect(rt.calls).toHaveLength(0);
+  });
+
+  test("a discovered repository realpath failure keeps typed context and conditional recovery", async () => {
+    const rt = fakeRuntime();
+    rt.realpath = () => { throw Object.assign(new Error("repository access denied"), { code: "EACCES" }); };
+    const report = await execute(setupOptions(), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.projectRoot).toBe("/repo");
+    expect(report.conflicts.map((item) => item.code)).toContain("REPOSITORY_PATH_IO_ERROR");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit setup /repo --host codex");
     expect(rt.calls).toHaveLength(2);
     expect(rt.writes).toHaveLength(0);
   });
@@ -243,6 +462,39 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("applied Semctx host reports retain exact install identity", async () => {
+    const mutations = [
+      (report) => { delete report.version; },
+      (report) => { report.workspace.root = "/other"; },
+      (report) => { report.version = "9.9.9"; },
+      (report) => { report.selection = "claude"; },
+    ];
+    const setupWrites = (rt) => rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run")).length;
+    for (const mutate of mutations) {
+      const rt = fakeRuntime();
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (!argv.includes("install") || argv.includes("--dry-run")) return result;
+        const native = JSON.parse(result.stdout);
+        mutate(native);
+        return { ...result, stdout: JSON.stringify(native) };
+      };
+      const report = await execute(setupOptions(), rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+      expect(report.components[0]).toMatchObject({ state: "partial", installed: "unknown", configured: "unknown" });
+      expect(setupWrites(rt)).toBe(0);
+      expect(rt.writes).toHaveLength(1);
+      expect(rt.writes[0].inProgress).toEqual({ command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } });
+    }
+
+    const valid = fakeRuntime();
+    const accepted = await execute(setupOptions(), valid);
+    expect(accepted.ok).toBe(true);
+    expect(setupWrites(valid)).toBe(1);
+    expect(valid.writes.at(-1).inProgress).toBeUndefined();
+  });
+
   test("Semctx plugin status naming another repository blocks all writes", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
@@ -312,6 +564,80 @@ describe("public CLI", () => {
     expect(upgrade.components[0].version).toBe("0.3.5");
   });
 
+  test("a pending setup cannot change an already recorded component version", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+    const report = await execute(setupOptions(), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(rt.calls).toHaveLength(2);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("narrow setup checkpoints preserve managed components outside its scope", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    const rt = fakeRuntime({ state, tools: ["claude"] });
+    const writeState = rt.writeState;
+    rt.writeState = (path, value) => writeState(path, validateState(value));
+    const nativeExec = rt.exec;
+    let interrupt = true;
+    rt.exec = async (argv, cwd, timeout) => interrupt && argv.includes("install") && !argv.includes("--dry-run")
+      ? { code: 5, stdout: "", stderr: "simulated interruption" }
+      : nativeExec(argv, cwd, timeout);
+    const options = parseArgs(["setup", "/repo", "--host", "claude"]);
+    const interrupted = await execute(options, rt);
+    expect(interrupted.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(rt.writes[0].inProgress).toEqual({
+      command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.4" },
+    });
+    expect(rt.writes[0].components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
+    interrupt = false;
+    const resumed = await execute(options, rt);
+    expect(resumed.ok).toBe(true);
+    expect(resumed.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+    expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
+    expect(rt.writes.at(-1).components.semctx.hosts).toEqual(["codex", "claude"]);
+  });
+
+  test("explicit upgrade scope preserves and resumes components outside its scope", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm"], files });
+    const writeState = rt.writeState;
+    rt.writeState = (path, value) => writeState(path, validateState(value));
+    const nativeExec = rt.exec;
+    let interrupt = true;
+    rt.exec = async (argv, cwd, timeout) => interrupt && argv.includes("install") && !argv.includes("--dry-run")
+      ? { code: 5, stdout: "", stderr: "simulated interruption" }
+      : nativeExec(argv, cwd, timeout);
+    const options = parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]);
+    const interrupted = await execute(options, rt);
+    expect(interrupted.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(rt.writes[0].inProgress.selected).toEqual(["semctx", "assertledger"]);
+    expect(rt.writes[0].components["latent-compass"]).toEqual({ version: "0.3.0", hosts: ["codex"] });
+    interrupt = false;
+    const resumed = await execute(options, rt);
+    expect(resumed.ok).toBe(true);
+    expect(resumed.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+    expect(rt.writes.at(-1).components["latent-compass"]).toEqual({ version: "0.3.0", hosts: ["codex"] });
+  });
+
   test("adding a host cannot silently move an older Semctx install to current stable", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
     const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5", state, tools: ["claude"] });
@@ -320,6 +646,18 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
     expect(rt.calls.some((args) => args.includes("install"))).toBe(false);
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("adding Codex to a Claude-only component persists canonical host order", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["claude"] } },
+    };
+    const rt = fakeRuntime({ state });
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(true);
+    expect(rt.writes.at(-1).components.semctx.hosts).toEqual(["codex", "claude"]);
   });
 
   test("doctor keeps unobserved session and approval unknown", async () => {
@@ -354,6 +692,33 @@ describe("public CLI", () => {
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
     expect(report.components[0].configured).toBe("unknown");
+  });
+
+  test("doctor rejects malformed check entries while preserving the saved retry", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    for (const malformed of [false, true]) {
+      const rt = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+      if (malformed) {
+        const exec = rt.exec;
+        rt.exec = async (argv, cwd, timeout) => {
+          const result = await exec(argv, cwd, timeout);
+          if (!argv.includes("doctor")) return result;
+          const native = JSON.parse(result.stdout);
+          native.checks.push(null);
+          return { ...result, stdout: JSON.stringify(native) };
+        };
+      }
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.projectRoot).toBe("/repo");
+      expect(report.components[0].configured).toBe(malformed ? "unknown" : "yes");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("UNEXPECTED_ERROR");
+      expect(guidance).toContain("hoklims-devkit setup /repo --host codex");
+    }
   });
 
   test("doctor rejects a Semctx diagnostic naming another repository", async () => {
@@ -392,19 +757,66 @@ describe("public CLI", () => {
   test("doctor rejects AssertLedger native CONFLICT even when JSON is returned", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } };
     const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
-    const rt = fakeRuntime({ state, files, assertStatus: "CONFLICT" });
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files, assertStatus: "CONFLICT" });
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     const assertledger = report.components.find((item) => item.name === "assertledger");
     expect(assertledger.configured).toBe("no");
     expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).not.toContain("NATIVE_REPORT_INVALID");
+  });
+
+  test("doctor keeps invalid AssertLedger artifact evidence unknown", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { assertledger: { version: "1.2.0", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"], versions: { semctx: "0.3.4", assertledger: "1.2.0" } },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const variants = [
+      [null],
+      [
+        { owner: "init", path: "/foreign/assertledger.config.json", state: "UNCHANGED" },
+        { owner: "init", path: "/foreign/assertledger.lock.json", state: "UNCHANGED" },
+        { owner: "connection", path: "/foreign/.codex/config.toml", state: "UNCHANGED" },
+        { owner: "connection", path: "/foreign/.agents/skills/assertledger/SKILL.md", state: "UNCHANGED" },
+      ],
+    ];
+    for (const artifacts of variants) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => argv[0] === "node" && argv.includes("setup")
+        ? { code: 0, stdout: JSON.stringify({ ...assertSetupReport(argv, "UNCHANGED", "dry-run"), artifacts }), stderr: "" }
+        : nativeExec(argv, cwd, timeout);
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+      expect(report.conflicts.map((item) => item.code)).toContain("NATIVE_REPORT_INVALID");
+      expect(guidance).toContain("hoklims-devkit setup /repo --host codex --with assertledger");
+      expect(rt.writes).toHaveLength(0);
+    }
+
+    const valid = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files });
+    const accepted = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), valid);
+    expect(accepted.components.find((item) => item.name === "assertledger").configured).toBe("yes");
+    expect(accepted.conflicts.map((item) => item.code)).not.toContain("NATIVE_REPORT_INVALID");
+    expect(valid.writes).toHaveLength(0);
   });
 
   test("doctor does not infer AssertLedger configuration from empty artifacts", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } };
     const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
@@ -416,6 +828,217 @@ describe("public CLI", () => {
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
     expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+    expect(report.conflicts.map((item) => item.code)).toContain("NATIVE_REPORT_INVALID");
+  });
+
+  test("doctor applies AssertLedger project admission before native preview", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } };
+    const localFiles = {
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const scenario of ["null", "drift", "unsafe-lock"]) {
+      const files = {
+        ...localFiles,
+        [join("/repo", "package.json")]: scenario === "null" ? "null"
+          : JSON.stringify({ devDependencies: { assertledger: scenario === "drift" ? "9.9.9" : "1.2.0" }, packageManager: "npm@10.9.8" }),
+      };
+      const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+      if (scenario === "unsafe-lock") {
+        const plainFilePresent = rt.plainFilePresent;
+        rt.plainFilePresent = (path) => {
+          if (path === join("/repo", "package-lock.json")) throw Object.assign(new Error("package-lock.json is linked"), { code: "STATE_CONFLICT" });
+          return plainFilePresent(path);
+        };
+      }
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      expect(report.ok).toBe(false);
+      expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+
+    const valid = fakeRuntime({ state, tools: ["node", "npm"], files: {
+      ...localFiles,
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+    } });
+    const admitted = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), valid);
+    expect(admitted.components.find((item) => item.name === "assertledger").configured).toBe("yes");
+    expect(admitted.conflicts.filter((item) => item.detail.startsWith("assertledger:"))).toHaveLength(0);
+    expect(valid.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(true);
+  });
+
+  test("AssertLedger admission preserves secondary filesystem diagnostics in every phase", async () => {
+    const manifestPath = join("/repo", "package.json");
+    const localManifestPath = join("/repo", "node_modules", "assertledger", "package.json");
+    const nodeModulesPath = join("/repo", "node_modules");
+    const manifestBytes = JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" });
+    const localManifestBytes = JSON.stringify({ version: "1.2.0" });
+    const baseFiles = () => ({
+      [manifestPath]: manifestBytes,
+      [join("/repo", "package-lock.json")]: "{}",
+      [localManifestPath]: localManifestBytes,
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    });
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] }, assertledger: { version: "1.2.0", hosts: ["codex"] } },
+    };
+    for (const phase of ["doctor", "preflight", "apply"]) {
+      for (const scenario of ["read-only", "read-close", "read-close-ancestry-io", "ownership-ancestry-io"]) {
+        const root = realpathSync(mkdtempSync(join(tmpdir(), `devkit-assert-admission-${phase}-${scenario}-`)));
+        const actualManifest = join(root, "package.json");
+        writeFileSync(actualManifest, localManifestBytes);
+        const primaryConflict = scenario === "ownership-ancestry-io";
+        const readError = Object.assign(new Error(`${phase} local manifest ${primaryConflict ? "ownership conflict" : "read EIO"}`), {
+          code: primaryConflict ? "STATE_CONFLICT" : "EIO",
+        });
+        const closeError = Object.assign(new Error(`${phase} manifest close EBUSY`), {
+          code: "EBUSY", path: actualManifest,
+        });
+        const ancestryError = Object.assign(new Error(`${phase} ancestry EACCES`), { code: "EACCES" });
+        let primaryReadFailed = false;
+        const native = createRuntime({
+          closeDescriptor: (descriptor) => {
+            closeSync(descriptor);
+            if (scenario.includes("close")) throw closeError;
+          },
+          readFileData: () => { primaryReadFailed = true; throw readError; },
+        });
+        const files = baseFiles();
+        const rt = fakeRuntime({ state: phase === "doctor" ? structuredClone(state) : null, tools: ["node", "npm"], files });
+        const fakeRead = rt.readPlainText;
+        const directoryPresent = rt.directoryPresent;
+        const nativeExec = rt.exec;
+        let failManifestRead = phase !== "apply";
+        rt.readPlainText = (path) => path === localManifestPath && failManifestRead
+          ? native.readPlainText(actualManifest) : fakeRead(path);
+        rt.directoryPresent = (path) => {
+          if (primaryReadFailed && scenario.includes("ancestry-io") && path === nodeModulesPath) throw ancestryError;
+          return directoryPresent(path);
+        };
+        rt.exec = async (argv, cwd, timeout) => {
+          const result = await nativeExec(argv, cwd, timeout);
+          if (phase === "apply" && argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+            failManifestRead = true;
+          }
+          return result;
+        };
+        const options = phase === "doctor" ? parseArgs(["doctor", "/repo", "--host", "codex"])
+          : { ...setupOptions(), with: ["assertledger"], dryRun: phase === "preflight" };
+        const report = await execute(options, rt);
+        const expectedCode = primaryConflict ? "PACKAGE_MANIFEST_CONFLICT" : "STATE_IO_ERROR";
+        const conflict = report.conflicts.find((item) => item.code === expectedCode);
+        expect(conflict, `${phase}:${scenario}`).toBeDefined();
+        expect(report.exitCode).toBe(primaryConflict ? 4 : 5);
+        expect(conflict.detail).toContain(readError.message);
+        expect(report.nextActions.join("\n")).toContain("hoklims-devkit");
+        const expectedDiagnostics = [];
+        if (scenario.includes("close")) {
+          expectedDiagnostics.push({ code: "EBUSY", message: closeError.message, path: actualManifest });
+          expect(conflict.detail).toContain(closeError.message);
+          expect(JSON.stringify(report)).toContain(closeError.message);
+        }
+        if (scenario.includes("ancestry-io")) {
+          expectedDiagnostics.push({ code: "EACCES", message: ancestryError.message });
+          expect(conflict.detail).toContain(ancestryError.message);
+        }
+        if (expectedDiagnostics.length) expect(conflict.diagnostics).toEqual(expectedDiagnostics);
+        else {
+          expect(conflict.diagnostics).toBeUndefined();
+          expect(conflict.detail).not.toContain("close EBUSY");
+        }
+        expect(readFileSync(actualManifest, "utf8")).toBe(localManifestBytes);
+        if (phase === "apply") {
+          expect(rt.calls.filter((argv) => argv[0] === "node" && argv.includes("--write"))).toHaveLength(0);
+        }
+      }
+    }
+  });
+
+  test("doctor distinguishes an absent AssertLedger install from drift, partial metadata, and I/O failure", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    const manifestPath = join("/repo", "package.json");
+    const localManifest = join("/repo", "node_modules", "assertledger", "package.json");
+    const localCli = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
+    const baseFiles = { [join("/repo", "package-lock.json")]: "{}" };
+    const cases = [
+      {
+        name: "matching", files: {
+          ...baseFiles,
+          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+          [localManifest]: JSON.stringify({ version: "1.2.0" }), [localCli]: "cli",
+        }, installed: "yes", code: null, exitCode: 0, native: true,
+      },
+      {
+        name: "absent", files: {
+          ...baseFiles, [manifestPath]: JSON.stringify({ packageManager: "npm@10.9.8" }),
+        }, installed: "no", code: "DOCTOR_NOT_READY", exitCode: 3, native: false,
+      },
+      {
+        name: "foreign", files: {
+          ...baseFiles,
+          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+          [localManifest]: JSON.stringify({ version: "9.9.9" }), [localCli]: "cli",
+        }, installed: "unknown", code: "INSTALLED_VERSION_DRIFT", exitCode: 4, native: false,
+      },
+      {
+        name: "partial", files: {
+          ...baseFiles, [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        }, installed: "unknown", code: "PACKAGE_MANIFEST_CONFLICT", exitCode: 4, native: false,
+      },
+      {
+        name: "io", files: {
+          ...baseFiles,
+          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+          [localManifest]: JSON.stringify({ version: "1.2.0" }), [localCli]: "cli",
+        }, installed: "unknown", code: "STATE_IO_ERROR", exitCode: 5, native: false,
+      },
+    ];
+    for (const scenario of cases) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files: scenario.files, workspaceReady: true });
+      if (scenario.name === "io") {
+        const readPlainText = rt.readPlainText;
+        rt.readPlainText = (path) => {
+          if (path === localManifest) throw Object.assign(new Error("local manifest read denied"), { code: "EACCES" });
+          return readPlainText(path);
+        };
+      }
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      const diagnostic = report.components.find((item) => item.name === "assertledger");
+      expect(diagnostic.installed, scenario.name).toBe(scenario.installed);
+      if (scenario.code) expect(report.conflicts.map((item) => item.code), scenario.name).toContain(scenario.code);
+      else {
+        expect(diagnostic.configured, scenario.name).toBe("yes");
+        expect(report.conflicts.map((item) => item.code), scenario.name).not.toContain("INSTALLED_VERSION_DRIFT");
+        expect(report.conflicts.map((item) => item.code), scenario.name).not.toContain("PACKAGE_MANIFEST_CONFLICT");
+        expect(report.conflicts.map((item) => item.code), scenario.name).not.toContain("STATE_IO_ERROR");
+      }
+      expect(report.exitCode ?? 0, scenario.name).toBe(scenario.exitCode);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup")), scenario.name).toBe(scenario.native);
+      expect(rt.writes, scenario.name).toHaveLength(0);
+    }
+
+    const pendingState = structuredClone(state);
+    pendingState.inProgress = {
+      command: "upgrade", selected: ["semctx", "assertledger"], hosts: ["codex"],
+      versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+    };
+    const pendingFiles = {
+      ...baseFiles,
+      [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
+      [localManifest]: JSON.stringify({ version: "1.3.0" }), [localCli]: "cli",
+    };
+    const pending = fakeRuntime({ state: pendingState, tools: ["node", "npm"], files: pendingFiles, workspaceReady: true });
+    const pendingReport = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), pending);
+    expect(pendingReport.components.find((item) => item.name === "assertledger"))
+      .toMatchObject({ version: "1.3.0", installed: "yes", configured: "yes" });
+    expect(pendingReport.conflicts.map((item) => item.code)).not.toContain("INSTALLED_VERSION_DRIFT");
+    expect(pending.writes).toHaveLength(0);
   });
 
   test("doctor preserves unknown for unavailable optional native diagnostics", async () => {
@@ -425,6 +1048,8 @@ describe("public CLI", () => {
       "latent-compass": { version: "0.3.0", hosts: ["codex"] },
     } };
     const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
       [executable]: "shim",
@@ -544,6 +1169,39 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("an existing JSON null state is malformed while a missing file remains absent", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-null-state-")));
+    const statePath = join(root, "repository.json");
+    let verifiedReadExecuted = false;
+    const reader = createRuntime({
+      readFileData: (descriptor, encoding) => {
+        verifiedReadExecuted = true;
+        return readFileSync(descriptor, encoding);
+      },
+    });
+    const rt = fakeRuntime();
+    rt.statePath = () => statePath;
+    rt.readState = reader.readState;
+    writeFileSync(statePath, "null\n");
+    const malformedNull = await execute(setupOptions(), rt);
+    expect(verifiedReadExecuted).toBe(true);
+    expect(malformedNull.ok).toBe(false);
+    expect(malformedNull.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(readFileSync(statePath, "utf8")).toBe("null\n");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+
+    writeFileSync(statePath, "{}\n");
+    const malformedObject = await execute(setupOptions(), rt);
+    expect(malformedObject.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(rt.writes).toHaveLength(0);
+
+    unlinkSync(statePath);
+    const absent = await execute({ ...setupOptions(), dryRun: true }, rt);
+    expect(absent.ok).toBe(true);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("repeating a completed setup does not rewrite devkit state", async () => {
     const rt = fakeRuntime({ setup: semctxSetupPlan(), workspaceReady: true });
     expect((await execute(setupOptions(), rt)).ok).toBe(true);
@@ -552,6 +1210,40 @@ describe("public CLI", () => {
     expect((await execute(setupOptions(), rt)).ok).toBe(true);
     expect(rt.writes).toHaveLength(writes);
     expect(rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run"))).toHaveLength(setupCalls);
+  });
+
+  test("setup preserves unknown Semctx workspace evidence as a typed conflict", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const setupWrites = (rt) => rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run")).length;
+
+    const malformed = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+    const malformedExec = malformed.exec;
+    malformed.exec = async (argv, cwd, timeout) => {
+      const result = await malformedExec(argv, cwd, timeout);
+      if (!argv.includes("doctor")) return result;
+      const native = JSON.parse(result.stdout);
+      native.checks.push(null);
+      return { ...result, stdout: JSON.stringify(native) };
+    };
+    const blocked = await execute(setupOptions(), malformed);
+    const guidance = [blocked.conflicts.map((item) => item.detail).join("\n"), blocked.nextActions.join("\n")].join("\n");
+    expect(blocked.conflicts.map((item) => item.code)).toContain("SEMCTX_WORKSPACE_STATUS_INVALID");
+    expect(blocked.components[0].configured).toBe("unknown");
+    expect(guidance).toContain("hoklims-devkit setup /repo --host codex");
+    expect(setupWrites(malformed)).toBe(0);
+    expect(malformed.writes).toHaveLength(0);
+
+    const ready = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+    expect((await execute(setupOptions(), ready)).ok).toBe(true);
+    expect(setupWrites(ready)).toBe(0);
+
+    const repairable = fakeRuntime({ state: structuredClone(state), workspaceReady: false });
+    expect((await execute(setupOptions(), repairable)).ok).toBe(true);
+    expect(setupWrites(repairable)).toBe(1);
   });
 
   test("release skew prevents writes", async () => {
@@ -577,6 +1269,531 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("AssertLedger inspects the manifest and every lockfile detector before checkpointing", async () => {
+    const names = [
+      "package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml",
+      "bun.lock", "bun.lockb", "yarn.lock",
+    ];
+    for (const unsafeName of names) {
+      const files = { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const inspected = [];
+      rt.plainFilePresent = (path) => {
+        const name = path.split(/[\\/]/u).at(-1);
+        inspected.push(name);
+        if (name === unsafeName) throw Object.assign(new Error(`${name} is linked`), { code: "STATE_CONFLICT" });
+        return Object.hasOwn(files, path);
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts.map((item) => item.detail).join("\n")).toContain(`${unsafeName} is linked`);
+      expect(inspected).toContain(unsafeName);
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("malformed packageManager declarations block before state writes", async () => {
+    for (const packageManager of [
+      7, null, false, { name: "npm" },
+      "npm@", "npm@latest", "npm@^10", "npm@10.9",
+      "npm@01.2.3", "npm@1.2.3-..", "npm@1.2.3+sha512.a",
+      "npm@https://example.com/npm.zip",
+      "npm@https://example.com/npm.tgz#sha512.a",
+    ]) {
+      const rt = fakeRuntime({
+        tools: ["node", "npm"],
+        files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager }) },
+      });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_CONFLICT");
+      expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/packageManager must be a string/u);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("AssertLedger manifest I/O errors retain STATE_IO_ERROR classification", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: {
+        command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    const baseFiles = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const failedPath of [join("/repo", "package.json"), join("/repo", "node_modules", "assertledger", "package.json")]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files: baseFiles });
+      const readPlainText = rt.readPlainText;
+      rt.readPlainText = (path) => {
+        if (path === failedPath) throw Object.assign(new Error("simulated metadata I/O failure"), { code: "EIO" });
+        return readPlainText(path);
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("PACKAGE_MANAGER_CONFLICT");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(report.exitCode).toBe(5);
+      expect(guidance).toContain("hoklims-devkit setup /repo --host codex --with assertledger");
+      expect(rt.writes).toHaveLength(0);
+    }
+
+    const invalidJson = fakeRuntime({
+      state: structuredClone(state), tools: ["node", "npm"],
+      files: { ...baseFiles, [join("/repo", "package.json")]: "{" },
+    });
+    const invalid = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), invalidJson);
+    expect(invalid.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+    expect(invalid.exitCode).toBe(4);
+    expect(invalidJson.writes).toHaveLength(0);
+
+    const freshFiles = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+    };
+    const fresh = fakeRuntime({ tools: ["node", "npm"], files: freshFiles });
+    fresh.readPlainText = () => { throw Object.assign(new Error("fresh manifest I/O failure"), { code: "EIO" }); };
+    const freshReport = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, fresh);
+    expect(freshReport.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(freshReport.conflicts.map((item) => item.code)).not.toContain("VERSION_UNAVAILABLE");
+    expect(freshReport.exitCode).toBe(5);
+    expect(fresh.writes).toHaveLength(0);
+
+    const readable = fakeRuntime({ tools: ["node", "npm"], files: freshFiles });
+    const readableReport = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, readable);
+    expect(readableReport.ok).toBe(true);
+    expect(readable.writes).toHaveLength(0);
+  });
+
+  test("AssertLedger doctor and apply share manifest error classification", async () => {
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const managed = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { assertledger: { version: "1.2.0", hosts: ["codex"] } },
+    };
+    const malformedDoctor = fakeRuntime({
+      state: managed,
+      files: { ...files, [join("/repo", "package.json")]: "{" },
+    });
+    const malformedReport = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), malformedDoctor);
+    expect(malformedReport.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+    expect(malformedReport.conflicts.map((item) => item.code)).not.toContain("DOCTOR_UNAVAILABLE");
+    expect(malformedReport.exitCode).toBe(4);
+    expect(malformedDoctor.writes).toHaveLength(0);
+
+    const ioDoctor = fakeRuntime({ state: managed, files });
+    const doctorRead = ioDoctor.readPlainText;
+    ioDoctor.readPlainText = (path) => {
+      if (path === join("/repo", "node_modules", "assertledger", "package.json")) {
+        throw Object.assign(new Error("doctor local manifest EIO"), { code: "EIO" });
+      }
+      return doctorRead(path);
+    };
+    const ioReport = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), ioDoctor);
+    expect(ioReport.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(ioReport.conflicts.map((item) => item.code)).not.toContain("DOCTOR_UNAVAILABLE");
+    expect(ioReport.exitCode).toBe(5);
+    expect(ioDoctor.writes).toHaveLength(0);
+
+    for (const failure of ["io", "json"]) {
+      const localFiles = { ...files };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files: localFiles });
+      const read = rt.readPlainText;
+      const nativeExec = rt.exec;
+      let denyLocalRead = false;
+      let previews = 0;
+      rt.readPlainText = (path) => {
+        if (denyLocalRead && path === join("/repo", "node_modules", "assertledger", "package.json")) {
+          throw Object.assign(new Error("apply local manifest EIO"), { code: "EIO" });
+        }
+        return read(path);
+      };
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "node" && argv.includes("setup") && argv.includes("--dry-run") && ++previews === 2) {
+          if (failure === "io") denyLocalRead = true;
+          else localFiles[join("/repo", "node_modules", "assertledger", "package.json")] = "{";
+        }
+        return result;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain(failure === "io" ? "STATE_IO_ERROR" : "PACKAGE_MANIFEST_CONFLICT");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("APPLY_FAILED");
+      expect(report.exitCode).toBe(failure === "io" ? 5 : 4);
+      expect(rt.writes.at(-1).inProgress.selected).toEqual(["semctx", "assertledger"]);
+    }
+  });
+
+  test("AssertLedger apply revalidates project admission before native writes", async () => {
+    const baseFiles = () => ({
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    });
+    const cases = [
+      { name: "malformed", code: "PACKAGE_MANIFEST_CONFLICT" },
+      { name: "io", code: "STATE_IO_ERROR" },
+      { name: "foreign-version", code: "INSTALLED_VERSION_DRIFT" },
+      { name: "manager-lock", code: "PACKAGE_MANAGER_CONFLICT" },
+    ];
+    for (const scenario of cases) {
+      const files = baseFiles();
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const nativeExec = rt.exec;
+      const read = rt.readPlainText;
+      let projectReadDenied = false;
+      rt.readPlainText = (path) => {
+        if (projectReadDenied && path === join("/repo", "package.json")) {
+          throw Object.assign(new Error("project manifest changed to EIO"), { code: "EIO" });
+        }
+        return read(path);
+      };
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+          if (scenario.name === "malformed") files[join("/repo", "package.json")] = "{";
+          else if (scenario.name === "io") projectReadDenied = true;
+          else if (scenario.name === "foreign-version") {
+            files[join("/repo", "package.json")] = JSON.stringify({ dependencies: { assertledger: "9.9.9" }, packageManager: "npm@10.9.8" });
+          } else files[join("/repo", "pnpm-lock.yaml")] = "lockfileVersion: 9";
+        }
+        return result;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain(scenario.code);
+      expect(rt.calls.filter((argv) => argv[0] === "node" && argv.includes("setup") && argv.includes("--write"))).toHaveLength(0);
+      expect(rt.writes.at(-1).inProgress.selected).toEqual(["semctx", "assertledger"]);
+    }
+
+    const valid = fakeRuntime({ tools: ["node", "npm"], files: baseFiles() });
+    const accepted = await execute({ ...setupOptions(), with: ["assertledger"] }, valid);
+    expect(accepted.ok).toBe(true);
+    expect(valid.calls.filter((argv) => argv[0] === "node" && argv.includes("setup") && argv.includes("--write"))).toHaveLength(1);
+    expect(valid.writes.at(-1).inProgress).toBeUndefined();
+  });
+
+  test("AssertLedger apply revalidates local metadata before install and write", async () => {
+    const filesAt = (version = "1.2.0") => ({
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: version }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    });
+    const pendingUpgrade = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade", selected: ["semctx", "assertledger"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const beforeInstallFiles = filesAt();
+    const beforeInstall = fakeRuntime({ state: pendingUpgrade, tools: ["node", "npm"], files: beforeInstallFiles });
+    const beforeInstallExec = beforeInstall.exec;
+    beforeInstall.exec = async (argv, cwd, timeout) => {
+      const result = await beforeInstallExec(argv, cwd, timeout);
+      if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+        beforeInstallFiles[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "9.9.9" });
+      }
+      return result;
+    };
+    const blockedInstall = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), beforeInstall);
+    expect(blockedInstall.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
+    expect(beforeInstall.calls.filter((argv) => argv[0] === "npm" && argv.includes("install"))).toHaveLength(0);
+    expect(beforeInstall.writes).toHaveLength(0);
+
+    const mutations = [
+      { name: "foreign", code: "INSTALLED_VERSION_DRIFT" },
+      { name: "malformed", code: "PACKAGE_MANIFEST_CONFLICT" },
+      { name: "io", code: "STATE_IO_ERROR" },
+      { name: "missing-cli", code: "PACKAGE_MANIFEST_CONFLICT" },
+    ];
+    for (const mutation of mutations) {
+      const files = filesAt();
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const nativeExec = rt.exec;
+      const read = rt.readPlainText;
+      let denyLocalRead = false;
+      let mutated = false;
+      let previews = 0;
+      rt.readPlainText = (path) => {
+        if (denyLocalRead && path === join("/repo", "node_modules", "assertledger", "package.json")) {
+          throw Object.assign(new Error("local metadata EIO before write"), { code: "EIO" });
+        }
+        return read(path);
+      };
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (!mutated && argv[0] === "node" && argv.includes("setup") && argv.includes("--dry-run") && ++previews === 2) {
+          mutated = true;
+          if (mutation.name === "foreign") files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "9.9.9" });
+          else if (mutation.name === "malformed") files[join("/repo", "node_modules", "assertledger", "package.json")] = "{";
+          else if (mutation.name === "io") denyLocalRead = true;
+          else delete files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")];
+        }
+        return result;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain(mutation.code);
+      expect(rt.calls.filter((argv) => argv[0] === "node" && argv.includes("setup") && argv.includes("--write"))).toHaveLength(0);
+      expect(rt.writes.at(-1).inProgress.selected).toEqual(["semctx", "assertledger"]);
+    }
+
+    const validUpgrade = fakeRuntime({ state: structuredClone(pendingUpgrade), tools: ["node", "npm"], files: filesAt() });
+    const upgraded = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), validUpgrade);
+    expect(upgraded.ok).toBe(true);
+    expect(validUpgrade.calls.filter((argv) => argv[0] === "npm" && argv.includes("install"))).toHaveLength(1);
+    expect(JSON.parse(validUpgrade.readPlainText(join("/repo", "node_modules", "assertledger", "package.json"))).version).toBe("1.3.0");
+    expect(validUpgrade.writes.at(-1).components.assertledger.version).toBe("1.3.0");
+  });
+
+  test("AssertLedger multi-host previews revalidate every project and local boundary", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+        assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+      },
+    };
+    const filesAt = () => ({
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    });
+    const mutations = [
+      { name: "local-version", code: "INSTALLED_VERSION_DRIFT" },
+      { name: "local-malformed", code: "PACKAGE_MANIFEST_CONFLICT" },
+      { name: "project-malformed", code: "PACKAGE_MANIFEST_CONFLICT" },
+      { name: "manager-lock", code: "PACKAGE_MANAGER_CONFLICT" },
+      { name: "local-io", code: "STATE_IO_ERROR" },
+      { name: "missing-cli", code: "PACKAGE_MANIFEST_CONFLICT" },
+    ];
+    for (const command of ["setup", "doctor"]) {
+      for (const mutation of mutations) {
+        const files = filesAt();
+        const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm", "claude"], files });
+        const nativeExec = rt.exec;
+        const read = rt.readPlainText;
+        let denyLocalRead = false;
+        let mutated = false;
+        rt.readPlainText = (path) => {
+          if (denyLocalRead && path === join("/repo", "node_modules", "assertledger", "package.json")) {
+            throw Object.assign(new Error("local metadata unavailable"), { code: "EIO" });
+          }
+          return read(path);
+        };
+        rt.exec = async (argv, cwd, timeout) => {
+          const result = await nativeExec(argv, cwd, timeout);
+          if (!mutated && argv[0] === "node" && argv[1].endsWith(join("assertledger", "dist", "cli.js"))
+            && argv.includes("codex") && argv.includes("--dry-run")) {
+            mutated = true;
+            if (mutation.name === "local-version") files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "9.9.9" });
+            else if (mutation.name === "local-malformed") files[join("/repo", "node_modules", "assertledger", "package.json")] = "{";
+            else if (mutation.name === "project-malformed") files[join("/repo", "package.json")] = "{";
+            else if (mutation.name === "manager-lock") files[join("/repo", "pnpm-lock.yaml")] = "lockfileVersion: 9";
+            else if (mutation.name === "local-io") denyLocalRead = true;
+            else delete files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")];
+          }
+          return result;
+        };
+        const args = command === "setup"
+          ? ["setup", "/repo", "--host", "all", "--with", "assertledger", "--dry-run"]
+          : ["doctor", "/repo", "--host", "all", "--with", "assertledger"];
+        const report = await execute(parseArgs(args), rt);
+        expect(mutated).toBe(true);
+        expect(report.ok).toBe(false);
+        expect(report.conflicts.map((item) => item.code)).toContain(mutation.code);
+        expect(rt.calls.filter((argv) => argv[0] === "node" && argv[1]?.endsWith(join("assertledger", "dist", "cli.js")) && argv.includes("claude-code"))).toHaveLength(0);
+        expect(rt.writes).toHaveLength(0);
+      }
+    }
+
+    for (const command of ["setup", "doctor"]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm", "claude"], files: filesAt() });
+      const args = command === "setup"
+        ? ["setup", "/repo", "--host", "all", "--with", "assertledger", "--dry-run"]
+        : ["doctor", "/repo", "--host", "all", "--with", "assertledger"];
+      const report = await execute(parseArgs(args), rt);
+      if (command === "setup") expect(report.ok).toBe(true);
+      else expect(report.components.find((item) => item.name === "assertledger").configured).toBe("yes");
+      expect(rt.calls.filter((argv) => argv[0] === "node" && argv[1]?.endsWith(join("assertledger", "dist", "cli.js")) && argv.includes("claude-code"))).toHaveLength(1);
+    }
+  });
+
+  test("AssertLedger multi-host preflight rechecks every required tool before managed writes", async () => {
+    const scenarios = [
+      { manager: "pnpm", missing: "npm", afterClient: "codex", code: "NODE_REQUIRED" },
+      { manager: "bun", missing: "node", afterClient: "claude-code", code: "NODE_REQUIRED", saved: true },
+      { manager: "pnpm", missing: "pnpm", afterClient: "claude-code", code: "PACKAGE_MANAGER_MISSING" },
+    ];
+    const filesFor = (manager) => ({
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: `${manager}@10.0.0` }),
+      [join("/repo", manager === "pnpm" ? "pnpm-lock.yaml" : "bun.lock")]: "lock",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    });
+    for (const scenario of scenarios) {
+      const state = scenario.saved ? {
+        schemaVersion: 1, projectRoot: "/repo",
+        components: {
+          semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+          assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+        },
+        inProgress: {
+          command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex", "claude"],
+          versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+        },
+      } : null;
+      const rt = fakeRuntime({ state, tools: ["node", "npm", scenario.manager, "claude"], files: filesFor(scenario.manager) });
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      let missing = false;
+      rt.which = (name) => missing && name === scenario.missing ? null : nativeWhich(name);
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        const client = argv[argv.indexOf("--client") + 1];
+        if (argv[0] === "node" && argv.includes("--dry-run") && client === scenario.afterClient) missing = true;
+        return result;
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "all", "--with", "assertledger"]), rt);
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      expect(missing, `${scenario.manager}:${scenario.missing}`).toBe(true);
+      expect(report.conflicts.map((item) => item.code), `${scenario.manager}:${scenario.missing}`).toContain(scenario.code);
+      expect(guidance.toLowerCase(), `${scenario.manager}:${scenario.missing}`).toContain(`restore ${scenario.missing}`.toLowerCase());
+      expect(guidance).toContain("hoklims-devkit setup /repo --host all --with assertledger");
+      expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+      if (scenario.afterClient === "codex") {
+        expect(rt.calls.some((argv) => argv.includes("--client") && argv.includes("claude-code"))).toBe(false);
+      }
+    }
+
+    const available = fakeRuntime({ tools: ["node", "npm", "pnpm", "claude"], files: filesFor("pnpm") });
+    const accepted = await execute(parseArgs(["setup", "/repo", "--host", "all", "--with", "assertledger", "--dry-run"]), available);
+    expect(accepted.ok).toBe(true);
+
+    const semctxOnly = fakeRuntime();
+    const noOptionalRequirement = await execute({ ...setupOptions(), dryRun: true }, semctxOnly);
+    expect(noOptionalRequirement.conflicts.map((item) => item.code)).not.toContain("NODE_REQUIRED");
+  });
+
+  test("global preflight rechecks AssertLedger tools after later component previews", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      [executable]: "shim",
+    };
+    const rt = fakeRuntime({ tools: ["node", "npm", "pnpm", "uv"], files });
+    const nativeWhich = rt.which;
+    const nativeExec = rt.exec;
+    let npmMissing = false;
+    rt.which = (name) => npmMissing && name === "npm" ? null : nativeWhich(name);
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if ((argv[0] === executable || argv[0] === "uv") && argv.includes("host") && argv.includes("--dry-run")) npmMissing = true;
+      return result;
+    };
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger,latent-compass"]), rt);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(npmMissing).toBe(true);
+    expect(report.conflicts.map((item) => item.code)).toContain("NODE_REQUIRED");
+    expect(guidance).toContain("Restore npm on PATH");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("doctor refuses readiness when AssertLedger prerequisites change between host previews", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+      assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm", "pnpm", "claude"], files, workspaceReady: true });
+    const nativeWhich = rt.which;
+    const nativeExec = rt.exec;
+    let npmMissing = false;
+    rt.which = (name) => npmMissing && name === "npm" ? null : nativeWhich(name);
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "node" && argv.includes("--client") && argv.includes("codex")) npmMissing = true;
+      return result;
+    };
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "all", "--with", "assertledger"]), rt);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(report.ok).toBe(false);
+    expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+    expect(guidance).toContain("Restore npm on PATH");
+    expect(rt.calls.some((argv) => argv.includes("--client") && argv.includes("claude-code"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("valid packageManager declarations retain supported manager selection", async () => {
+    for (const packageManager of [
+      "npm@10.9.8",
+      `npm@10.9.8+sha512.${"ab".repeat(64)}`,
+      "npm@10.9.8-rc.1",
+      "pnpm@10.0.0",
+      `pnpm@https://registry.npmjs.org/pnpm/-/pnpm-10.0.0.tgz#sha224.${"ab".repeat(28)}`,
+      "bun@1.4.2",
+    ]) {
+      const manager = packageManager.split("@")[0];
+      const rt = fakeRuntime({
+        tools: ["node", "npm", manager],
+        files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager }) },
+      });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.ok).toBe(true);
+      expect(report.plannedChanges.find((item) => item.component === "assertledger").packageManager).toBe(manager);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("AssertLedger recovery includes its npm bootstrap alongside the selected package manager", async () => {
+    const cases = [
+      { manager: "pnpm", tools: ["node", "pnpm"], lock: "pnpm-lock.yaml" },
+      { manager: "bun", tools: ["node", "bun"], lock: "bun.lock" },
+      { manager: "npm", tools: ["node"], lock: "package-lock.json" },
+    ];
+    for (const scenario of cases) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: `${scenario.manager}@10.0.0` }),
+        [join("/repo", scenario.lock)]: "lock",
+      };
+      const rt = fakeRuntime({ tools: scenario.tools, files });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      expect(report.conflicts.map((item) => item.code), scenario.manager).toContain("NODE_REQUIRED");
+      expect(guidance, scenario.manager).toContain("Restore npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger");
+      expect(guidance, scenario.manager).not.toContain("npm, npm");
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec")), scenario.manager).toBe(false);
+      expect(rt.writes, scenario.manager).toHaveLength(0);
+    }
+  });
+
   test("AssertLedger preview cannot plan artifacts for another repository or client", async () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],
@@ -600,6 +1817,44 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("malformed AssertLedger artifacts preserve the saved recovery plan", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: {
+        command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    for (const artifacts of [[null], {}]) {
+      const rt = fakeRuntime({
+        state,
+        tools: ["node", "npm"],
+        files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }) },
+      });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd) => argv[0] === "npm" && argv.includes("exec")
+        ? { code: 0, stdout: JSON.stringify({ ...assertSetupReport(argv, "WOULD_CREATE", "dry-run"), artifacts }), stderr: "" }
+        : nativeExec(argv, cwd);
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_CONFLICT");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("UNEXPECTED_ERROR");
+      expect(report.projectRoot).toBe("/repo");
+      expect(guidance).toContain("hoklims-devkit setup /repo --host codex --with assertledger");
+      expect(rt.writes).toHaveLength(0);
+    }
+
+    const valid = fakeRuntime({
+      state,
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }) },
+    });
+    const accepted = await execute({ ...parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), dryRun: true }, valid);
+    expect(accepted.ok).toBe(true);
+    expect(accepted.conflicts).toHaveLength(0);
+    expect(valid.writes).toHaveLength(0);
+  });
+
   test("a declared AssertLedger version without installed executable still plans installation", async () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],
@@ -609,6 +1864,508 @@ describe("public CLI", () => {
     expect(report.ok).toBe(true);
     expect(report.plannedChanges.find((item) => item.component === "assertledger").installPackage).toBe(true);
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("unmanaged AssertLedger setup rejects declaration and executable version mismatch", async () => {
+    for (const [declared, installed] of [["1.2.0", "1.3.0"], ["1.3.0", "1.4.0"]]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: declared }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: installed }),
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("unmanaged AssertLedger upgrade admits its target and pending target", async () => {
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.4.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const state of [
+      null,
+      {
+        schemaVersion: 1,
+        projectRoot: "/repo",
+        components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+        inProgress: {
+          command: "upgrade",
+          selected: ["semctx", "assertledger"],
+          hosts: ["codex"],
+          versions: { semctx: "0.3.4", assertledger: "1.4.0" },
+        },
+      },
+    ]) {
+      const rt = fakeRuntime({ state, version: "0.3.4", tools: ["node", "npm"], files });
+      const fetchJson = rt.fetchJson;
+      rt.fetchJson = async (url) => url.includes("registry.npmjs.org/assertledger")
+        ? { version: "1.4.0" } : fetchJson(url);
+      const report = await execute({ ...parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).not.toContain("INSTALLED_VERSION_DRIFT");
+      expect(report.components.find((item) => item.name === "assertledger")?.version).toBe("1.4.0");
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("a malformed installed AssertLedger package blocks package mutation", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.5", hosts: ["codex"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
+    } };
+    for (const packageData of [JSON.stringify({ version: "bad" }), JSON.stringify({}), "not-json"]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+        [join("/repo", "node_modules", "assertledger", "package.json")]: packageData,
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      };
+      const rt = fakeRuntime({ state: structuredClone(state), version: "0.3.5", tools: ["node", "npm"], files });
+      const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("an AssertLedger CLI directory blocks package mutation", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const cliPath = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [cliPath]: "directory-placeholder",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const readPlainText = rt.readPlainText;
+    rt.readPlainText = (path) => {
+      if (path === cliPath) throw new Error("CLI path is a directory");
+      return readPlainText(path);
+    };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+    expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("AssertLedger dist ancestry distinguishes structural conflicts from I/O errors", async () => {
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const distPath = join("/repo", "node_modules", "assertledger", "dist");
+    for (const kind of ["structural", "io"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const directoryPresent = rt.directoryPresent;
+      rt.directoryPresent = (path) => {
+        if (path === distPath) {
+          throw Object.assign(new Error(kind === "io" ? "dist metadata EIO" : "dist is not a directory"),
+            { code: kind === "io" ? "EIO" : "STATE_CONFLICT" });
+        }
+        return directoryPresent(path);
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain(kind === "io" ? "STATE_IO_ERROR" : "PACKAGE_MANIFEST_CONFLICT");
+      expect(report.exitCode).toBe(kind === "io" ? 5 : 4);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+    for (const phase of ["before-read", "after-read"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const directoryPresent = rt.directoryPresent;
+      const readPlainText = rt.readPlainText;
+      let distUnsafe = false;
+      rt.directoryPresent = (path) => {
+        if (path === distPath && distUnsafe) throw Object.assign(new Error("dist changed to a regular file"), { code: "STATE_CONFLICT" });
+        return directoryPresent(path);
+      };
+      rt.readPlainText = (path) => {
+        if (path !== join(distPath, "cli.js")) return readPlainText(path);
+        if (phase === "before-read") {
+          distUnsafe = true;
+          throw Object.assign(new Error("open failed with ENOTDIR"), { code: "ENOTDIR" });
+        }
+        const content = readPlainText(path);
+        distUnsafe = true;
+        return content;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(report.exitCode).toBe(4);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+    for (const phase of ["before-lstat", "after-lstat"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const directoryPresent = rt.directoryPresent;
+      const pathPresent = rt.pathPresent;
+      let distUnsafe = false;
+      rt.directoryPresent = (path) => {
+        if (path === distPath && distUnsafe) throw Object.assign(new Error("dist changed before CLI metadata inspection"), { code: "STATE_CONFLICT" });
+        return directoryPresent(path);
+      };
+      rt.pathPresent = (path) => {
+        if (path !== join(distPath, "cli.js")) return pathPresent(path);
+        if (phase === "before-lstat") {
+          distUnsafe = true;
+          throw Object.assign(new Error("CLI lstat failed with ENOTDIR"), { code: "ENOTDIR" });
+        }
+        const present = pathPresent(path);
+        distUnsafe = true;
+        return present;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(report.exitCode).toBe(4);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+    for (const phase of ["before-package-lstat", "after-package-lstat", "second-package-lstat", "recheck-enotdir"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const directoryPresent = rt.directoryPresent;
+      const nodeModules = join("/repo", "node_modules");
+      const packageRoot = join(nodeModules, "assertledger");
+      let nodeModulesUnsafe = false;
+      let reinspectionRace = false;
+      let packageLookups = 0;
+      rt.directoryPresent = (path) => {
+        if (path === nodeModules && reinspectionRace) {
+          throw Object.assign(new Error("node_modules lookup failed with ENOTDIR during reinspection"), { code: "ENOTDIR" });
+        }
+        if (path === nodeModules && nodeModulesUnsafe) {
+          throw Object.assign(new Error("node_modules changed to a regular file"), { code: "STATE_CONFLICT" });
+        }
+        if (path === packageRoot) {
+          packageLookups += 1;
+          if (phase === "recheck-enotdir" && packageLookups === 2) {
+            reinspectionRace = true;
+            throw Object.assign(new Error("dist metadata EIO before ancestor reinspection"), { code: "EIO" });
+          }
+          if (phase === "before-package-lstat" || (phase === "second-package-lstat" && packageLookups === 2)) {
+            nodeModulesUnsafe = true;
+            throw Object.assign(new Error("package lstat failed with ENOTDIR"), { code: "ENOTDIR" });
+          }
+          const present = directoryPresent(path);
+          if (phase === "after-package-lstat") nodeModulesUnsafe = true;
+          return present;
+        }
+        return directoryPresent(path);
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(report.exitCode).toBe(4);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("AssertLedger CLI metadata, open, and read I/O failures remain STATE_IO_ERROR", async () => {
+    const cliPath = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
+    for (const phase of ["metadata", "open", "read"]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [cliPath]: "cli",
+      };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const readPlainText = rt.readPlainText;
+      rt.readPlainText = (path) => {
+        if (path === cliPath) throw Object.assign(new Error(`CLI ${phase} EIO`), { code: "EIO" });
+        return readPlainText(path);
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+      expect(report.exitCode).toBe(5);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("a dangling AssertLedger CLI link blocks package mutation", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const cliPath = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const pathPresent = rt.pathPresent;
+    rt.pathPresent = (path) => path === cliPath || pathPresent(path);
+    const packageRoot = join("/repo", "node_modules", "assertledger");
+    rt.directoryPresent = (path) => path === join("/repo", "node_modules") || path === packageRoot;
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+    expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("unsafe or empty AssertLedger package entries block every native preview", async () => {
+    for (const shape of ["dangling-parent", "empty-package"]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+      };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const packageRoot = join("/repo", "node_modules", "assertledger");
+      rt.directoryPresent = (path) => {
+        if (path === join("/repo", "node_modules")) return true;
+        if (path === packageRoot && shape === "dangling-parent") {
+          throw Object.assign(new Error("AssertLedger package directory is a dangling link"), { code: "STATE_CONFLICT" });
+        }
+        return path === packageRoot;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("a valid pnpm-linked AssertLedger package remains locally executable", async () => {
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ tools: ["node", "npm", "pnpm"], files });
+    let legacyReaderUsed = false;
+    const verifiedReads = [];
+    const verifiedRead = rt.readPlainText;
+    rt.readText = () => { legacyReaderUsed = true; throw new Error("blocking path reader used"); };
+    rt.readPlainText = (path) => { verifiedReads.push(path); return verifiedRead(path); };
+    const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+    expect(report.ok).toBe(true);
+    expect(report.plannedChanges.find((item) => item.component === "assertledger")?.installPackage).toBe(false);
+    expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(true);
+    expect(legacyReaderUsed).toBe(false);
+    expect(verifiedReads).toContain(join("/repo", "node_modules", "assertledger", "package.json"));
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("matching AssertLedger declarations resolve to their shared exact version", async () => {
+    const rt = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({
+        dependencies: { assertledger: "1.2.0" },
+        devDependencies: { assertledger: "1.2.0" },
+      }) },
+    });
+    const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+    expect(report.ok).toBe(true);
+    expect(report.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("AssertLedger upgrade rejects an independently changed dependency before writes", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "2.0.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "2.0.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
+    expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec"))).toBe(false);
+    expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("AssertLedger upgrade admits the recorded, pending, and refreshed target versions", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    for (const scenario of [
+      { current: "1.2.0", refresh: false, target: "1.3.0" },
+      { current: "1.3.0", refresh: false, target: "1.3.0" },
+      { current: "1.3.0", refresh: true, target: "1.4.0" },
+    ]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: scenario.current }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: scenario.current }),
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      };
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files });
+      const fetchJson = rt.fetchJson;
+      rt.fetchJson = async (url) => url.includes("registry.npmjs.org/assertledger")
+        ? { version: "1.4.0" } : fetchJson(url);
+      const args = ["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--dry-run"];
+      if (scenario.refresh) args.push("--refresh-pending");
+      const report = await execute(parseArgs(args), rt);
+      expect(report.conflicts.map((item) => item.code)).not.toContain("INSTALLED_VERSION_DRIFT");
+      expect(report.components.find((item) => item.name === "assertledger")?.version).toBe(scenario.target);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("conflicting AssertLedger declarations block every write", async () => {
+    const rt = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({
+        dependencies: { assertledger: "1.3.0" },
+        devDependencies: { assertledger: "1.2.0" },
+      }) },
+    });
+    const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/Conflicting AssertLedger dependency declarations/u);
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+
+    const constraintMismatch = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({
+        dependencies: { assertledger: "^1.2.0" },
+        devDependencies: { assertledger: "1.2.0" },
+      }) },
+    });
+    const rejectedConstraint = await execute({ ...setupOptions(), with: ["assertledger"] }, constraintMismatch);
+    expect(rejectedConstraint.ok).toBe(false);
+    expect(rejectedConstraint.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+    expect(rejectedConstraint.conflicts.map((item) => item.detail).join("\n")).toMatch(/must be pinned exactly/u);
+    expect(constraintMismatch.writes).toHaveLength(0);
+  });
+
+  test("malformed dependency groups block AssertLedger before every native preview", async () => {
+    for (const manifest of [[], "invalid", 7, false, null]) {
+      const rt = fakeRuntime({
+        tools: ["node", "npm"],
+        files: { [join("/repo", "package.json")]: JSON.stringify(manifest) },
+      });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("package.json must contain an object");
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+    const groups = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+    for (const group of groups) {
+      for (const value of [[], "invalid", 7, false, null]) {
+        const rt = fakeRuntime({
+          tools: ["node", "npm"],
+          files: { [join("/repo", "package.json")]: JSON.stringify({ packageManager: "npm@10.9.8", [group]: value }) },
+        });
+        const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+        expect(report.ok).toBe(false);
+        expect(report.conflicts.map((item) => item.detail).join("\n")).toContain(`${group} must be an object`);
+        expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec"))).toBe(false);
+        expect(rt.writes).toHaveLength(0);
+      }
+    }
+  });
+
+  test("missing and empty dependency groups remain valid AssertLedger manifests", async () => {
+    for (const manifest of [
+      { name: "fixture", packageManager: "npm@10.9.8" },
+      {
+        packageManager: "npm@10.9.8",
+        dependencies: {}, devDependencies: {}, optionalDependencies: {}, peerDependencies: {},
+      },
+      {
+        packageManager: "npm@10.9.8",
+        dependencies: { assertledger: "1.2.0" },
+        devDependencies: {}, optionalDependencies: {}, peerDependencies: {},
+      },
+    ]) {
+      const rt = fakeRuntime({
+        tools: ["node", "npm"],
+        files: { [join("/repo", "package.json")]: JSON.stringify(manifest) },
+      });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.ok).toBe(true);
+      expect(report.components.find((item) => item.name === "assertledger")?.version).toBe("1.2.0");
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("AssertLedger declarations in optional and peer dependency groups are validated", async () => {
+    const matching = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({
+        optionalDependencies: { assertledger: "1.2.0" },
+        peerDependencies: { assertledger: "1.2.0" },
+      }) },
+    });
+    const accepted = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, matching);
+    expect(accepted.ok).toBe(true);
+    expect(accepted.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
+
+    const conflicting = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({
+        optionalDependencies: { assertledger: "1.2.0" },
+        peerDependencies: { assertledger: "1.3.0" },
+      }) },
+    });
+    const rejected = await execute({ ...setupOptions(), with: ["assertledger"] }, conflicting);
+    expect(rejected.ok).toBe(false);
+    expect(rejected.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+    expect(conflicting.writes).toHaveLength(0);
   });
 
   test("a listed uv tool without its executable is planned for reinstall", async () => {
@@ -831,6 +2588,10 @@ describe("public CLI", () => {
     rt.exec = async (argv, cwd, timeout) => {
       if (argv[0] === "npm" && argv.includes("install")) {
         if (failOnce) { failOnce = false; return { code: 5, stdout: "", stderr: "simulated interruption" }; }
+        files[join("/repo", "package.json")] = JSON.stringify({
+          name: "fixture",
+          devDependencies: { assertledger: "1.2.0" },
+        });
         files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "1.2.0" });
         files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")] = "cli";
       }
@@ -863,6 +2624,32 @@ describe("public CLI", () => {
     const report = await execute(setupOptions(), rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_DRIFT");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("Semctx upgrade never replaces an installed version with altered bytes", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", semctxContentDrift: true });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_DRIFT");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("Semctx setup never replaces installed bytes without positive content attestation", async () => {
+    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5", installedSemctxVersion: "0.3.5" });
+    const nativeExec = rt.exec;
+    let statusCalls = 0;
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (!argv.includes("plugin-status") || ++statusCalls !== 1) return result;
+      const status = JSON.parse(result.stdout);
+      status.hosts.codex.installed.contentMatchesSnapshot = null;
+      return { ...result, stdout: JSON.stringify(status) };
+    };
+    const report = await execute(setupOptions(), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_UNVERIFIED");
     expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
     expect(rt.writes).toHaveLength(0);
   });
@@ -954,7 +2741,56 @@ describe("public CLI", () => {
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("PENDING_PLAN_CONFLICT");
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(detail).toContain("hoklims-devkit setup /repo --host all");
+    expect(detail).not.toContain("hoklims-devkit upgrade");
+    expect(detail).not.toContain("--refresh-pending");
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("suggested refresh preserves pending selection while expanding shared hosts", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "setup",
+        selected: ["semctx"],
+        hosts: ["claude"],
+        versions: { semctx: "0.3.4" },
+      },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+    const which = rt.which;
+    rt.which = (name) => name === "codex" ? null : which(name);
+    const writeState = rt.writeState;
+    rt.writeState = (path, value) => writeState(path, validateState(value));
+    const blocked = await execute(parseArgs(["setup", "/repo", "--host", "claude"]), rt);
+    expect(blocked.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
+    expect(blocked.nextActions).toContain("Review the new stable releases, then restore the codex CLI on PATH before running hoklims-devkit upgrade /repo --host all --refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+
+    rt.which = which;
+    const nativeExec = rt.exec;
+    let interrupt = true;
+    rt.exec = async (argv, cwd, timeout) => interrupt && argv.includes("install") && !argv.includes("--dry-run")
+      ? { code: 5, stdout: "", stderr: "simulated interruption" }
+      : nativeExec(argv, cwd, timeout);
+    const refreshed = await execute(parseArgs(["upgrade", "/repo", "--host", "all", "--refresh-pending"]), rt);
+    expect(refreshed.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(rt.writes[0].inProgress).toEqual({
+      command: "upgrade", selected: ["semctx"], hosts: ["codex", "claude"], versions: { semctx: "0.3.5" },
+    });
+    expect(rt.writes[0].components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
+    interrupt = false;
+    const resumed = await execute(parseArgs(["upgrade", "/repo", "--host", "all"]), rt);
+    expect(resumed.ok).toBe(true);
+    expect(resumed.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+    expect(rt.calls.some((argv) => argv.includes("assertledger"))).toBe(false);
+    expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
   });
 
   test("an interrupted upgrade accepts its already installed pinned Compass version", async () => {
@@ -1105,6 +2941,113 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("shared-host upgrade advice names a missing host prerequisite before its retry", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+    } };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+    expect(detail).toContain("Restore the claude CLI on PATH before running hoklims-devkit upgrade /repo --host all");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("expanded shared-host recovery checks every host required by its all-host retry", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["claude"] },
+    } };
+    for (const codexDisappears of [false, true]) {
+      const rt = fakeRuntime({ state: structuredClone(state), version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+      if (codexDisappears) {
+        const which = rt.which;
+        let codexChecks = 0;
+        rt.which = (name) => name === "codex" && ++codexChecks > 1 ? null : which(name);
+      }
+      const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+      expect(guidance).toContain("hoklims-devkit upgrade /repo --host all");
+      if (codexDisappears) expect(guidance).toContain("Restore the codex CLI on PATH before running hoklims-devkit upgrade /repo --host all");
+      else expect(guidance).not.toContain("Restore the codex CLI");
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("all and auto recoveries restore missing saved-plan hosts before the full retry", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {},
+      inProgress: {
+        command: "setup",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex", "claude"],
+        versions: { semctx: "0.3.5", assertledger: "1.2.0" },
+      },
+    };
+    for (const host of ["all", "auto"]) {
+      const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+      const report = await execute(parseArgs(["setup", "/repo", "--host", host, "--with", "assertledger"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.ok).toBe(false);
+      expect(guidance.toLowerCase()).toContain("restore claude cli, node, npm on path");
+      expect(guidance).toContain("Inspect the declared AssertLedger package manager and restore it on PATH if missing before running hoklims-devkit setup /repo --host all --with assertledger");
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("shared-host upgrade advice preserves explicit component selectors", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+    } };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm", "claude"] });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+    expect(report.conflicts.map((item) => item.detail).join("\n"))
+      .toContain("hoklims-devkit upgrade /repo --host all --with assertledger");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a rejected shared-host refresh resumes the saved plan without refresh", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm", "claude"], files });
+    const blocked = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]), rt);
+    const guidance = [blocked.conflicts.map((item) => item.detail).join("\n"), blocked.nextActions.join("\n")].join("\n");
+    expect(blocked.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+    expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(guidance).not.toContain("--host all");
+    expect(guidance).not.toContain("--refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+
+    const retried = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    expect(retried.ok).toBe(true);
+    expect(retried.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+    expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.4", hosts: ["codex", "claude"] });
+    expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
+  });
+
   test("concurrent host setups cannot overwrite a completed state record", async () => {
     let persisted = null;
     let locked = false;
@@ -1122,7 +3065,7 @@ describe("public CLI", () => {
       rt.readState = () => structuredClone(persisted);
       rt.writeState = (_path, value) => { persisted = structuredClone(value); rt.writes.push(structuredClone(value)); };
       rt.acquireLock = () => {
-        if (locked) throw new Error("Another setup is running");
+        if (locked) throw Object.assign(new Error("Another setup is running"), { code: "RUN_LOCKED" });
         locked = true;
         return () => { locked = false; };
       };
@@ -1137,12 +3080,1630 @@ describe("public CLI", () => {
     expect(persisted.components.semctx.hosts).toHaveLength(1);
   });
 
+  test("state checkpoints stay bound to the locked filesystem observation", async () => {
+    const run = async ({ replacement = null, seedCompleted = false, nativeFailure = false } = {}) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "devkit-state-transaction-")));
+      const statePath = join(root, "profile", "state.json");
+      let commits = 0;
+      let replaced = false;
+      let distinctIdentity = false;
+      const native = createRuntime({
+        commitOwnedFile: (source, destination) => { commits += 1; renameSync(source, destination); },
+      });
+      const seededState = seedCompleted ? {
+        schemaVersion: 1, projectRoot: root,
+        components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      } : null;
+      if (seededState) native.writeState(statePath, seededState);
+      commits = 0;
+      const rt = fakeRuntime({ state: seededState, workspaceReady: seedCompleted });
+      for (const name of ["readState", "writeState", "acquireLock"]) rt[name] = native[name];
+      let transactionOpened = false;
+      rt.openStateTransaction = (path) => {
+        transactionOpened = true;
+        return native.openStateTransaction(path);
+      };
+      rt.resolve = () => root;
+      rt.realpath = realpathSync;
+      rt.statePath = () => statePath;
+      const fakeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === "git") return { code: 0, stdout: `${root}\n`, stderr: "" };
+        const result = await fakeExec(argv, cwd, timeout);
+        const replacementPoint = seedCompleted
+          ? transactionOpened && argv.includes("plugin-status")
+          : argv.includes("install") && !argv.includes("--dry-run");
+        if (replacement && !replaced && replacementPoint) {
+          const before = lstatSync(statePath, { bigint: true });
+          const ownedBytes = readFileSync(statePath);
+          unlinkSync(statePath);
+          writeFileSync(statePath, replacement === "same" ? ownedBytes : "FOREIGN NON-JSON BYTES");
+          const after = lstatSync(statePath, { bigint: true });
+          distinctIdentity = before.dev !== after.dev || before.ino !== after.ino;
+          replaced = true;
+          if (nativeFailure) return { code: 5, stdout: "", stderr: "simulated native status failure" };
+        }
+        try {
+          const parsed = JSON.parse(result.stdout);
+          if (parsed.repositoryRoot === "/repo") parsed.repositoryRoot = root;
+          if (parsed.workspace?.root === "/repo") parsed.workspace.root = root;
+          return { ...result, stdout: JSON.stringify(parsed) };
+        } catch {
+          return result;
+        }
+      };
+      const report = await execute(parseArgs(["setup", root, "--host", "codex"]), rt);
+      return { report, statePath, commits, replaced, distinctIdentity };
+    };
+
+    const positive = await run();
+    expect(positive.report.ok).toBe(true);
+    expect(positive.commits).toBe(3);
+    expect(JSON.parse(readFileSync(positive.statePath, "utf8")).inProgress).toBeUndefined();
+
+    if (process.platform !== "win32") {
+      for (const replacement of ["foreign", "same"]) {
+        const raced = await run({ replacement });
+        expect(raced.replaced).toBe(true);
+        expect(raced.distinctIdentity).toBe(true);
+        expect(raced.report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+        expect(raced.report.components[0]).toMatchObject({ installed: "unknown", configured: "unknown" });
+        const guidance = [raced.report.conflicts.map((item) => item.detail).join("\n"), raced.report.nextActions.join("\n")].join("\n");
+        expect(guidance).toContain("inspect and validate the saved Devkit state");
+        expect(guidance).not.toContain("complete the recorded plan");
+        expect(raced.commits).toBe(1);
+        const bytes = readFileSync(raced.statePath);
+        if (replacement === "foreign") expect(bytes.toString("utf8")).toBe("FOREIGN NON-JSON BYTES");
+        else expect(JSON.parse(bytes.toString("utf8")).inProgress).toEqual({
+          command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" },
+        });
+      }
+
+      for (const replacement of ["foreign", "same"]) {
+        const noOp = await run({ replacement, seedCompleted: true });
+        expect(noOp.replaced).toBe(true);
+        expect(noOp.distinctIdentity).toBe(true);
+        expect(noOp.commits).toBe(0);
+        expect(noOp.report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+        const guidance = [noOp.report.conflicts.map((item) => item.detail).join("\n"), noOp.report.nextActions.join("\n")].join("\n");
+        expect(guidance).toContain("inspect and validate the saved Devkit state");
+        expect(guidance).not.toContain("complete the recorded plan");
+        if (replacement === "foreign") expect(readFileSync(noOp.statePath, "utf8")).toBe("FOREIGN NON-JSON BYTES");
+        else expect(JSON.parse(readFileSync(noOp.statePath, "utf8")).components.semctx.version).toBe("0.3.4");
+      }
+
+      const failed = await run({ replacement: "foreign", seedCompleted: true, nativeFailure: true });
+      expect(failed.report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+      expect(failed.report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+      const failedGuidance = [failed.report.conflicts.map((item) => item.detail).join("\n"), failed.report.nextActions.join("\n")].join("\n");
+      expect(failedGuidance).toContain("inspect and validate the saved Devkit state");
+      expect(failedGuidance).not.toContain("complete the recorded plan");
+      expect(readFileSync(failed.statePath, "utf8")).toBe("FOREIGN NON-JSON BYTES");
+    }
+  });
+
+  test("STATE_CHANGED recovery uses the latest locked reread plan", async () => {
+    const lockedState = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.5", assertledger: "1.3.0" },
+      },
+    };
+    const rt = fakeRuntime({ tools: ["node", "npm"], files: {
+      [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+    } });
+    let reads = 0;
+    let released = false;
+    rt.readState = () => ++reads === 1 ? null : structuredClone(lockedState);
+    rt.acquireLock = () => () => { released = true; };
+    const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(detail).not.toContain("hoklims-devkit setup");
+    expect(rt.writes).toHaveLength(0);
+    expect(released).toBe(true);
+  });
+
+  test("STATE_CHANGED recovery restores a missing host from the latest locked plan", async () => {
+    const lockedState = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {},
+      inProgress: {
+        command: "setup",
+        selected: ["semctx"],
+        hosts: ["claude"],
+        versions: { semctx: "0.3.4" },
+      },
+    };
+    const rt = fakeRuntime();
+    let reads = 0;
+    let released = false;
+    rt.readState = () => ++reads === 1 ? null : structuredClone(lockedState);
+    rt.acquireLock = () => () => { released = true; };
+    const report = await execute(setupOptions(), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    const actions = report.nextActions.join("\n");
+    const expected = "Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude";
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(detail.toLowerCase()).toContain(expected.toLowerCase());
+    expect(actions.toLowerCase()).toContain(expected.toLowerCase());
+    expect(detail).not.toContain("--host codex");
+    expect(actions).not.toContain("--host codex");
+    expect(rt.writes).toHaveLength(0);
+    expect(released).toBe(true);
+  });
+
+  test("STATE_CHANGED release failures keep the latest locked recovery plan", async () => {
+    const lockedState = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.4" } },
+    };
+    const rt = fakeRuntime({ tools: ["claude"] });
+    const which = rt.which;
+    rt.which = (name) => name === "claude" ? null : which(name);
+    let reads = 0;
+    rt.readState = () => ++reads === 1 ? null : structuredClone(lockedState);
+    rt.acquireLock = () => () => { throw Object.assign(new Error("release denied"), { code: "EACCES" }); };
+    const report = await execute(setupOptions(), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(guidance.toLowerCase()).toContain("restore the claude cli on path before running hoklims-devkit setup /repo --host claude");
+    expect(guidance).not.toContain("--host codex");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("STATE_CHANGED invalidates an admitted refresh in favor of the latest saved plan", async () => {
+    const lockedState = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    let reads = 0;
+    let released = false;
+    rt.readState = () => ++reads === 1 ? null : structuredClone(lockedState);
+    rt.acquireLock = () => () => { released = true; };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(guidance.toLowerCase()).toContain("restore the claude cli on path before running hoklims-devkit setup /repo --host claude");
+    expect(guidance).not.toContain("hoklims-devkit upgrade");
+    expect(guidance).not.toContain("--host codex");
+    expect(guidance).not.toContain("--refresh-pending");
+    expect(guidance).not.toContain("refreshing releases");
+    expect(rt.writes).toHaveLength(0);
+    expect(released).toBe(true);
+  });
+
+  test("late authority loss replaces every earlier recovery instruction", async () => {
+    const root = "/repo  with 'quote";
+    const lockedState = {
+      schemaVersion: 1, projectRoot: root, components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.4" } },
+    };
+    const rt = fakeRuntime({ tools: ["claude"] });
+    rt.resolve = () => root;
+    rt.realpath = () => root;
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] !== "bunx" || !result.stdout) return result;
+      const parsed = JSON.parse(result.stdout);
+      if (Object.hasOwn(parsed, "repositoryRoot")) parsed.repositoryRoot = root;
+      if (parsed.workspace?.root) parsed.workspace.root = root;
+      return { ...result, stdout: JSON.stringify(parsed) };
+    };
+    rt.openStateTransaction = () => ({
+      state: structuredClone(lockedState),
+      close: () => { throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" }); },
+    });
+    const report = await execute(parseArgs(["setup", root, "--host", "codex"]), rt);
+    const details = report.conflicts.map((item) => item.detail);
+    const expectedCommand = `hoklims-devkit setup ${quoteShellToken(root)} --host codex`;
+    const collapsedCommand = `hoklims-devkit setup ${quoteShellToken(root.replace("  ", " "))} --host codex`;
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(report.nextActions).toHaveLength(1);
+    expect(report.nextActions[0]).toContain("inspect and validate the saved Devkit state");
+    expect(report.nextActions[0]).toContain(`Only if no saved plan exists, run ${expectedCommand}`);
+    expect(report.nextActions[0]).not.toContain(collapsedCommand);
+    expect(report.nextActions.join("\n")).not.toContain("--host claude");
+    for (const detail of details) {
+      expect(detail).toContain("inspect and validate the saved Devkit state");
+      expect(detail).toContain(expectedCommand);
+      expect(detail).not.toContain(collapsedCommand);
+      expect(detail).not.toContain("--host claude");
+      expect(detail).not.toContain("complete the recorded plan");
+    }
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("lock release ownership conflict makes recorded-plan recovery conditional", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const rt = fakeRuntime({ state });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+        return { code: 5, stdout: "", stderr: "native setup failed" };
+      }
+      return result;
+    };
+    rt.acquireLock = () => () => {
+      throw Object.assign(new Error("lock ownership changed during failed read"), { code: "STATE_CONFLICT" });
+    };
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex"]), rt);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit setup /repo --host codex");
+    expect(guidance).not.toContain("complete the recorded plan with hoklims-devkit setup /repo --host codex");
+  });
+
+  test("late authority loss retains missing-host repair before its conditional retry", async () => {
+    const root = "/repo  with 'quote";
+    for (const closeConflict of [false, true]) {
+      const rt = fakeRuntime();
+      rt.resolve = () => root;
+      rt.realpath = () => root;
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      let codexMissing = false;
+      rt.which = (name) => codexMissing && name === "codex" ? null : nativeWhich(name);
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+          codexMissing = true;
+          return { code: 5, stdout: "", stderr: "native setup failed" };
+        }
+        if (argv[0] !== "bunx" || !result.stdout) return result;
+        const parsed = JSON.parse(result.stdout);
+        if (Object.hasOwn(parsed, "repositoryRoot")) parsed.repositoryRoot = root;
+        if (parsed.workspace?.root) parsed.workspace.root = root;
+        return { ...result, stdout: JSON.stringify(parsed) };
+      };
+      rt.openStateTransaction = () => ({
+        state: null,
+        write: () => {},
+        close: () => {
+          if (closeConflict) throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" });
+        },
+      });
+      const report = await execute(parseArgs(["setup", root, "--host", "codex"]), rt);
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      const command = `hoklims-devkit setup ${quoteShellToken(root)} --host codex`;
+      expect(guidance.toLowerCase()).toContain(`restore the codex cli on path before running ${command}`.toLowerCase());
+      expect(guidance).not.toContain("Only if no saved plan exists, run.");
+      expect(guidance).not.toContain("before running.");
+      if (closeConflict) {
+        expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+        expect(report.nextActions).toHaveLength(1);
+        expect(report.nextActions[0]).toContain("inspect and validate the saved Devkit state");
+        for (const detail of report.conflicts.map((item) => item.detail)) {
+          expect(detail.toLowerCase()).toContain("restore the codex cli on path");
+        }
+      }
+    }
+  });
+
+  test("late authority loss retains every selected component prerequisite", async () => {
+    const cases = [
+      { missing: ["bun", "bunx"], label: "Bun", with: ["assertledger", "latent-compass"] },
+      { missing: ["node"], label: "Node", with: ["assertledger", "latent-compass"] },
+      { missing: ["npm"], label: "npm", with: ["assertledger", "latent-compass"] },
+      { missing: ["uv"], label: "uv", with: ["assertledger", "latent-compass"] },
+      { missing: ["node", "npm", "uv"], label: null, with: [] },
+    ];
+    for (const scenario of cases) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      };
+      const rt = fakeRuntime({ tools: ["node", "npm", "uv", "claude"], files });
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      let prerequisitesDisappear = false;
+      rt.which = (name) => prerequisitesDisappear && scenario.missing.includes(name) ? null : nativeWhich(name);
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+          prerequisitesDisappear = true;
+          return { code: 5, stdout: "", stderr: "native setup failed" };
+        }
+        return result;
+      };
+      rt.openStateTransaction = () => ({
+        state: null,
+        write: () => {},
+        close: () => { throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" }); },
+      });
+      const argv = ["setup", "/repo", "--host", "all"];
+      if (scenario.with.length) argv.push("--with", scenario.with.join(","));
+      const report = await execute(parseArgs(argv), rt);
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      expect(prerequisitesDisappear).toBe(true);
+      expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+      if (scenario.label) {
+        expect(guidance.toLowerCase()).toContain(`restore ${scenario.label}`.toLowerCase());
+      } else {
+        for (const label of ["Node", "npm", "uv"]) expect(guidance).not.toContain(`Restore ${label}`);
+      }
+      expect(guidance).not.toContain("before running.");
+    }
+  });
+
+  test("late authority loss removes the exact previously authored prerequisite instruction", async () => {
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ tools: ["node", "npm"], files });
+    const nativeWhich = rt.which;
+    const nativeExec = rt.exec;
+    let nodeMissing = false;
+    let npmMissing = false;
+    rt.which = (name) => nodeMissing && name === "node" || npmMissing && name === "npm" ? null : nativeWhich(name);
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+        nodeMissing = true;
+        return { code: 5, stdout: "", stderr: "native setup failed" };
+      }
+      return result;
+    };
+    rt.openStateTransaction = () => ({
+      state: null,
+      write: () => {},
+      close: () => { throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" }); },
+    });
+    rt.acquireLock = () => () => {
+      npmMissing = true;
+      throw Object.assign(new Error("lock replaced before release"), { code: "STATE_CONFLICT" });
+    };
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(guidance.toLowerCase()).toContain("restore node, npm on path before running hoklims-devkit setup /repo --host codex --with assertledger");
+    expect(guidance).not.toContain("Restore Node on PATH before running.");
+    for (const detail of report.conflicts.map((item) => item.detail)) {
+      expect(detail).not.toContain("Restore Node on PATH before running.");
+      expect(detail.toLowerCase()).toContain("restore node, npm on path");
+    }
+  });
+
+  test("ordinary failure finalization replaces stale recovery after release I/O", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const nativeWhich = rt.which;
+    const nativeExec = rt.exec;
+    let toolsMissing = false;
+    rt.which = (name) => toolsMissing && ["node", "npm"].includes(name) ? null : nativeWhich(name);
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+        return { code: 5, stdout: "", stderr: "native setup failed" };
+      }
+      return result;
+    };
+    rt.openStateTransaction = () => ({ state: structuredClone(state), write: () => {}, close: () => {} });
+    rt.acquireLock = () => () => {
+      toolsMissing = true;
+      throw Object.assign(new Error("lock release EIO"), { code: "EIO" });
+    };
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    const command = "hoklims-devkit setup /repo --host codex --with assertledger";
+    expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(report.nextActions).toEqual([`Restore Node, npm on PATH before running ${command}`]);
+    for (const detail of report.conflicts.map((item) => item.detail)) {
+      expect(detail).toContain(`Restore Node, npm on PATH before running ${command}`);
+      expect(detail).not.toContain(`Run ${command}`);
+    }
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("native setup failed");
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("lock release EIO");
+  });
+
+  test("late npm bootstrap loss is retained for saved and unverified pnpm recovery", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const closeConflict of [false, true]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm", "pnpm"], files: { ...files } });
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      let npmMissing = false;
+      rt.which = (name) => npmMissing && name === "npm" ? null : nativeWhich(name);
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+          npmMissing = true;
+          return { code: 5, stdout: "", stderr: "native setup failed" };
+        }
+        return result;
+      };
+      rt.openStateTransaction = () => ({
+        state: structuredClone(state), write: () => {},
+        close: () => {
+          if (closeConflict) throw Object.assign(new Error("state changed before close"), { code: "STATE_CONFLICT" });
+        },
+      });
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      const command = "hoklims-devkit setup /repo --host codex --with assertledger";
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      expect(npmMissing).toBe(true);
+      expect(guidance.toLowerCase()).toContain(`restore npm on path before running ${command}`.toLowerCase());
+      expect(guidance).not.toContain("Restore pnpm");
+      expect(guidance).not.toContain(`Run ${command}`);
+      if (closeConflict) expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+      else expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    }
+  });
+
+  test("recovery prerequisites follow the same admitted saved plan as the retry command", async () => {
+    const savedCompass = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: {
+        command: "setup", selected: ["semctx", "latent-compass"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", "latent-compass": "0.3.0" },
+      },
+    };
+    const rejectedAssert = fakeRuntime({ state: savedCompass, tools: ["node", "npm"] });
+    const rejected = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rejectedAssert);
+    const rejectedGuidance = [...rejected.nextActions, ...rejected.conflicts.map((item) => item.detail)].join("\n");
+    expect(rejected.conflicts.map((item) => item.code)).toContain("PENDING_PLAN_CONFLICT");
+    expect(rejectedGuidance).toContain("--with latent-compass");
+    expect(rejectedGuidance.toLowerCase()).toContain("restore uv");
+    expect(rejectedGuidance).not.toContain("Restore Node");
+
+    const savedAssert = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: {
+        command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const missingPnpm = fakeRuntime({ state: savedAssert, tools: ["node", "npm"], files });
+    const failedPreflight = await execute(parseArgs(["setup", "/repo", "--host", "codex"]), missingPnpm);
+    const pnpmGuidance = [...failedPreflight.nextActions, ...failedPreflight.conflicts.map((item) => item.detail)].join("\n");
+    expect(failedPreflight.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_MISSING");
+    expect(pnpmGuidance).toContain("--with assertledger");
+    expect(pnpmGuidance.toLowerCase()).toContain("restore pnpm");
+    expect(pnpmGuidance).not.toContain("restore npm");
+    expect(missingPnpm.writes).toHaveLength(0);
+  });
+
+  test("implicit upgrade selection is shared by execution and recovery prerequisites", async () => {
+    const allComponents = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+        "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const explicit of [false, true]) {
+      const rt = fakeRuntime({ state: structuredClone(allComponents), tools: ["node", "npm", "uv"], files: { ...files } });
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      let optionalToolsMissing = false;
+      rt.which = (name) => optionalToolsMissing && ["node", "uv"].includes(name) ? null : nativeWhich(name);
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+          optionalToolsMissing = true;
+          return { code: 5, stdout: "", stderr: "native setup failed" };
+        }
+        return result;
+      };
+      const argv = ["upgrade", "/repo", "--host", "codex"];
+      if (explicit) argv.push("--with", "assertledger,latent-compass");
+      const report = await execute(parseArgs(argv), rt);
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+      expect(guidance).toContain("--with assertledger,latent-compass");
+      expect(guidance.toLowerCase()).toContain("restore node, uv on path");
+    }
+
+    const semctxOnly = fakeRuntime({
+      state: { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } },
+      tools: ["node", "uv"],
+    });
+    const nativeWhich = semctxOnly.which;
+    const nativeExec = semctxOnly.exec;
+    let optionalToolsMissing = false;
+    semctxOnly.which = (name) => optionalToolsMissing && ["node", "uv"].includes(name) ? null : nativeWhich(name);
+    semctxOnly.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+        optionalToolsMissing = true;
+        return { code: 5, stdout: "", stderr: "native setup failed" };
+      }
+      return result;
+    };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), semctxOnly);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(guidance).not.toContain("Restore Node");
+    expect(guidance).not.toContain("uv on PATH");
+  });
+
+  test("STATE_CHANGED treats a locked absence as authoritative", async () => {
+    const initialState = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ state: initialState, version: "0.3.5", stable: "0.3.5" });
+    let reads = 0;
+    let released = false;
+    rt.readState = () => ++reads === 1 ? structuredClone(initialState) : null;
+    rt.acquireLock = () => () => { released = true; };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex");
+    expect(guidance).not.toContain("hoklims-devkit setup");
+    expect(guidance).not.toContain("--refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+    expect(released).toBe(true);
+  });
+
+  test("a locked foreign state never becomes recovery authority", async () => {
+    const foreignState = {
+      schemaVersion: 1, projectRoot: "/other", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    let reads = 0;
+    let released = false;
+    rt.readState = () => ++reads === 1 ? null : structuredClone(foreignState);
+    rt.acquireLock = () => () => { released = true; };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex");
+    expect(guidance).not.toContain("--host claude");
+    expect(rt.writes).toHaveLength(0);
+    expect(released).toBe(true);
+  });
+
+  test("an invalid locked reread invalidates refresh and requires state revalidation", async () => {
+    const initialState = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    };
+    for (const locked of [{}, { schemaVersion: 1, projectRoot: "/other", components: {} }]) {
+      const rt = fakeRuntime({ state: initialState, version: "0.3.5", stable: "0.3.5" });
+      let reads = 0;
+      let released = false;
+      rt.readState = () => ++reads === 1 ? structuredClone(initialState) : structuredClone(locked);
+      rt.acquireLock = () => () => { released = true; };
+      const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+      expect(guidance).toContain("inspect and validate the saved Devkit state");
+      expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit upgrade /repo --host codex");
+      expect(guidance).not.toContain("hoklims-devkit setup");
+      expect(guidance).not.toContain("--refresh-pending");
+      expect(rt.writes).toHaveLength(0);
+      expect(released).toBe(true);
+    }
+  });
+
+  test("doctor incomplete-plan detail and action include missing host repair", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.5", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", workspaceReady: true });
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    const detail = report.conflicts.find((item) => item.code === "INCOMPLETE_OPERATION")?.detail ?? "";
+    const expected = "Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude";
+    expect(detail.toLowerCase()).toContain(expected.toLowerCase());
+    expect(report.nextActions.join("\n").toLowerCase()).toContain(expected.toLowerCase());
+  });
+
+  test("doctor incomplete-plan recovery retains its declared pnpm prerequisite", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { assertledger: { version: "1.2.0", hosts: ["codex"] } },
+      inProgress: {
+        command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("INCOMPLETE_OPERATION");
+    expect(guidance.toLowerCase()).toContain("restore pnpm");
+    expect(guidance).not.toContain("Inspect the declared AssertLedger package manager");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("noncanonical persisted plan order is a state conflict", async () => {
+    for (const state of [
+      {
+        schemaVersion: 1, projectRoot: "/repo", components: {},
+        inProgress: {
+          command: "setup",
+          selected: ["semctx", "latent-compass", "assertledger"],
+          hosts: ["codex"],
+          versions: { semctx: "0.3.5", assertledger: "1.3.0", "latent-compass": "0.3.0" },
+        },
+      },
+      {
+        schemaVersion: 1, projectRoot: "/repo", components: {},
+        inProgress: {
+          command: "setup",
+          selected: ["semctx"],
+          hosts: ["claude", "codex"],
+          versions: { semctx: "0.3.5" },
+        },
+      },
+    ]) {
+      const rt = fakeRuntime({ state, tools: ["claude"] });
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "all"]), rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("every accepted pending upgrade host scope has an admitted retry", async () => {
+    const cases = [
+      { existing: ["codex"], pending: ["codex"], from: "0.3.4", to: "0.3.5", valid: true },
+      { existing: ["claude"], pending: ["claude"], from: "0.3.4", to: "0.3.5", valid: true },
+      { existing: ["codex", "claude"], pending: ["codex", "claude"], from: "0.3.4", to: "0.3.5", valid: true },
+      { existing: ["codex", "claude"], pending: ["codex"], from: "0.3.4", to: "0.3.5", valid: false },
+      { existing: ["codex", "claude"], pending: ["claude"], from: "0.3.4", to: "0.3.5", valid: false },
+      { existing: ["codex", "claude"], pending: ["codex"], from: "0.3.4", to: "0.3.4", valid: true },
+      { existing: ["codex", "claude"], pending: ["claude"], from: "0.3.4", to: "0.3.4", valid: true },
+    ];
+    for (const scenario of cases) {
+      const state = {
+        schemaVersion: 1,
+        projectRoot: "/repo",
+        components: { semctx: { version: scenario.from, hosts: scenario.existing } },
+        inProgress: {
+          command: "upgrade",
+          selected: ["semctx"],
+          hosts: scenario.pending,
+          versions: { semctx: scenario.to },
+        },
+      };
+      const host = scenario.pending.length === 2 ? "all" : scenario.pending[0];
+      const rt = fakeRuntime({ state, version: scenario.to, stable: scenario.to, tools: ["claude"] });
+      const report = await execute(parseArgs(["upgrade", "/repo", "--host", host]), rt);
+      if (scenario.valid) {
+        expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_CONFLICT");
+        expect(report.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+        expect(report.conflicts.map((item) => item.code)).not.toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+      } else {
+        expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+        expect(rt.writes).toHaveLength(0);
+      }
+    }
+  });
+
+  test("state I/O failures are distinct from lock contention and release the owned lock", async () => {
+    const permission = fakeRuntime();
+    permission.acquireLock = () => { throw Object.assign(new Error("access denied"), { code: "EACCES" }); };
+    const denied = await execute(setupOptions(), permission);
+    expect(denied.ok).toBe(false);
+    expect(denied.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(denied.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
+    expect(denied.conflicts.map((item) => item.detail).join("\n")).toMatch(/disk space|permissions/u);
+
+    const writeFailure = fakeRuntime();
+    let released = false;
+    writeFailure.acquireLock = () => () => { released = true; };
+    writeFailure.writeState = () => { throw Object.assign(new Error("quota exhausted"), { code: "ENOSPC" }); };
+    const failedWrite = await execute(setupOptions(), writeFailure);
+    expect(failedWrite.ok).toBe(false);
+    expect(failedWrite.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(failedWrite.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
+    expect(released).toBe(true);
+
+    const rereadFailure = fakeRuntime();
+    const initialRead = rereadFailure.readState;
+    let reads = 0;
+    let rereadReleased = false;
+    rereadFailure.readState = (path) => {
+      reads += 1;
+      if (reads === 1) return initialRead(path);
+      throw Object.assign(new Error("state read failed"), { code: "EIO" });
+    };
+    rereadFailure.acquireLock = () => () => { rereadReleased = true; };
+    const failedReread = await execute(setupOptions(), rereadFailure);
+    expect(failedReread.ok).toBe(false);
+    expect(failedReread.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(failedReread.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
+    expect(rereadReleased).toBe(true);
+
+    const releaseFailure = fakeRuntime();
+    releaseFailure.acquireLock = () => () => { throw Object.assign(new Error("lock unlink denied"), { code: "EACCES" }); };
+    const failedRelease = await execute(setupOptions(), releaseFailure);
+    expect(failedRelease.ok).toBe(false);
+    expect(failedRelease.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(failedRelease.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
+    expect(failedRelease.conflicts.map((item) => item.detail).join("\n")).toMatch(/lock release/u);
+  });
+
+  test("an initial state read permission failure is STATE_IO_ERROR", async () => {
+    const rt = fakeRuntime();
+    rt.readState = () => { throw Object.assign(new Error("state access denied"), { code: "EACCES" }); };
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_CONFLICT");
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/disk space|permissions/u);
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("hoklims-devkit setup /repo --host codex");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("an unreadable initial state remains unobserved during refresh recovery", async () => {
+    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    rt.readState = () => { throw Object.assign(new Error("state access denied"), { code: "EACCES" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit upgrade /repo --host codex");
+    expect(guidance).not.toContain("--refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("state I/O recovery repeats the recorded upgrade selectors", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: {
+        command: "setup",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const rt = fakeRuntime({
+      state,
+      version: "0.3.5",
+      stable: "0.3.5",
+      tools: ["node", "npm"],
+      files: {
+        [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+      },
+    });
+    rt.writeState = () => { throw Object.assign(new Error("state disk unavailable"), { code: "EIO" }); };
+    const options = parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]);
+    const report = await execute(options, rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger --refresh-pending");
+    expect(detail).not.toContain("hoklims-devkit setup");
+    expect(rt.writes).toHaveLength(0);
+
+    const checkpoint = fakeRuntime({
+      state: structuredClone(state),
+      version: "0.3.5",
+      stable: "0.3.5",
+      tools: ["node", "npm"],
+      files: {
+        [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+      },
+    });
+    const persist = checkpoint.writeState;
+    let writes = 0;
+    checkpoint.writeState = (path, value) => {
+      writes += 1;
+      if (writes === 1) return persist(path, value);
+      throw Object.assign(new Error("checkpoint disk unavailable"), { code: "EIO" });
+    };
+    const laterFailure = await execute(options, checkpoint);
+    const laterDetail = laterFailure.conflicts.map((item) => item.detail).join("\n");
+    expect(laterFailure.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(laterDetail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(laterDetail).not.toContain("--refresh-pending");
+  });
+
+  test("native failure resumes a successfully persisted refreshed plan without refreshing again", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: {
+        command: "setup",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const rt = fakeRuntime({
+      state,
+      version: "0.3.5",
+      stable: "0.3.5",
+      tools: ["node", "npm"],
+      failAssertInstall: true,
+      files: {
+        [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+      },
+    });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(rt.writes[0].inProgress).toMatchObject({ command: "upgrade", selected: ["semctx", "assertledger"], hosts: ["codex"] });
+    expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(detail).not.toContain("--refresh-pending");
+  });
+
+  test("doctor state I/O recovery repeats doctor", async () => {
+    const rt = fakeRuntime();
+    rt.readState = () => { throw Object.assign(new Error("state access denied"), { code: "EACCES" }); };
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(detail).toContain("hoklims-devkit doctor /repo --host codex");
+    expect(detail).not.toContain("hoklims-devkit setup");
+  });
+
+  test("shell-quoted recovery paths round-trip as one inert token", () => {
+    const root = process.platform === "win32"
+      ? "C:\\repo  with 'quote $() ` tick"
+      : "/tmp/a\\b repo  with 'quote $() ` tick";
+    const quoted = quoteShellToken(root);
+    const command = process.platform === "win32"
+      ? ["powershell", "-NoProfile", "-Command", `[Console]::Out.Write(${quoted})`]
+      : ["bash", "-lc", `printf %s ${quoted}`];
+    const result = Bun.spawnSync({ cmd: command, stdout: "pipe", stderr: "pipe" });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe(root);
+    expect(result.stderr.toString()).toBe("");
+  });
+
+  test("PowerShell recovery quoting preserves every single-quote delimiter as inert data", () => {
+    const root = "C:\\repo  Val's ‘left’ ‚low‛ $() ` tick; Write-Output INJECTED";
+    const quoted = quoteShellToken(root);
+    if (process.platform !== "win32") {
+      expect(quoted).toBe(`'C:\\repo  Val'"'"'s ‘left’ ‚low‛ $() \` tick; Write-Output INJECTED'`);
+      return;
+    }
+
+    expect(quoted).toBe("'C:\\repo  Val''s ‘‘left’’ ‚‚low‛‛ $() ` tick; Write-Output INJECTED'");
+    const command = `hoklims-devkit upgrade ${quoted} --host all --with assertledger,latent-compass --refresh-pending`;
+    const engines = ["powershell.exe", "pwsh.exe"].filter((engine) => Bun.which(engine));
+    expect(engines.length).toBeGreaterThan(0);
+    for (const engine of engines) {
+      expect(parseWithPowerShell(engine, quoted)).toEqual({ errors: [], values: [root], commands: 0, statements: 1 });
+      const parsedCommand = parseWithPowerShell(engine, command);
+      expect(parsedCommand.errors).toEqual([]);
+      expect(parsedCommand.values).toContain(root);
+      expect(parsedCommand.commands).toBe(1);
+      expect(parsedCommand.statements).toBe(1);
+    }
+  }, 30_000);
+
+  test("typed state path conflicts stay STATE_CONFLICT at every locked boundary", async () => {
+    const conflict = (message) => Object.assign(new Error(message), { code: "STATE_CONFLICT" });
+
+    const acquireFailure = fakeRuntime();
+    acquireFailure.acquireLock = () => { throw conflict("unsafe linked lock parent; inspect the path and retry"); };
+    const failedAcquire = await execute(setupOptions(), acquireFailure);
+    expect(failedAcquire.ok).toBe(false);
+    expect(failedAcquire.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(failedAcquire.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+    expect(failedAcquire.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
+    expect(failedAcquire.conflicts.map((item) => item.detail).join("\n")).toMatch(/inspect the path and retry/u);
+    expect(acquireFailure.writes).toHaveLength(0);
+
+    const rereadFailure = fakeRuntime();
+    const initialRead = rereadFailure.readState;
+    let reads = 0;
+    let rereadReleased = false;
+    rereadFailure.readState = (path) => {
+      reads += 1;
+      if (reads === 1) return initialRead(path);
+      throw conflict("state path became linked");
+    };
+    rereadFailure.acquireLock = () => () => { rereadReleased = true; };
+    const failedReread = await execute(setupOptions(), rereadFailure);
+    expect(failedReread.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(failedReread.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+    expect(rereadReleased).toBe(true);
+
+    const writeFailure = fakeRuntime();
+    let writeReleased = false;
+    writeFailure.acquireLock = () => () => { writeReleased = true; };
+    writeFailure.writeState = () => { throw conflict("state destination became linked"); };
+    const failedWrite = await execute(setupOptions(), writeFailure);
+    expect(failedWrite.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(failedWrite.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+    expect(failedWrite.conflicts.map((item) => item.code)).not.toContain("APPLY_FAILED");
+    expect(writeReleased).toBe(true);
+
+    const releaseFailure = fakeRuntime();
+    releaseFailure.acquireLock = () => () => { throw conflict("lock path became linked"); };
+    const failedRelease = await execute(setupOptions(), releaseFailure);
+    expect(failedRelease.ok).toBe(false);
+    expect(failedRelease.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(failedRelease.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+
+    const pending = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const interruptedRelease = fakeRuntime({ state: pending });
+    const nativeExec = interruptedRelease.exec;
+    interruptedRelease.exec = async (argv, cwd, timeout) => argv.includes("setup") && !argv.includes("--dry-run")
+      ? { code: 5, stdout: "", stderr: "simulated native failure" }
+      : nativeExec(argv, cwd, timeout);
+    interruptedRelease.acquireLock = () => () => { throw conflict("lock was replaced before release"); };
+    const interrupted = await execute(setupOptions(), interruptedRelease);
+    const guidance = [interrupted.conflicts.map((item) => item.detail).join("\n"), interrupted.nextActions.join("\n")].join("\n");
+    expect(interrupted.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(interrupted.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).not.toContain("complete the recorded plan");
+    for (const detail of interrupted.conflicts.map((item) => item.detail)) {
+      expect(detail).toContain("inspect and validate the saved Devkit state");
+      expect(detail).not.toContain("complete the recorded plan");
+    }
+  });
+
+  test("state boundary reports preserve suppressed cleanup diagnostics", async () => {
+    const cleanupPath = "/state/repo.json.candidate.tmp";
+    const cleanupError = Object.assign(new Error(`EBUSY: cannot remove '${cleanupPath}'`), {
+      code: "EBUSY",
+      path: cleanupPath,
+    });
+    const primary = Object.assign(new Error("state destination was replaced"), {
+      code: "STATE_CONFLICT",
+      suppressedErrors: [cleanupError, cleanupError],
+    });
+    cleanupError.suppressedErrors = [primary];
+    const makeRuntime = () => {
+      const rt = fakeRuntime();
+      rt.openStateTransaction = () => ({
+        state: null,
+        write: () => { throw primary; },
+        close: () => {},
+      });
+      return rt;
+    };
+    const rt = makeRuntime();
+    const report = await execute(setupOptions(), rt);
+    const conflict = report.conflicts.find((item) => item.code === "STATE_CONFLICT");
+    expect(conflict).toBeDefined();
+    expect(conflict.diagnostics).toEqual([{
+      code: "EBUSY", message: `EBUSY: cannot remove '${cleanupPath}'`, path: cleanupPath,
+    }]);
+    expect(conflict.detail).toContain("EBUSY");
+    expect(conflict.detail).toContain(cleanupPath);
+    expect(report.nextActions.join("\n")).toContain(cleanupPath);
+    expect(report.nextActions.join("\n")).toContain("hoklims-devkit setup /repo --host codex");
+    expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+
+    for (const json of [false, true]) {
+      let stdout = "";
+      let stderr = "";
+      const argv = ["setup", "/repo", "--host", "codex", ...(json ? ["--json"] : [])];
+      const code = await main(argv, makeRuntime(), { write: (value) => { stdout += value; } },
+        { write: (value) => { stderr += value; } });
+      expect(code).toBe(4);
+      if (json) {
+        const rendered = JSON.parse(stdout);
+        expect(rendered.conflicts.find((item) => item.code === "STATE_CONFLICT")?.diagnostics).toEqual(conflict.diagnostics);
+      } else {
+        expect(`${stdout}\n${stderr}`).toContain("EBUSY");
+        expect(`${stdout}\n${stderr}`).toContain(cleanupPath);
+      }
+    }
+  });
+
+  test("genuine lock contention remains RUN_LOCKED", async () => {
+    const rt = fakeRuntime();
+    rt.acquireLock = () => { throw Object.assign(new Error("another setup is running"), { code: "RUN_LOCKED" }); };
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
+    expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+  });
+
+  test("lock contention preserves the admitted pending-plan recovery", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.5", assertledger: "1.3.0" },
+      },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm"], files: {
+      [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+    } });
+    rt.acquireLock = () => { throw Object.assign(new Error("Another setup may be running"), { code: "RUN_LOCKED" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
+    expect(detail).toContain("another Devkit operation");
+    expect(detail).not.toContain("Another setup");
+    expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(report.nextActions.join("\n")).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("lock contention preserves an admitted refresh request", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+    rt.acquireLock = () => { throw Object.assign(new Error("Another operation is running"), { code: "RUN_LOCKED" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
+    expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex --refresh-pending");
+    expect(guidance).not.toContain("hoklims-devkit setup");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("fresh refresh lock contention preserves the requested refresh phase", async () => {
+    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    rt.acquireLock = () => { throw Object.assign(new Error("Another operation is running"), { code: "RUN_LOCKED" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
+    expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex --refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a rejected refresh preflight resumes the saved plan without refresh", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {},
+      inProgress: {
+        command: "setup",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.6", tools: ["node", "npm"], files });
+    const report = await execute(parseArgs([
+      "upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending",
+    ]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
+    expect(report.nextActions).toContain("Complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger before refreshing releases");
+    expect(report.nextActions.join("\n")).not.toContain("--refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a saved pending plan always has a full retry after native preflight failure", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {},
+      inProgress: {
+        command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" },
+      },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.4", stable: "0.3.4", setup: { kind: "invalid-plan" } });
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_WORKSPACE_CONFLICT");
+    expect(report.nextActions).toContain("Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex");
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("an incomplete Semctx index is reported without claiming the profile is ready", async () => {
     const rt = fakeRuntime({ setupReady: false });
     const report = await execute(setupOptions(), rt);
     expect(report.ok).toBe(false);
     expect(report.components[0].state).toBe("needs-attention");
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_NOT_READY");
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("hoklims-devkit setup /repo --host codex");
+    expect(report.nextActions.join("\n")).toContain("hoklims-devkit setup /repo --host codex");
     expect(rt.writes).toHaveLength(2);
+  });
+
+  test("Semctx incomplete recovery is retired when release I/O adds prerequisites", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const command = "hoklims-devkit setup /repo --host codex --with assertledger";
+    for (const releaseFailure of [false, true]) {
+      const rt = fakeRuntime({ state: structuredClone(state), setupReady: false, tools: ["node", "npm"], files: { ...files } });
+      const nativeWhich = rt.which;
+      let toolsMissing = false;
+      rt.which = (name) => toolsMissing && ["node", "npm"].includes(name) ? null : nativeWhich(name);
+      if (releaseFailure) {
+        rt.acquireLock = () => () => {
+          toolsMissing = true;
+          throw Object.assign(new Error("release EIO after incomplete setup"), { code: "EIO" });
+        };
+      }
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      const recovery = [...report.nextActions, ...report.conflicts.map((item) => item.detail)]
+        .filter((item) => item.includes("hoklims-devkit")).join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_NOT_READY");
+      if (releaseFailure) {
+        expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+        expect(recovery).toContain(`Restore Node, npm on PATH before running ${command}`);
+        expect(recovery).not.toContain(`Run ${command}`);
+        for (const detail of report.conflicts.map((item) => item.detail)) {
+          expect(detail).toContain(`Restore Node, npm on PATH before running ${command}`);
+        }
+      } else {
+        expect(recovery.toLowerCase()).toContain(`run ${command}`.toLowerCase());
+        expect(recovery).not.toContain("Restore Node");
+      }
+    }
+  });
+
+  test("global preflight blocks writes for last-component and second-host conflicts", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const scenarios = [
+      { name: "last compass", with: "assertledger,latent-compass", tools: ["node", "npm", "uv"], extra: { [executable]: "shim" }, mutate: "compass-codex", code: "COMPASS_HOOK_CONFLICT" },
+      { name: "assert second host", with: "assertledger", tools: ["node", "npm", "claude"], mutate: "assert-claude", code: "ASSERTLEDGER_CONFLICT" },
+      { name: "compass second host", with: "latent-compass", tools: ["uv", "claude"], extra: { [executable]: "shim" }, mutate: "compass-claude", code: "COMPASS_HOOK_CONFLICT" },
+    ];
+    for (const scenario of scenarios) {
+      const rt = fakeRuntime({ tools: scenario.tools, files: { ...files, ...(scenario.extra ?? {}) } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (scenario.mutate === "assert-claude" && argv[0] === "node" && argv.includes("setup") && argv.includes("claude-code")) {
+          return { code: 4, stdout: JSON.stringify(assertSetupReport(argv, "CONFLICT", "dry-run")), stderr: "" };
+        }
+        if (scenario.mutate.startsWith("compass-") && argv[0] === executable && argv.includes("host") && argv.includes("--dry-run")) {
+          const host = argv[argv.indexOf("--host") + 1];
+          const fail = host === scenario.mutate.slice("compass-".length);
+          const body = compassInstallReport(argv);
+          return { code: fail ? 4 : 0, stdout: JSON.stringify(fail ? { ...body, conflicts: ["foreign"] } : body), stderr: "" };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", scenario.name.includes("second") ? "all" : "codex", "--with", scenario.with]), rt);
+      expect(report.conflicts.map((item) => item.code), scenario.name).toContain(scenario.code);
+      expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run")), scenario.name).toBe(false);
+      expect(rt.writes, scenario.name).toHaveLength(0);
+    }
+  });
+
+  test("Semctx rejects independently missing second-host delivery evidence", async () => {
+    for (const leg of ["status", "install"]) {
+      const rt = fakeRuntime({ tools: ["claude"] });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if ((leg === "status" && argv.includes("plugin-status"))
+          || (leg === "install" && argv.includes("install") && argv.includes("--dry-run"))) {
+          const body = JSON.parse(result.stdout);
+          delete body.hosts.claude;
+          return { ...result, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "all"]), rt);
+      expect(report.ok, leg).toBe(false);
+      expect(rt.writes, leg).toHaveLength(0);
+      expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run")), leg).toBe(false);
+    }
+  });
+
+  test("setup pins unmanaged and declared versions without registry refresh", async () => {
+    const semctx = fakeRuntime({ version: "0.3.5", installedSemctxVersion: "0.3.4" });
+    const semctxReport = await execute(setupOptions(), semctx);
+    expect(semctxReport.ok).toBe(false);
+    expect(semctxReport.conflicts.map((item) => item.code)).toContain("EXISTING_VERSION");
+    expect(semctx.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+
+    const assertledger = fakeRuntime({ tools: ["node", "npm"], files: {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+    } });
+    const fetch = assertledger.fetchJson;
+    assertledger.fetchJson = async (url) => url.includes("assertledger") ? Promise.reject(new Error("registry queried")) : fetch(url);
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger", "--dry-run"]), assertledger);
+    expect(report.ok).toBe(true);
+    expect(report.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
+  });
+
+  test("native report guards reject one invalid field at a time", async () => {
+    for (const field of ["operation", "version", "host", "conflicts", "exit"]) {
+      const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+      const rt = fakeRuntime({ tools: ["uv"], files: { [executable]: "shim" } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === executable && argv.includes("host") && argv.includes("--dry-run")) {
+          const body = compassInstallReport(argv);
+          if (field === "operation") body.operation = "status";
+          if (field === "version") body.version = "9.9.9";
+          if (field === "host") body.hosts = ["claude"];
+          if (field === "conflicts") body.conflicts = ["foreign"];
+          return { code: field === "exit" ? 4 : 0, stdout: JSON.stringify(body), stderr: "" };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "latent-compass"]), rt);
+      expect(report.ok, field).toBe(false);
+      expect(rt.writes, field).toHaveLength(0);
+    }
+  });
+
+  test("Semctx report guards reject independent root exit and host outcome defects", async () => {
+    for (const field of ["setup-root", "setup-exit", "host-status"]) {
+      const rt = fakeRuntime();
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv.includes("setup") && argv.includes("--dry-run")) {
+          if (field === "setup-root") return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), repositoryRoot: "/other" }) };
+          if (field === "setup-exit") return { ...result, code: 4 };
+        }
+        if (field === "host-status" && argv.includes("install") && argv.includes("--dry-run")) {
+          const body = JSON.parse(result.stdout);
+          body.hosts.codex.status = "failed";
+          return { ...result, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      const report = await execute(setupOptions(), rt);
+      expect(report.ok, field).toBe(false);
+      expect(rt.writes, field).toHaveLength(0);
+      expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run")), field).toBe(false);
+    }
+  });
+
+  test("AssertLedger report guards reject independent client state and exit mismatches", async () => {
+    for (const field of ["client", "state", "exit"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files: {
+        [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === "npm" && argv.includes("exec")) {
+          const report = assertSetupReport(argv, "WOULD_CREATE", "dry-run");
+          if (field === "client") report.client = "claude-code";
+          if (field === "state") report.artifacts[0].state = "CREATED";
+          return { code: field === "exit" ? 4 : 0, stdout: JSON.stringify(report), stderr: "" };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      expect(report.ok, field).toBe(false);
+      expect(report.conflicts.map((item) => item.code), field).toContain("ASSERTLEDGER_CONFLICT");
+      expect(rt.writes, field).toHaveLength(0);
+    }
+  });
+
+  test("Compass doctor keeps installed configured and observed states independent", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" } });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => argv[0] === executable && argv.includes("status")
+      ? { code: 0, stdout: JSON.stringify({
+        schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo",
+        hosts: [{ host: "codex", status: "OBSERVING" }],
+        states: { codex: { installed: true, configured: false, observed: true } },
+      }), stderr: "" }
+      : nativeExec(argv, cwd, timeout);
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    const compass = report.components.find((item) => item.name === "latent-compass");
+    expect(compass.installed).toBe("yes");
+    expect(compass.configured).not.toBe("yes");
+    expect(compass.observed).toBe("unknown");
+    expect(report.ok).toBe(false);
+  });
+
+  test("setup preserves recorded pending and uv-installed versions without registry refresh", async () => {
+    const recordedState = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+    };
+    const recorded = fakeRuntime({ state: recordedState, version: "0.3.5", stable: "0.3.5" });
+    const recordedFetch = recorded.fetchJson;
+    recorded.fetchJson = async (url) => url.includes("registry.npmjs.org/semctx")
+      ? Promise.reject(new Error("recorded Semctx queried the registry")) : recordedFetch(url);
+    const recordedReport = await execute({ ...setupOptions(), dryRun: true }, recorded);
+    expect(recordedReport.ok).toBe(true);
+    expect(recordedReport.components[0].version).toBe("0.3.4");
+    expect(recorded.writes).toHaveLength(0);
+
+    const pendingState = {
+      ...structuredClone(recordedState),
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    };
+    const pending = fakeRuntime({ state: pendingState, version: "0.3.6", stable: "0.3.6", installedSemctxVersion: "0.3.5" });
+    const pendingFetch = pending.fetchJson;
+    pending.fetchJson = async (url) => url.includes("registry.npmjs.org/semctx")
+      ? Promise.reject(new Error("pending Semctx queried the registry")) : pendingFetch(url);
+    const pendingReport = await execute({ ...parseArgs(["upgrade", "/repo", "--host", "codex"]), dryRun: true }, pending);
+    expect(pendingReport.ok).toBe(true);
+    expect(pendingReport.components[0].version).toBe("0.3.5");
+    expect(pending.writes).toHaveLength(0);
+
+    const compass = fakeRuntime({ tools: ["uv"], uvInstalled: true });
+    const compassFetch = compass.fetchJson;
+    compass.fetchJson = async (url) => url.includes("pypi.org")
+      ? Promise.reject(new Error("uv-installed Compass queried PyPI")) : compassFetch(url);
+    const compassReport = await execute(parseArgs([
+      "setup", "/repo", "--host", "codex", "--with", "latent-compass", "--dry-run",
+    ]), compass);
+    expect(compassReport.ok).toBe(true);
+    expect(compassReport.components.find((item) => item.name === "latent-compass").version).toBe("0.3.0");
+    expect(compass.writes).toHaveLength(0);
+
+    const drift = fakeRuntime({ state: recordedState, installedSemctxVersion: "0.3.5" });
+    const driftReport = await execute(setupOptions(), drift);
+    expect(driftReport.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
+    expect(drift.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(drift.writes).toHaveLength(0);
+  });
+
+  test("Compass apply and status reports keep configuration and identity independent", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+    } };
+
+    const invalidPreview = fakeRuntime({ state: structuredClone(state), tools: ["uv"], files: { [executable]: "shim" } });
+    const nativePreview = invalidPreview.exec;
+    invalidPreview.exec = async (argv, cwd, timeout) => {
+      if (argv[0] === executable && argv.includes("install") && argv.includes("--dry-run")) {
+        const body = compassInstallReport(argv);
+        body.schema_version = 2;
+        return { code: 0, stdout: JSON.stringify(body), stderr: "" };
+      }
+      return nativePreview(argv, cwd, timeout);
+    };
+    const invalidPreviewReport = await execute({ ...setupOptions(), with: ["latent-compass"] }, invalidPreview);
+    expect(invalidPreviewReport.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+    expect(invalidPreview.writes).toHaveLength(0);
+
+    const unconfigured = fakeRuntime({ state: structuredClone(state), tools: ["uv"], files: { [executable]: "shim" } });
+    const nativeUnconfigured = unconfigured.exec;
+    unconfigured.exec = async (argv, cwd, timeout) => argv[0] === executable && argv.includes("install")
+      ? { code: 0, stdout: JSON.stringify(compassInstallReport(argv, {
+        installed: !argv.includes("--dry-run"), configured: argv.includes("--dry-run"),
+      })), stderr: "" }
+      : nativeUnconfigured(argv, cwd, timeout);
+    const unconfiguredReport = await execute({ ...setupOptions(), with: ["latent-compass"] }, unconfigured);
+    expect(unconfiguredReport.ok).toBe(false);
+    expect(unconfiguredReport.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(unconfiguredReport.components.find((item) => item.name === "latent-compass"))
+      .toMatchObject({ state: "partial", configured: "unknown", observed: "unknown" });
+    expect(unconfigured.writes).toHaveLength(0);
+
+    for (const field of ["schema", "operation", "version", "host", "exit"]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["uv"], files: { [executable]: "shim" } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === executable && argv.includes("install")) {
+          return { code: 0, stdout: JSON.stringify(compassInstallReport(argv, { installed: true, configured: true })), stderr: "" };
+        }
+        if (argv[0] === executable && argv.includes("status")) {
+          const result = await nativeExec(argv, cwd, timeout);
+          const body = JSON.parse(result.stdout);
+          if (field === "schema") body.schema_version = 2;
+          if (field === "operation") body.operation = "install";
+          if (field === "version") body.version = "9.9.9";
+          if (field === "host") body.hosts[0].host = "claude";
+          return { ...result, code: field === "exit" ? 4 : 0, stdout: JSON.stringify(body) };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+      expect(report.ok, field).toBe(false);
+      expect(report.conflicts.map((item) => item.code), field).toContain("APPLY_FAILED");
+      expect(report.components.find((item) => item.name === "latent-compass").configured, field).toBe("unknown");
+      expect(rt.writes, field).toHaveLength(0);
+    }
+  });
+
+  test("Semctx native identity readiness and post-install attestation fail independently", async () => {
+    const preflightCases = [
+      ["status-schema", (argv, result, body) => { if (argv.includes("plugin-status")) body.schemaVersion = 1; }],
+      ["status-kind", (argv, result, body) => { if (argv.includes("plugin-status")) body.kind = "other"; }],
+      ["setup-schema", (argv, result, body) => { if (argv.includes("setup") && argv.includes("--dry-run")) body.schemaVersion = 2; }],
+      ["setup-kind", (argv, result, body) => { if (argv.includes("setup") && argv.includes("--dry-run")) body.kind = "setup"; }],
+      ["host-requested", (argv, result, body) => {
+        if (argv.includes("install") && argv.includes("--dry-run")) body.hosts.codex.requested = false;
+      }],
+      ["host-detected", (argv, result, body) => {
+        if (argv.includes("install") && argv.includes("--dry-run")) body.hosts.codex.detected = false;
+      }],
+    ];
+    for (const [name, mutate] of preflightCases) {
+      const rt = fakeRuntime();
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        const relevant = argv.includes("plugin-status")
+          || ((argv.includes("setup") || argv.includes("install")) && argv.includes("--dry-run"));
+        if (!relevant || !result.stdout) return result;
+        const body = JSON.parse(result.stdout);
+        mutate(argv, result, body);
+        return { ...result, stdout: JSON.stringify(body) };
+      };
+      const report = await execute(setupOptions(), rt);
+      expect(report.ok, name).toBe(false);
+      expect(rt.writes, name).toHaveLength(0);
+      expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run")), name).toBe(false);
+    }
+
+    for (const field of ["schema", "kind", "root"]) {
+      const rt = fakeRuntime();
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv.includes("setup") && !argv.includes("--dry-run")) {
+          const body = JSON.parse(result.stdout);
+          if (field === "schema") body.schemaVersion = 2;
+          if (field === "kind") body.kind = "setup_plan";
+          if (field === "root") body.repositoryRoot = "/other";
+          return { ...result, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      const report = await execute(setupOptions(), rt);
+      expect(report.conflicts.map((item) => item.code), field).toContain("APPLY_FAILED");
+      expect(report.components[0].configured, field).toBe("unknown");
+      expect(rt.writes.at(-1).inProgress, field).toBeDefined();
+    }
+
+    for (const field of ["doctor-version", "index-kind", "index-partial"]) {
+      const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+      const rt = fakeRuntime({ state, workspaceReady: true });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (field === "doctor-version" && argv.includes("doctor")) {
+          return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), version: "9.9.9" }) };
+        }
+        if ((field === "index-kind" || field === "index-partial") && argv.includes("index-health")) {
+          const body = JSON.parse(result.stdout);
+          if (field === "index-kind") body.kind = "other";
+          else {
+            body.binding.status = "absent";
+            body.freshness.canRunHighRiskControl = false;
+            body.coverage.status = "partial";
+          }
+          return { ...result, code: field === "index-partial" ? 2 : result.code, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      expect(report.ok, field).toBe(false);
+      expect(report.components[0].configured, field).toBe(field === "index-partial" ? "no" : "unknown");
+      expect(rt.writes, field).toHaveLength(0);
+    }
+
+    for (const field of ["snapshot", "version"]) {
+      const rt = fakeRuntime();
+      const nativeExec = rt.exec;
+      let statusCalls = 0;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv.includes("plugin-status") && ++statusCalls === 2) {
+          const body = JSON.parse(result.stdout);
+          if (field === "snapshot") body.hosts.codex.installed.contentMatchesSnapshot = null;
+          if (field === "version") body.hosts.codex.installed.version = "9.9.9";
+          return { ...result, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      const report = await execute(setupOptions(), rt);
+      expect(report.conflicts.map((item) => item.code), field).toContain("APPLY_FAILED");
+      expect(report.components[0].configured, field).toBe("unknown");
+      expect(rt.writes.at(-1).inProgress, field).toBeDefined();
+    }
+  });
+
+  test("AssertLedger connection mode owner and count guards fail independently", async () => {
+    for (const field of ["connection-client", "mode", "owner", "count"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files: {
+        [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === "npm" && argv.includes("exec")) {
+          const report = assertSetupReport(argv, "WOULD_CREATE", "dry-run");
+          if (field === "connection-client") report.connection.client = "claude-code";
+          if (field === "mode") report.mode = "write";
+          if (field === "owner") report.artifacts[0].owner = "connection";
+          if (field === "count") report.artifacts.pop();
+          return { code: 0, stdout: JSON.stringify(report), stderr: "" };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      expect(report.conflicts.map((item) => item.code), field).toContain("ASSERTLEDGER_CONFLICT");
+      expect(rt.writes, field).toHaveLength(0);
+    }
   });
 });

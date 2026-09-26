@@ -2,15 +2,75 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
+import { validComponentReport } from "./release-report.js";
+import { assertNoopUpgradeUnchanged } from "./release-upgrade.js";
 
-const consumer = process.argv[2];
-if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "bin", "hoklims-devkit.js"))) {
-  throw new Error("Pass a fresh consumer prefix containing the installed hoklims-devkit package");
+const PLANNED_FLAGS = { installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" };
+const CONFIGURED_FLAGS = { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" };
+export const RELEASE_SMOKE_STAGES = [
+  "setup-apply",
+  "repeated-setup",
+  "doctor",
+  "upgrade-dry-run",
+  "upgrade-apply",
+  "no-op-snapshot",
+  "post-upgrade-doctor",
+];
+
+export function validSmokeDoctorReport(report, projectRoot, expectedNames) {
+  if (!Array.isArray(expectedNames) || expectedNames.length === 0
+    || new Set(expectedNames).size !== expectedNames.length
+    || !Array.isArray(report?.components)
+    || report.components.length !== expectedNames.length) return false;
+  for (let index = 0; index < expectedNames.length; index += 1) {
+    const name = expectedNames[index];
+    const component = report.components[index];
+    if (component?.name !== name) return false;
+    const observed = name === "latent-compass" ? component.observed : "unknown";
+    if (name === "latent-compass" && !["no", "unknown"].includes(observed)) return false;
+    if (!validComponentReport(
+      { ...report, components: [component] },
+      projectRoot,
+      [name],
+      { expectedState: null, expectedFlags: { ...CONFIGURED_FLAGS, observed } },
+    )) return false;
+  }
+  return true;
 }
+
+export function assertReleaseSmokeStages(scenarios) {
+  if (!Array.isArray(scenarios) || scenarios.length === 0) {
+    throw new Error("Release smoke did not report any scenarios");
+  }
+  for (const scenario of scenarios) {
+    if (!scenario || !Array.isArray(scenario.stages)
+      || JSON.stringify(scenario.stages.map(({ stage }) => stage)) !== JSON.stringify(RELEASE_SMOKE_STAGES)) {
+      throw new Error(`${scenario?.scenario ?? "unknown"} release smoke stage sequence is incomplete`);
+    }
+    for (const stage of scenario.stages) {
+      if (!["setup-apply", "upgrade-apply"].includes(stage.stage)
+        && stage.snapshotVerified !== true) {
+        throw new Error(`${scenario.scenario} ${stage.stage} lacks snapshot verification`);
+      }
+    }
+  }
+  return true;
+}
+
+export function runReleaseSmoke(options = {}) {
+  const {
+    consumer = process.argv[2],
+    root: requestedRoot,
+    runCommand,
+    write = (message) => process.stdout.write(message),
+  } = options;
+  if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "bin", "hoklims-devkit.js"))) {
+    throw new Error("Pass a fresh consumer prefix containing the installed hoklims-devkit package");
+  }
 
 // macOS exposes temporary directories through /var, a symlink to /private/var.
 // Pass the canonical fixture home to installers that reject linked ancestors.
-const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-release-smoke-")));
+const root = realpathSync(requestedRoot ?? mkdtempSync(join(tmpdir(), "hoklims-devkit-release-smoke-")));
 const repository = join(root, "repository");
 const home = join(root, "home");
 const cache = join(root, "cache");
@@ -61,11 +121,24 @@ const env = {
 };
 
 function run(argv, cwd = consumer, runEnv = env) {
+  if (runCommand) {
+    const output = runCommand(argv, { cwd, env: runEnv });
+    if (typeof output !== "string") throw new Error("Injected release-smoke runner must return stdout text");
+    return output;
+  }
   const result = Bun.spawnSync({ cmd: argv, cwd, env: runEnv, stdout: "pipe", stderr: "pipe" });
   const stdout = result.stdout.toString();
   const stderr = result.stderr.toString();
   if (result.exitCode !== 0) throw new Error(`${argv.join(" ")} exited ${result.exitCode}\n${stdout}\n${stderr}`);
   return stdout;
+}
+
+const scenarioStages = new Map();
+const preflights = [];
+function recordStage(scenario, stage, details = {}) {
+  const stages = scenarioStages.get(scenario) ?? [];
+  stages.push({ stage, ...details });
+  scenarioStages.set(scenario, stages);
 }
 
 run(["git", "init", "-b", "main", repository]);
@@ -79,12 +152,11 @@ const profileBefore = protectedPaths.map(snapshot);
 
 for (const host of ["codex", "claude", "all"]) {
   for (const withTools of [[], ["--with", "assertledger,latent-compass"]]) {
+    const scenario = `${host}-${withTools.length ? "full" : "default"}`;
     const output = run(["bunx", "--no-install", "hoklims-devkit", "setup", repository, "--host", host, ...withTools, "--dry-run", "--json"]);
     const report = JSON.parse(output);
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
-    if (report.ok !== true || report.projectRoot !== resolve(repository)
-      || JSON.stringify(report.components.map((item) => item.name)) !== JSON.stringify(expected)
-      || report.components.some((item) => item.state !== "planned")) {
+    if (!validComponentReport(report, resolve(repository), expected, { expectedState: "planned", expectedFlags: PLANNED_FLAGS })) {
       throw new Error(`Unexpected ${host} preflight: ${output}`);
     }
     if (run(["git", "-C", repository, "status", "--porcelain"]).trim()) {
@@ -92,7 +164,8 @@ for (const host of ["codex", "claude", "all"]) {
     }
     assertSnapshotUnchanged([repository], [repositoryBefore], host);
     assertSnapshotUnchanged(protectedPaths, profileBefore, host);
-    process.stdout.write(`PASS ${host} ${expected.join("+")} dry-run\n`);
+    preflights.push({ scenario, stage: "setup-dry-run", snapshotVerified: true });
+    write(`PASS ${host} ${expected.join("+")} dry-run\n`);
   }
 }
 
@@ -124,46 +197,66 @@ for (const host of ["codex", "claude", "all"]) {
     const selectors = ["--host", host, ...withTools, "--json"];
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
     const installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (installed.ok !== true || JSON.stringify(installed.components.map((item) => item.name)) !== JSON.stringify(expected)
-      || installed.components.some((item) => item.state !== "configured" || item.installed !== "yes" || item.configured !== "yes")) {
+    if (!validComponentReport(installed, resolve(scenarioRepository), expected, {
+      expectedState: "configured",
+      expectedFlags: CONFIGURED_FLAGS,
+    })) {
       throw new Error(`Unexpected ${host} installation: ${JSON.stringify(installed)}`);
     }
+    recordStage(scenario, "setup-apply");
     run(["git", "-C", scenarioRepository, "status", "--porcelain"], consumer, scenarioEnv);
     const targets = [scenarioRepository, ...scenarioProtectedPaths];
     const installedSnapshot = targets.map(snapshot);
     const repeated = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (repeated.ok !== true) throw new Error(`${host} repeated setup failed: ${JSON.stringify(repeated)}`);
+    if (!validComponentReport(repeated, resolve(scenarioRepository), expected, {
+      expectedState: "configured",
+      expectedFlags: CONFIGURED_FLAGS,
+    })) throw new Error(`${host} repeated setup failed: ${JSON.stringify(repeated)}`);
     assertSnapshotUnchanged(targets, installedSnapshot, `${host} repeated setup`);
+    recordStage(scenario, "repeated-setup", { snapshotVerified: true });
 
     const beforeDoctor = targets.map(snapshot);
     const diagnosed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (diagnosed.ok !== true || diagnosed.components.some((item) => item.installed !== "yes" || item.configured !== "yes")) {
+    if (!validSmokeDoctorReport(diagnosed, resolve(scenarioRepository), expected)) {
       throw new Error(`${host} doctor did not confirm installation: ${JSON.stringify(diagnosed)}`);
     }
     assertSnapshotUnchanged(targets, beforeDoctor, `${host} doctor`);
+    recordStage(scenario, "doctor", { snapshotVerified: true });
     const beforeUpgradePlan = targets.map(snapshot);
     const upgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "upgrade", scenarioRepository, ...selectors.slice(0, -1), "--dry-run", "--json"], consumer, scenarioEnv));
-    if (upgrade.ok !== true) throw new Error(`${host} upgrade plan failed: ${JSON.stringify(upgrade)}`);
+    if (!validComponentReport(upgrade, resolve(scenarioRepository), expected, { expectedState: "planned", expectedFlags: PLANNED_FLAGS })) {
+      throw new Error(`${host} upgrade plan failed: ${JSON.stringify(upgrade)}`);
+    }
     assertSnapshotUnchanged(targets, beforeUpgradePlan, `${host} upgrade plan`);
+    recordStage(scenario, "upgrade-dry-run", { snapshotVerified: true });
     const appliedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "upgrade", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (appliedUpgrade.ok !== true
-      || JSON.stringify(appliedUpgrade.components.map((item) => item.name)) !== JSON.stringify(expected)
-      || appliedUpgrade.components.some((item) => item.installed !== "yes" || item.configured !== "yes")) {
+    if (!validComponentReport(appliedUpgrade, resolve(scenarioRepository), expected, {
+      expectedState: "configured",
+      expectedFlags: CONFIGURED_FLAGS,
+    })) {
       throw new Error(`${host} upgrade did not configure every component: ${JSON.stringify(appliedUpgrade)}`);
     }
+    assertNoopUpgradeUnchanged(targets, beforeUpgradePlan, installed, upgrade, appliedUpgrade, `${host} same-version upgrade`);
+    recordStage(scenario, "upgrade-apply");
+    recordStage(scenario, "no-op-snapshot", { snapshotVerified: true });
     const afterUpgrade = targets.map(snapshot);
     const diagnosedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (diagnosedUpgrade.ok !== true
-      || JSON.stringify(diagnosedUpgrade.components.map((item) => item.name)) !== JSON.stringify(expected)
-      || diagnosedUpgrade.components.some((item) => item.installed !== "yes" || item.configured !== "yes")) {
+    if (!validSmokeDoctorReport(diagnosedUpgrade, resolve(scenarioRepository), expected)) {
       throw new Error(`${host} post-upgrade doctor did not confirm installation: ${JSON.stringify(diagnosedUpgrade)}`);
     }
     assertSnapshotUnchanged(targets, afterUpgrade, `${host} post-upgrade doctor`);
-    process.stdout.write(`PASS ${host} ${expected.join("+")} setup/repeat/doctor/upgrade\n`);
+    recordStage(scenario, "post-upgrade-doctor", { snapshotVerified: true });
+    write(`PASS ${host} ${expected.join("+")} setup/repeat/doctor/upgrade\n`);
   }
 }
 
 if (readFileSync(join(repository, "index.ts"), "utf8") !== "export const answer = 42;\n") {
   throw new Error("Dry-run changed source bytes");
 }
-process.stdout.write(`PASS disposable fixture at ${root}\n`);
+const scenarios = [...scenarioStages].map(([scenario, stages]) => ({ scenario, stages }));
+assertReleaseSmokeStages(scenarios);
+write(`PASS disposable fixture at ${root}\n`);
+return { root, preflights, scenarios };
+}
+
+if (import.meta.main) runReleaseSmoke();

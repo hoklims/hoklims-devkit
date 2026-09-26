@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "../scripts/profile-snapshot.js";
 
 test("release smoke rejects a host mutation despite a valid planned report", () => {
@@ -49,6 +49,40 @@ test("release smoke detects a persistent tool written outside host config folder
   mkdirSync(bin);
   writeFileSync(join(bin, "latent-compass"), "unexpected\n");
   expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow(/modified the host profile/u);
+});
+
+test("every protected profile path is named and independently detects changed bytes", () => {
+  const expected = [
+    ".codex",
+    ".claude",
+    ".config",
+    "uv-tools",
+    "uv-bin",
+    "uv-python",
+    "uv-python-bin",
+    "AppData/Local/hoklims-devkit",
+    ".local/state/hoklims-devkit",
+  ];
+  const inventoryHome = mkdtempSync(join(tmpdir(), "hoklims-devkit-protected-inventory-"));
+  expect(protectedProfilePaths(inventoryHome).map((path) => (
+    relative(inventoryHome, path).replaceAll("\\", "/")
+  ))).toEqual(expected);
+
+  for (const protectedPath of expected) {
+    const home = mkdtempSync(join(tmpdir(), "hoklims-devkit-protected-path-"));
+    const paths = protectedProfilePaths(home);
+    const selected = paths.find((path) => (
+      relative(home, path).replaceAll("\\", "/") === protectedPath
+    ));
+    expect(selected).toBeDefined();
+    mkdirSync(selected, { recursive: true });
+    const marker = join(selected, "managed.bin");
+    writeFileSync(marker, "before\n");
+    const before = paths.map(snapshot);
+    writeFileSync(marker, "after\n");
+    expect(() => assertSnapshotUnchanged(paths, before, protectedPath))
+      .toThrow(/modified the host profile or devkit state/u);
+  }
 });
 
 test("release smoke records Unix npm executable links without following them", () => {

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import packageJson from "../package.json" with { type: "json" };
-import { createRuntime, parseJsonOutput, shortError, validateState } from "./runtime.js";
+import { createRuntime, parseJsonOutput, preferredBoundaryError, RunLockedError, shortError, validateState } from "./runtime.js";
 
 const COMPONENTS = ["semctx", "assertledger", "latent-compass"];
 const HOSTS = ["codex", "claude"];
@@ -56,10 +56,201 @@ function reportFor(options) {
   };
 }
 
-function problem(report, code, detail, exitCode = 4) {
-  report.conflicts.push({ code, detail });
+function problem(report, code, detail, exitCode = 4, diagnostics = []) {
+  const conflict = { code, detail };
+  if (diagnostics.length) conflict.diagnostics = diagnostics;
+  report.conflicts.push(conflict);
   report.exitCode = Math.max(report.exitCode ?? 0, exitCode);
   return report;
+}
+
+function assertLedgerTools(packageManager) {
+  return [...new Set(["node", "npm", packageManager].filter(Boolean))];
+}
+
+function missingAssertLedgerTools(rt, packageManager) {
+  return assertLedgerTools(packageManager).filter((name) => !rt.which(name));
+}
+
+function requireAssertLedgerTools(rt, packageManager) {
+  const missing = missingAssertLedgerTools(rt, packageManager);
+  if (missing.length) throw new Error(`AssertLedger prerequisite disappeared from PATH: ${missing.join(", ")}`);
+}
+
+function recordMissingAssertLedgerTools(report, rt, packageManager) {
+  const missing = missingAssertLedgerTools(rt, packageManager);
+  if (missing.length === 0) return false;
+  const code = missing.some((name) => name === "node" || name === "npm") ? "NODE_REQUIRED" : "PACKAGE_MANAGER_MISSING";
+  problem(report, code, `AssertLedger prerequisites missing from PATH: ${missing.join(", ")}`, 3);
+  return true;
+}
+
+function retryGuidance(rt, hosts, command, { components = [], packageManager } = {}) {
+  const missing = [];
+  const add = (label) => { if (!missing.includes(label)) missing.push(label); };
+  if (!rt.which("bun") || !rt.which("bunx")) add("Bun");
+  for (const host of hosts) if (!rt.which(host)) add(`${host} CLI`);
+  if (components.includes("assertledger")) {
+    for (const name of missingAssertLedgerTools(rt, packageManager)) add(name === "node" ? "Node" : name);
+  }
+  if (components.includes("latent-compass") && !rt.which("uv")) add("uv");
+  const prerequisites = [];
+  if (missing.length === 1 && missing[0].endsWith(" CLI")) prerequisites.push(`Restore the ${missing[0]} on PATH`);
+  else if (missing.length) prerequisites.push(`Restore ${missing.join(", ")} on PATH`);
+  if (components.includes("assertledger") && !packageManager) {
+    prerequisites.push("Inspect the declared AssertLedger package manager and restore it on PATH if missing");
+  }
+  return {
+    instruction: prerequisites.length ? `${prerequisites.join(", then ")} before running ${command}` : `Run ${command}`,
+    hasPrerequisites: prerequisites.length > 0,
+  };
+}
+
+function retryInstruction(rt, hosts, command, requirements) {
+  return retryGuidance(rt, hosts, command, requirements).instruction;
+}
+
+function suppressedErrorDiagnostics(error, limit = 16) {
+  const diagnostics = [];
+  const seenErrors = new Set();
+  const seenDiagnostics = new Set();
+  const visitSuppressed = (candidate, depth = 0) => {
+    if (!candidate || typeof candidate !== "object" || seenErrors.has(candidate) || depth > 8
+      || diagnostics.length >= limit) return;
+    seenErrors.add(candidate);
+    for (const suppressed of Array.isArray(candidate.suppressedErrors) ? candidate.suppressedErrors : []) {
+      if (!suppressed || typeof suppressed !== "object" || seenErrors.has(suppressed)) continue;
+      const diagnostic = {
+        code: typeof suppressed.code === "string" ? suppressed.code : "SECONDARY_ERROR",
+        message: String(suppressed.message ?? suppressed),
+        ...(typeof suppressed.path === "string" ? { path: suppressed.path } : {}),
+      };
+      const key = `${diagnostic.code}\u0000${diagnostic.message}\u0000${diagnostic.path ?? ""}`;
+      if (!seenDiagnostics.has(key) && diagnostics.length < limit) {
+        seenDiagnostics.add(key);
+        diagnostics.push(diagnostic);
+      }
+      visitSuppressed(suppressed, depth + 1);
+    }
+    visitSuppressed(candidate.cause, depth + 1);
+  };
+  visitSuppressed(error);
+  return diagnostics;
+}
+
+function recordSuppressedStateDiagnostics(report, error) {
+  const diagnostics = suppressedErrorDiagnostics(error);
+  for (const diagnostic of diagnostics) {
+    const location = diagnostic.path ? ` at ${diagnostic.path}` : "";
+    const action = `Resolve secondary state cleanup failure ${diagnostic.code}${location}: ${diagnostic.message}`;
+    if (!report.nextActions.includes(action)) report.nextActions.push(action);
+  }
+  return diagnostics;
+}
+
+function withSuppressedDiagnosticDetail(detail, diagnostics, label = "Secondary state cleanup failures") {
+  if (diagnostics.length === 0) return detail;
+  const rendered = diagnostics.map((item) => `${item.code}${item.path ? ` at ${item.path}` : ""}: ${item.message}`).join("; ");
+  return `${detail} ${label}: ${rendered}.`;
+}
+
+function stateIoProblem(report, error, statePath, operation, recoveryAction, diagnostics = null) {
+  const detail = String(error?.message ?? error);
+  const observedDiagnostics = diagnostics ?? recordSuppressedStateDiagnostics(report, error);
+  const message = withSuppressedDiagnosticDetail(`Devkit state ${operation} failed at ${statePath}: ${detail}. Check disk space and permissions, replace linked state paths with real local directories or files. ${recoveryAction}.`, observedDiagnostics);
+  return problem(report, "STATE_IO_ERROR", message, 5, observedDiagnostics);
+}
+
+function isStateIoError(error) {
+  return error?.code === "STATE_IO_ERROR"
+    || (typeof error?.code === "string" && /^E[A-Z0-9_]+$/u.test(error.code));
+}
+
+function stateBoundaryProblem(report, error, statePath, operation, { allowRunLocked = false, recoveryAction } = {}) {
+  const diagnostics = recordSuppressedStateDiagnostics(report, error);
+  if (allowRunLocked && (error instanceof RunLockedError || error?.code === "RUN_LOCKED")) {
+    report.nextActions.push(`After resolving the state lock: ${recoveryAction}`);
+    const detail = withSuppressedDiagnosticDetail(`State lock unavailable at ${statePath}; another Devkit operation may be running. Wait for active operations to finish. If none is active, inspect the lock and state paths; remove a lock only after confirming it is stale and belongs to this Devkit state. ${recoveryAction}.`, diagnostics);
+    return problem(report, "RUN_LOCKED", detail, 4, diagnostics);
+  }
+  if (error?.code === "STATE_CONFLICT" || !isStateIoError(error)) {
+    const detail = withSuppressedDiagnosticDetail(`${String(error.message ?? error)} After resolving the state conflict: ${recoveryAction}.`, diagnostics);
+    return problem(report, "STATE_CONFLICT", detail, 4, diagnostics);
+  }
+  return stateIoProblem(report, error, statePath, operation, recoveryAction, diagnostics);
+}
+
+export function quoteShellToken(value) {
+  const text = String(value);
+  const safe = process.platform === "win32" ? /^[A-Za-z0-9_./:\\-]+$/u : /^[A-Za-z0-9_./:-]+$/u;
+  if (safe.test(text)) return text;
+  if (process.platform === "win32") return `'${text.replace(/['\u2018-\u201b]/gu, "$&$&")}'`;
+  return `'${text.replaceAll("'", `'"'"'`)}'`;
+}
+
+function stateRecoveryPlan(options, state, hosts, { useRequestedRefresh = false } = {}) {
+  const pending = state?.inProgress;
+  const requestedSelected = options.refreshPending && pending && options.with.length === 0
+    ? pending.selected : state ? selectedComponents(options, state) : ["semctx", ...options.with];
+  const command = pending && !useRequestedRefresh ? pending.command : options.command;
+  const selected = pending && !useRequestedRefresh ? pending.selected : requestedSelected;
+  const selectedHosts = pending && !useRequestedRefresh ? pending.hosts : hosts;
+  return { command, selected, hosts: selectedHosts };
+}
+
+function stateRecoveryCommand(options, root, state, hosts, recoveryOptions = {}) {
+  const plan = stateRecoveryPlan(options, state, hosts, recoveryOptions);
+  const host = plan.hosts.length === 2 ? "all" : plan.hosts[0];
+  const optional = plan.selected.filter((name) => name !== "semctx");
+  return `hoklims-devkit ${plan.command} ${quoteShellToken(root)} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}${recoveryOptions.useRequestedRefresh ? " --refresh-pending" : ""}`;
+}
+
+function failureGuidance(rt, options, root, hosts, candidateState, recoveryOptions = {}) {
+  const effectiveOptions = { ...recoveryOptions };
+  if (!candidateState?.inProgress && options.refreshPending && effectiveOptions.useRequestedRefresh === undefined) {
+    effectiveOptions.useRequestedRefresh = true;
+  }
+  const plan = stateRecoveryPlan(options, candidateState, hosts, effectiveOptions);
+  const command = stateRecoveryCommand(options, root, candidateState, hosts, effectiveOptions);
+  const retry = retryGuidance(rt, plan.hosts, command, {
+    ...effectiveOptions,
+    components: plan.selected,
+  });
+  const recoveryAction = retry.instruction;
+  const continuedAction = `${recoveryAction[0].toLowerCase()}${recoveryAction.slice(1)}`;
+  if (effectiveOptions.repair) {
+    return { action: `${effectiveOptions.repair}, then ${continuedAction}`, command };
+  }
+  const missingPrerequisite = retry.hasPrerequisites;
+  let action;
+  if (candidateState?.inProgress) {
+    if (options.refreshPending && !effectiveOptions.useRequestedRefresh && !effectiveOptions.refreshInvalidated) {
+      action = missingPrerequisite
+        ? `${recoveryAction} to complete the recorded plan before refreshing releases`
+        : `Complete the recorded plan with ${command} before refreshing releases`;
+    } else {
+      action = missingPrerequisite
+        ? `Resolve the reported native conflict, then ${continuedAction}`
+        : `Resolve the reported native conflict, then complete the recorded plan with ${command}`;
+    }
+  } else {
+    action = missingPrerequisite ? recoveryAction : `Resolve the reported conflict, then ${continuedAction}`;
+  }
+  return { action, command };
+}
+
+function validateBoundState(candidate, root) {
+  const state = validateState(candidate);
+  if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
+  return state;
+}
+
+function unverifiedStateGuidance(repair, currentCommand, retry = `Run ${currentCommand}`) {
+  const continuedRetry = `${retry[0].toLowerCase()}${retry.slice(1)}`;
+  return {
+    command: currentCommand,
+    action: `${repair}, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, ${continuedRetry}`,
+  };
 }
 
 function nativeResult(result, name, report) {
@@ -72,7 +263,8 @@ function nativeResult(result, name, report) {
 }
 
 function isStableVersion(version) {
-  return typeof version === "string" && /^\d+\.\d+\.\d+$/u.test(version);
+  return typeof version === "string"
+    && /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(version);
 }
 
 function compareVersions(left, right) {
@@ -84,38 +276,167 @@ function compareVersions(left, right) {
   return 0;
 }
 
-function existingAssertVersion(rt, root) {
-  const manifestPath = join(root, "package.json");
-  if (!rt.exists(manifestPath)) return null;
+const DEPENDENCY_GROUPS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+
+function readPackageManifest(rt, manifestPath) {
   let manifest;
   try {
-    manifest = JSON.parse(rt.readText(manifestPath));
-  } catch {
-    throw new Error("package.json is invalid JSON");
+    manifest = JSON.parse(rt.readPlainText(manifestPath));
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw projectAdmissionError(new Error("package.json is invalid JSON"), "PACKAGE_MANIFEST_CONFLICT");
   }
-  const declared = manifest?.devDependencies?.assertledger ?? manifest?.dependencies?.assertledger;
-  if (declared === undefined) return null;
-  if (!isStableVersion(declared)) throw new Error(`AssertLedger dependency must be pinned exactly; found ${String(declared)}`);
-  return declared;
+  if (!manifest || Array.isArray(manifest) || typeof manifest !== "object") {
+    throw projectAdmissionError(new Error("package.json must contain an object"), "PACKAGE_MANIFEST_CONFLICT");
+  }
+  for (const group of DEPENDENCY_GROUPS) {
+    if (!Object.hasOwn(manifest, group)) continue;
+    const value = manifest[group];
+    if (!value || Array.isArray(value) || typeof value !== "object") {
+      throw projectAdmissionError(new Error(`${group} must be an object`), "PACKAGE_MANIFEST_CONFLICT");
+    }
+  }
+  return manifest;
+}
+
+function projectAdmissionError(error, fallbackCode) {
+  if (error?.admissionCode) return error;
+  const filesystem = isStateIoError(error);
+  return Object.assign(new Error(String(error?.message ?? error)), {
+    admissionCode: filesystem ? "STATE_IO_ERROR" : fallbackCode,
+    admissionExitCode: filesystem ? 5 : 4,
+    cause: error,
+    code: error?.code,
+  });
+}
+
+function recordProjectAdmissionProblem(report, error, fallbackCode) {
+  const classified = error?.admissionCode ? error : projectAdmissionError(error, fallbackCode);
+  const diagnostics = suppressedErrorDiagnostics(classified);
+  const detail = withSuppressedDiagnosticDetail(String(classified.message ?? classified), diagnostics,
+    "Secondary filesystem failures during project admission");
+  problem(report, classified.admissionCode, detail, classified.admissionExitCode, diagnostics);
+}
+
+function existingAssertVersion(rt, root) {
+  const manifestPath = join(root, "package.json");
+  if (!rt.plainFilePresent(manifestPath)) return null;
+  const manifest = readPackageManifest(rt, manifestPath);
+  const declarations = DEPENDENCY_GROUPS
+    .filter((group) => manifest?.[group]?.assertledger !== undefined)
+    .map((group) => ({ group, version: manifest[group].assertledger }));
+  if (declarations.length === 0) return null;
+  for (const { group, version } of declarations) {
+    if (!isStableVersion(version)) {
+      throw new Error(`AssertLedger dependency in ${group} must be pinned exactly; found ${String(version)}`);
+    }
+  }
+  if (new Set(declarations.map(({ version }) => version)).size !== 1) {
+    throw new Error(`Conflicting AssertLedger dependency declarations: ${declarations.map(({ group, version }) => `${group}=${version}`).join(", ")}`);
+  }
+  return declarations[0].version;
+}
+
+function validIntegrityHash(value) {
+  const match = value.match(/^(sha224|sha256|sha384|sha512)\.([0-9A-Fa-f]+)$/u);
+  if (!match) return false;
+  const lengths = { sha224: 56, sha256: 64, sha384: 96, sha512: 128 };
+  return match[2].length === lengths[match[1]];
+}
+
+function validExactPackageManagerVersion(value) {
+  const integrity = value.match(/\+(sha(?:224|256|384|512)\.[0-9A-Fa-f]+)$/u);
+  const version = integrity ? value.slice(0, -integrity[0].length) : value;
+  if (value.includes("+") && !integrity) return false;
+  const semver = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/u;
+  return semver.test(version) && (!integrity || validIntegrityHash(integrity[1]));
 }
 
 function packageManager(rt, root) {
   const manifestPath = join(root, "package.json");
-  if (!rt.exists(manifestPath)) throw new Error("AssertLedger setup needs an existing package.json");
-  const manifest = JSON.parse(rt.readText(manifestPath));
-  const declared = typeof manifest.packageManager === "string" ? manifest.packageManager.split("@")[0] : null;
+  if (!rt.plainFilePresent(manifestPath)) throw new Error("AssertLedger setup needs an existing package.json");
+  const manifest = readPackageManifest(rt, manifestPath);
+  const hasDeclaration = Object.hasOwn(manifest, "packageManager");
+  if (hasDeclaration && typeof manifest.packageManager !== "string") {
+    throw new Error(`packageManager must be a string in manager@version form; found ${String(manifest.packageManager)}`);
+  }
+  let declared = null;
+  if (hasDeclaration) {
+    const match = manifest.packageManager.match(/^([A-Za-z][A-Za-z0-9._-]*)@(.+)$/u);
+    const specifier = match?.[2] ?? "";
+    const exactVersion = validExactPackageManagerVersion(specifier);
+    let exactUrl = false;
+    try {
+      const url = new URL(specifier);
+      exactUrl = url.protocol === "https:" && /\.(?:js|tgz)$/u.test(url.pathname)
+        && (!url.hash || validIntegrityHash(url.hash.slice(1)));
+    } catch { /* A registry version is handled by exactVersion. */ }
+    if (!match || (!exactVersion && !exactUrl)) {
+      throw new Error(`packageManager must be a string in manager@version form; found ${String(manifest.packageManager)}`);
+    }
+    declared = match[1];
+  }
   const locks = [
     ["npm", ["package-lock.json", "npm-shrinkwrap.json"]],
     ["pnpm", ["pnpm-lock.yaml"]],
     ["bun", ["bun.lock", "bun.lockb"]],
   ];
-  const found = new Set(locks.filter(([, paths]) => paths.some((path) => rt.exists(join(root, path)))).map(([name]) => name));
+  const found = new Set();
+  for (const [name, paths] of locks) {
+    for (const path of paths) {
+      if (rt.plainFilePresent(join(root, path))) found.add(name);
+    }
+  }
+  const yarnPresent = rt.plainFilePresent(join(root, "yarn.lock"));
   if (declared) found.add(declared);
   if (found.size > 1) throw new Error(`Conflicting package managers: ${[...found].join(", ")}`);
   const selected = [...found][0] ?? "npm";
-  if (rt.exists(join(root, "yarn.lock"))) throw new Error("Yarn repositories must use AssertLedger's native setup until a verified Yarn adapter is available");
+  if (yarnPresent) throw new Error("Yarn repositories must use AssertLedger's native setup until a verified Yarn adapter is available");
   if (!["npm", "pnpm", "bun"].includes(selected)) throw new Error(`Unsupported package manager: ${selected}`);
   return selected;
+}
+
+function inspectAssertProject(rt, root) {
+  let manager;
+  try {
+    manager = packageManager(rt, root);
+  } catch (error) {
+    throw projectAdmissionError(error, "PACKAGE_MANAGER_CONFLICT");
+  }
+  try {
+    return { manager, version: existingAssertVersion(rt, root) };
+  } catch (error) {
+    throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
+  }
+}
+
+function assertProjectAdmission(rt, root, manager, allowedVersions) {
+  const project = inspectAssertProject(rt, root);
+  if (project.manager !== manager) {
+    throw projectAdmissionError(new Error(`AssertLedger package manager changed from ${manager} to ${project.manager}`), "PACKAGE_MANAGER_CONFLICT");
+  }
+  if (!allowedVersions.includes(project.version)) {
+    throw projectAdmissionError(new Error(`AssertLedger declaration changed outside the admitted versions: ${String(project.version)}`), "INSTALLED_VERSION_DRIFT");
+  }
+  return project;
+}
+
+function assertAssertAdmission(rt, root, manager, projectVersions, localVersions, allowAbsent = false) {
+  const project = assertProjectAdmission(rt, root, manager, allowAbsent ? [...projectVersions, null] : projectVersions);
+  let entry;
+  try {
+    entry = localAssertEntry(rt, root);
+  } catch (error) {
+    throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
+  }
+  if (!entry) {
+    if (allowAbsent) return { project, entry: null };
+    throw projectAdmissionError(new Error("The project-local AssertLedger package is absent after admission"), "PACKAGE_MANIFEST_CONFLICT");
+  }
+  if (!localVersions.includes(entry.version)) {
+    throw projectAdmissionError(new Error(`The project-local AssertLedger version changed outside the admitted versions: ${entry.version}`), "INSTALLED_VERSION_DRIFT");
+  }
+  return { project, entry };
 }
 
 function installPackageCommand(manager, version) {
@@ -126,15 +447,86 @@ function installPackageCommand(manager, version) {
 }
 
 function localAssertEntry(rt, root) {
-  const packagePath = join(root, "node_modules", "assertledger", "package.json");
-  const cliPath = join(root, "node_modules", "assertledger", "dist", "cli.js");
-  if (!rt.exists(packagePath) || !rt.exists(cliPath)) return null;
+  const nodeModules = join(root, "node_modules");
+  const packageRoot = join(nodeModules, "assertledger");
+  const distRoot = join(packageRoot, "dist");
+  const packagePath = join(packageRoot, "package.json");
+  const cliPath = join(packageRoot, "dist", "cli.js");
+  const inspectDirectory = (path, ancestors = []) => {
+    const classifyDirectoryError = (error, failedPath) => {
+      if (error?.code === "ENOTDIR") {
+        return Object.assign(new Error(`The project-local AssertLedger path has a non-directory component before ${failedPath}`), {
+          code: "STATE_CONFLICT",
+        });
+      }
+      return error;
+    };
+    const recheckAncestors = () => {
+      for (const ancestor of ancestors) {
+        try {
+          if (!rt.directoryPresent(ancestor)) {
+            throw Object.assign(new Error("The project-local AssertLedger package ancestry changed during admission"), {
+              code: "STATE_CONFLICT",
+            });
+          }
+        } catch (error) {
+          throw classifyDirectoryError(error, ancestor);
+        }
+      }
+    };
+    try {
+      const present = rt.directoryPresent(path);
+      recheckAncestors();
+      return present;
+    } catch (error) {
+      const primary = classifyDirectoryError(error, path);
+      try {
+        recheckAncestors();
+      } catch (reinspectionError) {
+        throw preferredBoundaryError(primary, reinspectionError);
+      }
+      throw primary;
+    }
+  };
+  const assertPackageDirectories = () => {
+    if (!inspectDirectory(nodeModules) || !inspectDirectory(packageRoot, [nodeModules])
+      || !inspectDirectory(distRoot, [nodeModules, packageRoot])) {
+      throw new Error("The project-local AssertLedger package is incomplete");
+    }
+  };
+  if (!inspectDirectory(nodeModules)) return null;
+  if (!inspectDirectory(packageRoot, [nodeModules])) return null;
+  assertPackageDirectories();
+  const guardedMetadata = (operation) => {
+    assertPackageDirectories();
+    try {
+      const result = operation();
+      assertPackageDirectories();
+      return result;
+    } catch (error) {
+      try {
+        assertPackageDirectories();
+      } catch (reinspectionError) {
+        throw preferredBoundaryError(error, reinspectionError);
+      }
+      throw error;
+    }
+  };
+  const readPackageFile = (path) => guardedMetadata(() => rt.readPlainText(path));
+  const packagePresent = guardedMetadata(() => rt.pathPresent(packagePath));
+  const cliPresent = guardedMetadata(() => rt.pathPresent(cliPath));
+  if (!packagePresent || !cliPresent) throw new Error("The project-local AssertLedger package is incomplete");
+  const cli = readPackageFile(cliPath);
+  if (typeof cli !== "string") throw new Error("The project-local AssertLedger CLI is not a readable regular file");
+  let version;
   try {
-    const version = JSON.parse(rt.readText(packagePath))?.version;
-    return isStableVersion(version) ? { version, cliPath } : null;
-  } catch {
-    return null;
+    version = JSON.parse(readPackageFile(packagePath))?.version;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new Error("The project-local AssertLedger package manifest is invalid JSON");
   }
+  if (!isStableVersion(version)) throw new Error(`The project-local AssertLedger package has an invalid version: ${String(version)}`);
+  return { version, cliPath };
 }
 
 function localAssertCommand(entry, args) {
@@ -222,11 +614,20 @@ function optionalNativeRootMatches(rt, parsed, root) {
   }
 }
 
-function validSemctxHostPlan(rt, parsed, root, hosts, version, selection) {
-  return optionalNativeRootMatches(rt, parsed, root)
-    && parsed?.ok === true && parsed.version === version && parsed.dryRun === true
-    && parsed.selection === selection && hosts.every((host) => parsed.hosts?.[host]?.requested === true
-      && parsed.hosts[host].detected === true && parsed.hosts[host].status === "planned");
+function validSemctxInstallReport(rt, parsed, root, hosts, version, selection, dryRun) {
+  let workspaceRootMatches = false;
+  try {
+    workspaceRootMatches = parsed?.workspace?.status === "skipped"
+      && typeof parsed.workspace.root === "string" && rt.realpath(parsed.workspace.root) === root;
+  } catch {
+    workspaceRootMatches = false;
+  }
+  const statuses = dryRun ? ["planned"] : ["installed", "updated", "migrated"];
+  return optionalNativeRootMatches(rt, parsed, root) && workspaceRootMatches
+    && parsed?.ok === true && parsed.version === version && parsed.dryRun === dryRun
+    && parsed.selection === selection
+    && HOSTS.every((host) => parsed.hosts?.[host]?.requested === hosts.includes(host))
+    && hosts.every((host) => parsed.hosts[host].detected === true && statuses.includes(parsed.hosts[host].status));
 }
 
 function fileBelongsToRoot(rt, path, relativePath, root) {
@@ -241,23 +642,24 @@ function fileBelongsToRoot(rt, path, relativePath, root) {
   }
 }
 
-function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifactStates) {
+function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifactStates, options = {}) {
   const expected = [
     ["init", "assertledger.config.json"], ["init", "assertledger.lock.json"],
     ["connection", client === "codex" ? ".codex/config.toml" : ".mcp.json"],
     ["connection", client === "codex" ? ".agents/skills/assertledger/SKILL.md" : ".claude/skills/assertledger/SKILL.md"],
   ];
+  const initStatuses = options.initStatuses ?? (mode === "dry-run" ? ["WOULD_CREATE", "UNCHANGED"] : ["CREATED", "UNCHANGED"]);
+  const connectionStatuses = options.connectionStatuses ?? (mode === "dry-run" ? ["EMITTED"] : ["CREATED", "UNCHANGED"]);
   return statuses.includes(parsed?.status) && parsed.client === client && parsed.mode === mode
     && Array.isArray(parsed.artifacts) && parsed.artifacts.length === expected.length
+    && parsed.artifacts.every((artifact) => artifact !== null && !Array.isArray(artifact) && typeof artifact === "object")
     && expected.every(([owner, relativePath]) => parsed.artifacts.filter((artifact) => artifact?.owner === owner
       && fileBelongsToRoot(rt, artifact.path, relativePath, root)).length === 1)
     && parsed.artifacts.every((artifact) => ["init", "connection"].includes(artifact?.owner)
       && typeof artifact.path === "string" && artifact.path.length > 0
       && artifactStates.includes(artifact.state))
-    && (mode === "dry-run" ? ["WOULD_CREATE", "UNCHANGED"].includes(parsed.init?.status)
-      && parsed.connection?.status === "EMITTED"
-      : ["CREATED", "UNCHANGED"].includes(parsed.init?.status)
-        && ["CREATED", "UNCHANGED"].includes(parsed.connection?.status))
+    && initStatuses.includes(parsed.init?.status)
+    && connectionStatuses.includes(parsed.connection?.status)
     && parsed.connection?.client === client
     && parsed.rollback?.status === "NOT_REQUIRED";
 }
@@ -312,8 +714,10 @@ async function checkSemctxChannel(rt, version) {
 }
 
 function selectedComponents(options, state) {
-  const selected = new Set(["semctx", ...options.with]);
-  if (options.command !== "setup" && options.with.length === 0) {
+  const pendingSelection = state?.inProgress && options.with.length === 0
+    ? state.inProgress.selected : null;
+  const selected = new Set(pendingSelection ?? ["semctx", ...options.with]);
+  if (!pendingSelection && options.command !== "setup" && options.with.length === 0) {
     for (const name of Object.keys(state?.components ?? {})) selected.add(name);
     for (const name of state?.inProgress?.selected ?? []) selected.add(name);
   }
@@ -346,6 +750,8 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
   const requiredChecks = ["cli", "workspace", "config", "index", "runtime"];
   const doctorStructured = [0, 1].includes(doctorCode) && typeof doctor?.healthy === "boolean"
     && doctor.version === version && Array.isArray(doctor.checks)
+    && doctor.checks.every((check) => check && typeof check === "object"
+      && typeof check.name === "string" && typeof check.ok === "boolean")
     && requiredChecks.every((name) => doctor.checks.some((check) => check.name === name && typeof check.ok === "boolean"));
   const healthStructured = [0, 2, 3].includes(healthCode) && health?.schemaVersion === 1
     && health.kind === "index_health" && ["valid", "invalid", "absent"].includes(health.binding?.status)
@@ -354,7 +760,8 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
   if (!doctorStructured || !healthStructured) return "unknown";
   const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
     && Array.isArray(doctor.checks) && requiredChecks.every((name) => doctor.checks.some((check) =>
-      check.name === name && check.ok === true && (name !== "index" || check.status === "healthy")));
+      check && typeof check === "object" && check.name === name && check.ok === true
+      && (name !== "index" || check.status === "healthy")));
   const indexReady = healthCode === 0 && health?.schemaVersion === 1 && health.kind === "index_health"
     && health.binding?.status === "valid" && health.freshness?.canRunHighRiskControl === true
     && health.coverage?.status === "complete";
@@ -369,8 +776,14 @@ async function resolveComponents(rt, options, state, root, report) {
         versions[name] = state.inProgress.versions[name];
       } else if (options.command !== "upgrade" && state?.components?.[name]?.version) {
         versions[name] = state.components[name].version;
-      } else if (name === "assertledger" && options.command === "setup" && existingAssertVersion(rt, root)) {
-        versions[name] = existingAssertVersion(rt, root);
+      } else if (name === "assertledger" && options.command === "setup") {
+        let existing;
+        try {
+          existing = existingAssertVersion(rt, root);
+        } catch (error) {
+          throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
+        }
+        versions[name] = existing ?? await resolveVersion(rt, name);
       } else if (name === "latent-compass" && options.command === "setup" && rt.which("uv")) {
         const listed = await rt.exec(["uv", "tool", "list"], root);
         if (listed.code !== 0) throw new Error(`uv tool list: ${shortError(listed)}`);
@@ -384,7 +797,8 @@ async function resolveComponents(rt, options, state, root, report) {
         throw new Error("Semctx before 0.3.4 has no safe workspace preflight");
       }
     } catch (error) {
-      problem(report, name === "semctx" ? "RELEASE_SKEW_OR_UNAVAILABLE" : "VERSION_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
+      if (error?.admissionCode) recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
+      else problem(report, name === "semctx" ? "RELEASE_SKEW_OR_UNAVAILABLE" : "VERSION_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
     }
   }
   return versions;
@@ -413,10 +827,10 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     if (installed.version !== null && statusJson.hosts[host].marketplace?.matchesSemctx !== true) {
       problem(report, "SEMCTX_MARKETPLACE_CONFLICT", `${host} Semctx plugin is not from the expected marketplace`);
     }
-    if (installed.version === version && installed.contentMatchesSnapshot === false) {
-      // A pinned retry must not replace modified plugin bytes, even when upgrade is explicit.
+    if (installed.version !== null && installed.contentMatchesSnapshot === false) {
+      // Never replace modified plugin bytes, including during an explicit upgrade.
       problem(report, "SEMCTX_CONTENT_DRIFT", `${host} Semctx plugin bytes differ from its marketplace snapshot; inspect or repair with the native installer`);
-    } else if (previous && installed.version === version && installed.contentMatchesSnapshot !== true) {
+    } else if (installed.version !== null && installed.contentMatchesSnapshot !== true) {
       problem(report, "SEMCTX_CONTENT_UNVERIFIED", `${host} Semctx plugin content is unverified; inspect semctx plugin-status before retrying`);
     }
   }
@@ -445,7 +859,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     const host = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", "--dry-run", ...args], root);
     hostJson = nativeResult(host, "semctx install --dry-run", report);
     if (!hostJson) return null;
-    if (host.code !== 0 || !validSemctxHostPlan(rt, hostJson, root, hosts, version, hostMode)) {
+    if (host.code !== 0 || !validSemctxInstallReport(rt, hostJson, root, hosts, version, hostMode, true)) {
       problem(report, "SEMCTX_HOST_CONFLICT", JSON.stringify(hostJson).slice(0, 600));
     }
   }
@@ -454,55 +868,81 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     && setupJson.plannedChanges.length === 0 && report.conflicts.length === 0) {
     const doctor = await rt.exec(["bunx", `semctx@${version}`, "doctor", ...args], root);
     const health = await rt.exec(["bunx", `semctx@${version}`, "index-health", ...args], root);
-    skipSetup = semctxWorkspaceStatus(rt, root, doctor, health, version) === "yes";
+    const workspaceStatus = semctxWorkspaceStatus(rt, root, doctor, health, version);
+    if (workspaceStatus === "unknown") {
+      problem(report, "SEMCTX_WORKSPACE_STATUS_INVALID", "Semctx doctor or index-health returned malformed workspace evidence; inspect the native reports before retrying");
+      return null;
+    }
+    skipSetup = workspaceStatus === "yes";
   }
   report.plannedChanges.push({ component: "semctx", workspace: setupJson, hosts: hostJson.hosts });
   return { setup: setupJson, host: hostJson, hostInstallNeeded, skipSetup };
 }
 
-async function preflightAssert(rt, root, hosts, version, previous, command, report) {
-  if (!rt.which("node") || !rt.which("npm")) {
-    problem(report, "NODE_REQUIRED", "AssertLedger needs Node >=22.15 and npm", 3);
-    return null;
-  }
+async function preflightAssert(rt, root, hosts, version, previous, command, report, pendingVersion) {
+  if (recordMissingAssertLedgerTools(report, rt)) return null;
   const node = await rt.exec(["node", "--version"], root);
   const match = node.stdout.trim().match(/^v(\d+)\.(\d+)\./u);
   if (!match || Number(match[1]) < 22 || (Number(match[1]) === 22 && Number(match[2]) < 15)) {
     problem(report, "NODE_VERSION", "AssertLedger needs Node >=22.15", 3);
     return null;
   }
-  let manager;
+  let project;
   try {
-    manager = packageManager(rt, root);
+    project = inspectAssertProject(rt, root);
   } catch (error) {
-    problem(report, "PACKAGE_MANAGER_CONFLICT", String(error.message ?? error));
+    recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
     return null;
   }
-  if (!rt.which(manager)) {
-    problem(report, "PACKAGE_MANAGER_MISSING", `${manager} is not on PATH`, 3);
-    return null;
-  }
-  let current;
+  const { manager, version: current } = project;
+  if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
+  let localEntry;
   try {
-    current = existingAssertVersion(rt, root);
+    localEntry = localAssertEntry(rt, root);
   } catch (error) {
-    problem(report, "PACKAGE_MANIFEST_CONFLICT", String(error.message ?? error));
+    recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
     return null;
   }
-  if (command !== "upgrade" && current && current !== version) problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger dependency is ${current}, expected ${version}`);
-  const localEntry = localAssertEntry(rt, root);
+  let allowedVersions;
+  if (previous) allowedVersions = [previous.version, ...(command === "upgrade" ? [version, pendingVersion] : [])];
+  else if (command === "upgrade") allowedVersions = [current, version, pendingVersion];
+  else allowedVersions = [version];
+  const allowed = new Set(allowedVersions);
+  const unexpected = [...new Set([current, localEntry?.version].filter((candidate) => candidate && !allowed.has(candidate)))];
+  if (unexpected.length) {
+    const baseline = previous ? `recorded ${previous.version}` : `selected ${version}`;
+    problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger installation differs from ${baseline}: ${unexpected.join(", ")}`);
+    return null;
+  }
   const needsInstall = current !== version || localEntry?.version !== version;
+  const admittedVersions = [...new Set([previous?.version, current, localEntry?.version, version, pendingVersion].filter(isStableVersion))];
   const previews = [];
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
+    if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
+    let admission;
+    try {
+      admission = assertAssertAdmission(rt, root, manager, admittedVersions, admittedVersions, needsInstall);
+    } catch (error) {
+      recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
+      return null;
+    }
     const previewCommand = !needsInstall
-      ? localAssertCommand(localEntry, ["setup", root, "--client", client, "--dry-run", "--json"])
+      ? localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"])
       : ["npm", "exec", "--yes", "--ignore-scripts", `--package=assertledger@${version}`, "--", "assertledger", "setup", root, "--client", client, "--dry-run", "--json"];
     const result = await rt.exec(previewCommand, root);
+    if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
+    try {
+      assertAssertAdmission(rt, root, manager, admittedVersions, admittedVersions, needsInstall);
+    } catch (error) {
+      recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
+      return null;
+    }
     const parsed = nativeResult(result, `assertledger setup (${client})`, report);
     if (!parsed) continue;
     if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
       problem(report, "ASSERTLEDGER_CONFLICT", JSON.stringify(parsed).slice(0, 600));
+      continue;
     }
     previews.push({
       host,
@@ -511,8 +951,9 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
       requiredOperatorInputs: parsed.init?.requiredOperatorInputs ?? [],
     });
   }
+  if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
   report.plannedChanges.push({ component: "assertledger", packageManager: manager, installPackage: needsInstall, previews });
-  return { manager, current, needsInstall, previews };
+  return { manager, current, needsInstall, previews, admittedVersions };
 }
 
 async function preflightCompass(rt, root, hosts, version, previous, command, report, pendingVersion) {
@@ -568,7 +1009,9 @@ async function applySemctx(rt, root, hosts, version, preflight) {
   if (preflight.hostInstallNeeded) {
     const install = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", ...args], root);
     const parsed = parseJsonOutput(install);
-    if (install.code !== 0 || parsed?.ok !== true || parsed?.dryRun !== false) throw new Error(`Semctx host install: ${shortError(install)}`);
+    if (install.code !== 0 || !validSemctxInstallReport(rt, parsed, root, hosts, version, hostMode, false)) {
+      throw new Error(`Semctx host install: ${shortError(install)}`);
+    }
   }
   let ready = true;
   if (!preflight.skipSetup) {
@@ -604,30 +1047,41 @@ async function applySemctx(rt, root, hosts, version, preflight) {
 }
 
 async function applyAssert(rt, root, hosts, version, preflight) {
+  const beforeVersions = preflight.needsInstall ? preflight.admittedVersions : [version];
+  requireAssertLedgerTools(rt, preflight.manager);
+  assertAssertAdmission(rt, root, preflight.manager, beforeVersions, beforeVersions, preflight.needsInstall);
   if (preflight.needsInstall) {
+    requireAssertLedgerTools(rt, preflight.manager);
     const install = await rt.exec(installPackageCommand(preflight.manager, version), root, 300_000);
     if (install.code !== 0) throw new Error(`AssertLedger package install: ${shortError(install)}`);
   }
-  const entry = localAssertEntry(rt, root);
-  if (entry?.version !== version) throw new Error(`AssertLedger project executable is not the requested ${version}`);
+  let admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
-    const preview = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
+    requireAssertLedgerTools(rt, preflight.manager);
+    admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
+    const preview = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const previewReport = parseJsonOutput(preview);
     if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
       throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
     }
-    const result = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--write", "--json"]), root);
+    requireAssertLedgerTools(rt, preflight.manager);
+    admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
+    const result = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--write", "--json"]), root);
     const parsed = parseJsonOutput(result);
     if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"])) {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
     }
-    const verify = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
+    requireAssertLedgerTools(rt, preflight.manager);
+    admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
+    const verify = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const verified = parseJsonOutput(verify);
     if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"])) {
       throw new Error(`AssertLedger post-install verification (${client}): ${shortError(verify)}`);
     }
   }
+  requireAssertLedgerTools(rt, preflight.manager);
+  assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
   return { activation: "unknown", next: ["Approve or trust the project integration in the selected client, then restart it"] };
 }
 
@@ -691,27 +1145,43 @@ async function diagnoseSemctx(rt, root, hosts, version) {
   };
 }
 
-async function diagnoseAssert(rt, root, hosts, version) {
-  const entry = localAssertEntry(rt, root);
-  if (entry?.version !== version) {
+async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [version]) {
+  const project = inspectAssertProject(rt, root);
+  const admission = assertAssertAdmission(rt, root, project.manager, compatibleVersions, compatibleVersions, true);
+  if (!admission.project.version && !admission.entry) {
     return { name: "assertledger", version, installed: "no", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
   }
+  if (!admission.project.version || !admission.entry || admission.project.version !== admission.entry.version) {
+    throw projectAdmissionError(new Error("The AssertLedger declaration and project-local package are incomplete or inconsistent"), "PACKAGE_MANIFEST_CONFLICT");
+  }
+  version = admission.entry.version;
   const checks = [];
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
-    const argv = localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]);
+    requireAssertLedgerTools(rt, project.manager);
+    const admission = assertAssertAdmission(rt, root, project.manager, [version], [version]);
+    const argv = localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]);
     const result = await rt.exec(argv, root);
+    requireAssertLedgerTools(rt, project.manager);
+    assertAssertAdmission(rt, root, project.manager, [version], [version]);
     checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result) });
   }
-  const recognizable = checks.every((item, index) => item.report && item.report.mode === "dry-run"
-    && item.report.client === (hosts[index] === "claude" ? "claude-code" : "codex")
-    && ["UNCHANGED", "WOULD_CREATE", "BLOCKED", "CONFLICT", "PARTIAL_FAILURE"].includes(item.report.status)
-    && Array.isArray(item.report.artifacts) && item.report.artifacts.length > 0);
-  const configured = recognizable && checks.every((item) => item.exitCode === 0 && item.report.status === "UNCHANGED"
+  requireAssertLedgerTools(rt, project.manager);
+  const exitCodes = { UNCHANGED: 0, WOULD_CREATE: 0, BLOCKED: 3, CONFLICT: 4 };
+  const admitted = checks.every((item, index) => {
+    const client = hosts[index] === "claude" ? "claude-code" : "codex";
+    return item.exitCode === exitCodes[item.report?.status]
+      && validAssertSetupReport(rt, item.report, root, client, "dry-run",
+        Object.keys(exitCodes), ["UNCHANGED", "WOULD_CREATE", "CONFLICT"], {
+          initStatuses: ["UNCHANGED", "WOULD_CREATE", "BLOCKED", "CONFLICT"],
+          connectionStatuses: ["EMITTED", "CONFLICT"],
+        });
+  });
+  const configured = admitted && checks.every((item) => item.exitCode === 0 && item.report.status === "UNCHANGED"
     && validAssertSetupReport(rt, item.report, root, item.command.slice(6), "dry-run", ["UNCHANGED"], ["UNCHANGED"]));
   return {
-    name: "assertledger", version, installed: "yes", configured: !recognizable ? "unknown" : configured ? "yes" : "no",
-    loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured,
+    name: "assertledger", version, installed: "yes", configured: !admitted ? "unknown" : configured ? "yes" : "no",
+    loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured, evidenceInvalid: !admitted,
   };
 }
 
@@ -746,30 +1216,140 @@ async function diagnoseCompass(rt, root, hosts, version) {
 
 export async function execute(options, rt = createRuntime()) {
   const report = reportFor(options);
-  if (!rt.which("bun") || !rt.which("bunx")) return problem(report, "BUN_REQUIRED", "Bun >=1.4 is required", 3);
+  const authoredRecoverySegments = new Set();
+  const rememberRecovery = (segment) => {
+    if (segment) authoredRecoverySegments.add(segment);
+    return segment;
+  };
+  const renderRetryInstruction = (hosts, command, requirements) =>
+    rememberRecovery(retryInstruction(rt, hosts, command, requirements));
+  const renderUnverifiedRecovery = (repair, command, retry) => {
+    const guidance = unverifiedStateGuidance(repair, command, retry);
+    rememberRecovery(guidance.action);
+    rememberRecovery(guidance.command);
+    return guidance;
+  };
+  const stripRecoverySegments = (text, segments) => {
+    let cleaned = text;
+    for (const fragment of [...segments].filter(Boolean).sort((left, right) => right.length - left.length)) {
+      const authored = fragment.startsWith("hoklims-devkit ")
+        ? [`Only if no saved plan exists, run ${fragment}`, `After resolving the error: ${fragment}`, `After resolving the state conflict: ${fragment}`]
+        : [];
+      for (const sentence of authored) cleaned = cleaned.replaceAll(sentence, "");
+      cleaned = cleaned.replaceAll(fragment, "");
+    }
+    return cleaned
+      .replace(/\s+to recompute the plan\./gu, ".")
+      .replace(/(?:^|\.\s*)to complete the recorded plan[.\s]*/gu, "")
+      .replace(/After resolving (?:the error|the state conflict):\s*\./gu, "")
+      .trim()
+      .replace(/[.\s]+$/u, "");
+  };
+  const recordFailureRecovery = (action, command) => {
+    const retired = new Set(authoredRecoverySegments);
+    report.nextActions = report.nextActions.filter((item) => ![...retired].some((segment) => segment && item.includes(segment)));
+    for (const conflict of report.conflicts) {
+      const fact = stripRecoverySegments(conflict.detail, retired);
+      conflict.detail = fact.includes(action) ? `${fact}.` : `${fact}. ${action}.`;
+    }
+    authoredRecoverySegments.clear();
+    rememberRecovery(action);
+    rememberRecovery(command);
+    if (!report.nextActions.includes(action)) report.nextActions.push(action);
+    report.ok = false;
+    return report;
+  };
+  const earlyState = (projectPath) => {
+    try {
+      const candidateRoot = rt.realpath(projectPath);
+      const candidateState = validateBoundState(rt.readState(rt.statePath(candidateRoot)), candidateRoot);
+      return { root: candidateRoot, state: candidateState, verified: candidateState !== null };
+    } catch {
+      return { root: projectPath, state: null, verified: false };
+    }
+  };
+  const earlyFailure = (code, detail, repair, exitCode = 3, resolvedProject) => {
+    let projectPath = resolvedProject;
+    if (!projectPath) {
+      try { projectPath = rt.resolve(options.project); } catch { projectPath = options.project; }
+    }
+    const candidate = earlyState(projectPath);
+    const earlyHosts = options.host === "auto" ? HOSTS.filter((host) => rt.which(host))
+      : options.host === "all" ? HOSTS : [options.host];
+    const recoveryHosts = earlyHosts.length ? earlyHosts : HOSTS;
+    let guidance;
+    if (candidate.verified) {
+      guidance = failureGuidance(rt, options, candidate.root, recoveryHosts, candidate.state,
+        { repair, components: selectedComponents(options, candidate.state) });
+    } else {
+      const current = stateRecoveryCommand(options, candidate.root, null, recoveryHosts, { useRequestedRefresh: options.refreshPending });
+      guidance = renderUnverifiedRecovery(repair, current,
+        renderRetryInstruction(recoveryHosts, current, { components: selectedComponents(options, null) }));
+    }
+    problem(report, code, detail, exitCode);
+    return recordFailureRecovery(guidance.action, guidance.command);
+  };
+  if (!rt.which("bun") || !rt.which("bunx")) {
+    return earlyFailure("BUN_REQUIRED", "Bun >=1.4 is required", "Install Bun >=1.4 and ensure bun and bunx are on PATH");
+  }
   const bun = await rt.exec(["bun", "--version"], ".");
   const bunVersion = bun.stdout.trim().match(/^(\d+)\.(\d+)\./u);
   if (!bunVersion || Number(bunVersion[1]) < 1 || (Number(bunVersion[1]) === 1 && Number(bunVersion[2]) < 4)) {
-    return problem(report, "BUN_VERSION", "Bun >=1.4 is required", 3);
+    return earlyFailure("BUN_VERSION", "Bun >=1.4 is required", "Upgrade Bun to 1.4 or newer");
   }
   const project = rt.resolve(options.project);
   const rootResult = await rt.exec(["git", "-C", project, "rev-parse", "--show-toplevel"], project);
-  if (rootResult.code !== 0) return problem(report, "GIT_REPOSITORY_REQUIRED", "Open a Git repository and retry", 3);
-  const root = rt.realpath(rootResult.stdout.trim());
+  if (rootResult.code !== 0) {
+    return earlyFailure("GIT_REPOSITORY_REQUIRED", "Open a Git repository and retry", "Open the requested path inside a Git repository", 3, project);
+  }
+  const discoveredRoot = rootResult.stdout.trim();
+  report.projectRoot = discoveredRoot;
+  let root;
+  try {
+    root = rt.realpath(discoveredRoot);
+  } catch (error) {
+    return earlyFailure("REPOSITORY_PATH_IO_ERROR", `Repository path validation failed at ${discoveredRoot}: ${String(error.message ?? error)}`, "Restore access to the discovered repository path", 5, discoveredRoot);
+  }
   report.projectRoot = root;
   const hosts = options.host === "auto" ? HOSTS.filter((host) => rt.which(host))
     : options.host === "all" ? HOSTS : [options.host];
-  if (hosts.length === 0 || hosts.some((host) => !rt.which(host))) {
-    return problem(report, "HOST_UNAVAILABLE", `Requested host is not on PATH: ${options.host}`, 3);
-  }
   report.hosts = hosts;
   let state;
   const statePath = rt.statePath(root);
+  const requestedRecoveryHosts = hosts.length ? hosts : HOSTS;
+  let recoveryPackageManager;
+  const recoveryCommandFor = (candidateState, recoveryOptions) => stateRecoveryCommand(options, root, candidateState, requestedRecoveryHosts, recoveryOptions);
+  const recoveryActionFor = (candidateState, recoveryOptions) => {
+    const plan = stateRecoveryPlan(options, candidateState, requestedRecoveryHosts, recoveryOptions);
+    return renderRetryInstruction(plan.hosts, recoveryCommandFor(candidateState, recoveryOptions), {
+      components: plan.selected,
+      packageManager: recoveryPackageManager,
+    });
+  };
+  const finalizeFailure = (candidateState = state, recoveryOptions) => {
+    if (report.conflicts.length === 0) return report;
+    const { action, command } = failureGuidance(rt, options, root, requestedRecoveryHosts, candidateState, {
+      ...recoveryOptions,
+      packageManager: recoveryPackageManager,
+    });
+    return recordFailureRecovery(action, command);
+  };
   try {
-    state = validateState(rt.readState(statePath));
-    if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
+    state = validateBoundState(rt.readState(statePath), root);
   } catch (error) {
-    return problem(report, "STATE_CONFLICT", String(error.message ?? error));
+    const current = recoveryCommandFor(null, { useRequestedRefresh: false });
+    const guidance = renderUnverifiedRecovery("Resolve the initial state read conflict", current,
+      renderRetryInstruction(requestedRecoveryHosts, current, { components: selectedComponents(options, null) }));
+    stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: guidance.action });
+    return recordFailureRecovery(guidance.action, guidance.command);
+  }
+  if (options.with.includes("assertledger") || state?.components?.assertledger
+    || state?.inProgress?.selected.includes("assertledger")) {
+    try { recoveryPackageManager = inspectAssertProject(rt, root).manager; } catch { /* The owning command reports the concrete admission error. */ }
+  }
+  if (hosts.length === 0 || hosts.some((host) => !rt.which(host))) {
+    problem(report, "HOST_UNAVAILABLE", `Requested host is not on PATH: ${options.host}. ${recoveryActionFor(state)}`, 3);
+    return finalizeFailure(state);
   }
   if (options.command === "doctor") {
     const names = new Set(["semctx", ...options.with, ...Object.keys(state?.components ?? {}), ...(state?.inProgress?.selected ?? [])]);
@@ -782,122 +1362,280 @@ export async function execute(options, rt = createRuntime()) {
       }
       try {
         const diagnostic = name === "semctx" ? await diagnoseSemctx(rt, root, hosts, version)
-          : name === "assertledger" ? await diagnoseAssert(rt, root, hosts, version)
+          : name === "assertledger" ? await diagnoseAssert(rt, root, hosts, version,
+            [...new Set([state?.components?.[name]?.version, state?.inProgress?.versions[name]].filter(Boolean))])
             : await diagnoseCompass(rt, root, hosts, version);
-        const { ready, ...publicDiagnostic } = diagnostic;
+        const { ready, evidenceInvalid, ...publicDiagnostic } = diagnostic;
         report.components.push(publicDiagnostic);
-        if (!ready) problem(report, "DOCTOR_NOT_READY", `${name}: installed=${diagnostic.installed}, configured=${diagnostic.configured}`, 3);
+        if (evidenceInvalid) problem(report, "NATIVE_REPORT_INVALID", `${name}: native diagnostic structure or repository identity is invalid`, 3);
+        else if (!ready) problem(report, "DOCTOR_NOT_READY", `${name}: installed=${diagnostic.installed}, configured=${diagnostic.configured}`, 3);
       } catch (error) {
         report.components.push({ name, version, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
-        problem(report, "DOCTOR_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
+        if (error?.admissionCode) {
+          recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
+        } else if (isStateIoError(error)) {
+          problem(report, "STATE_IO_ERROR", `${name}: filesystem inspection failed: ${String(error.message ?? error)}. Check disk access and permissions`, 5);
+        } else {
+          problem(report, "DOCTOR_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
+        }
       }
     }
     if (state?.inProgress) {
-      problem(report, "INCOMPLETE_OPERATION", `Re-run ${state.inProgress.command} with --host ${state.inProgress.hosts.length === 2 ? "all" : state.inProgress.hosts[0]}${state.inProgress.selected.length > 1 ? ` --with ${state.inProgress.selected.slice(1).join(",")}` : ""} to complete the recorded plan`, 3);
+      problem(report, "INCOMPLETE_OPERATION", `${recoveryActionFor(state)} to complete the recorded plan`, 3);
     }
     report.ok = report.conflicts.length === 0;
-    return report;
+    return report.ok ? report : finalizeFailure(state);
   }
   const selected = selectedComponents(options, state);
+  const refreshExpandsHosts = options.refreshPending && state?.inProgress
+    && state.inProgress.hosts.every((host) => hosts.includes(host));
   if (state?.inProgress && ((state.inProgress.command !== options.command && !options.refreshPending)
-    || JSON.stringify(state.inProgress.hosts) !== JSON.stringify(hosts)
+    || (JSON.stringify(state.inProgress.hosts) !== JSON.stringify(hosts) && !refreshExpandsHosts)
     || JSON.stringify(state.inProgress.selected) !== JSON.stringify(selected))) {
-    return problem(report, "PENDING_PLAN_CONFLICT", `Complete the recorded ${state.inProgress.command} plan for ${state.inProgress.hosts.join(",")} and ${state.inProgress.selected.join(",")} before changing selectors`, 4);
+    problem(report, "PENDING_PLAN_CONFLICT", `The saved plan must be completed before changing selectors. ${recoveryActionFor(state)}`, 4);
+    return finalizeFailure(state);
   }
   const versions = await resolveComponents(rt, options, state, root, report);
-  if (report.conflicts.length) return report;
+  if (report.conflicts.length) {
+    return finalizeFailure(state);
+  }
   if (options.command === "upgrade") {
+    const rejectedPendingRefresh = Boolean(state?.inProgress && options.refreshPending);
     for (const name of selected) {
       const previous = state?.components?.[name];
       if (previous && previous.version !== versions[name] && previous.hosts.some((host) => !hosts.includes(host))) {
-        problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; re-run upgrade with --host all to change its shared version safely`);
+        if (rejectedPendingRefresh) {
+          problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; the requested refresh cannot replace the recorded plan without every registered host`);
+        } else {
+          const optional = selected.filter((item) => item !== "semctx");
+          const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
+          const expandedHosts = HOSTS.filter((host) => hosts.includes(host) || previous.hosts.includes(host));
+          const instruction = renderRetryInstruction(expandedHosts, retry, { components: selected, packageManager: recoveryPackageManager });
+          problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; ${instruction} to change its shared version safely`);
+          if (!report.nextActions.includes(instruction)) report.nextActions.push(instruction);
+        }
       }
     }
-    if (report.conflicts.length) return report;
+    if (report.conflicts.length) return rejectedPendingRefresh ? finalizeFailure(state) : report;
   }
   const previews = {};
   for (const name of COMPONENTS.filter((item) => versions[item])) {
     const previous = state?.components?.[name];
     const version = versions[name];
     if (name === "semctx") previews[name] = await preflightSemctx(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.semctx);
-    else if (name === "assertledger") previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report);
+    else if (name === "assertledger") {
+      previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.assertledger);
+    }
     else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions["latent-compass"]);
     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
+  recoveryPackageManager = previews.assertledger?.manager ?? recoveryPackageManager;
+  if (previews.assertledger) recordMissingAssertLedgerTools(report, rt, previews.assertledger.manager);
   if (report.conflicts.length || options.dryRun) {
+    if (report.conflicts.length) finalizeFailure(state);
     if (state?.inProgress && !options.refreshPending
       && report.conflicts.some((item) => item.code === "RELEASE_SKEW_OR_UNAVAILABLE")) {
       const optional = selected.filter((name) => name !== "semctx");
-      report.nextActions.push(`Review the new stable releases, then run hoklims-devkit upgrade ${root} --host ${hosts.length === 2 ? "all" : hosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`);
+      const refreshHosts = HOSTS.filter((host) => hosts.includes(host)
+        || selected.some((name) => state.components[name]?.hosts?.includes(host)));
+      const refreshCommand = `hoklims-devkit upgrade ${quoteShellToken(root)} --host ${refreshHosts.length === 2 ? "all" : refreshHosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`;
+      const refreshInstruction = renderRetryInstruction(refreshHosts, refreshCommand, { components: selected, packageManager: recoveryPackageManager });
+      report.nextActions.push(`Review the new stable releases, then ${refreshInstruction[0].toLowerCase()}${refreshInstruction.slice(1)}`);
     }
     report.ok = report.conflicts.length === 0;
     return report;
   }
-  const nextState = state ?? { schemaVersion: 1, projectRoot: root, components: {} };
+  const nextState = state ? structuredClone(state) : { schemaVersion: 1, projectRoot: root, components: {} };
+  let persistedState = state ? structuredClone(state) : null;
+  let persistedStateObserved = false;
+  const recoveryState = () => persistedStateObserved ? persistedState : state;
+  let refreshSavePending = options.refreshPending;
+  let refreshPhaseInvalidated = false;
+  let lockedRereadStarted = false;
+  let lockedStateUnverified = false;
+  const staleRecoveryFragments = new Set();
+  const invalidateLockedAuthority = () => {
+    const previousState = recoveryState();
+    const previousOptions = { useRequestedRefresh: refreshSavePending, refreshInvalidated: refreshPhaseInvalidated };
+    staleRecoveryFragments.add(stateRecoveryCommand(options, root, previousState, requestedRecoveryHosts, previousOptions));
+    for (const segment of authoredRecoverySegments) staleRecoveryFragments.add(segment);
+    for (const action of report.nextActions) staleRecoveryFragments.add(action);
+    lockedStateUnverified = true;
+    persistedStateObserved = false;
+    persistedState = null;
+    refreshSavePending = false;
+    refreshPhaseInvalidated = true;
+  };
+  const lockedUnknownGuidance = () => {
+    const plan = stateRecoveryPlan(options, null, requestedRecoveryHosts, { useRequestedRefresh: false });
+    const current = stateRecoveryCommand(options, root, null, requestedRecoveryHosts, { useRequestedRefresh: false });
+    return renderUnverifiedRecovery("Resolve the locked state conflict", current,
+      renderRetryInstruction(plan.hosts, current, { components: plan.selected, packageManager: recoveryPackageManager }));
+  };
+  const replaceFailureRecovery = (guidance) => {
+    const stale = [...staleRecoveryFragments].filter(Boolean).sort((left, right) => right.length - left.length);
+    report.nextActions = report.nextActions.filter((item) => !stale.some((fragment) => item.includes(fragment))
+      && !/hoklims-devkit|saved Devkit state|recorded plan/u.test(item));
+    if (!report.nextActions.includes(guidance.action)) report.nextActions.push(guidance.action);
+    for (const conflict of report.conflicts) {
+      const currentGuidanceMarker = "\u0000CURRENT_RECOVERY_GUIDANCE\u0000";
+      let detail = conflict.detail.replaceAll(guidance.action, currentGuidanceMarker);
+      for (const fragment of stale) {
+        const authored = fragment.startsWith("hoklims-devkit ")
+          ? [`Only if no saved plan exists, run ${fragment}`, `After resolving the error: ${fragment}`, `After resolving the state conflict: ${fragment}`]
+          : [];
+        for (const sentence of authored) detail = detail.replaceAll(sentence, "");
+        detail = detail.replaceAll(fragment, "");
+      }
+      detail = detail.replaceAll(currentGuidanceMarker, guidance.action);
+      detail = detail
+        .replace(/\s+to recompute the plan\./gu, ".")
+        .replace(/After resolving (?:the error|the state conflict):\s*\./gu, "")
+        .trim()
+        .replace(/[.\s]+$/u, "");
+      conflict.detail = detail.includes(guidance.action) ? `${detail}.` : `${detail}. ${guidance.action}.`;
+    }
+    report.ok = false;
+    return report;
+  };
   let releaseLock;
+  let stateTransaction;
   try {
     releaseLock = rt.acquireLock(statePath);
-    // Preflights can take time. Another setup may have committed while they ran.
-    // Revalidate under the exclusive lock before applying or recording anything.
-    const currentState = validateState(rt.readState(statePath));
-    if (JSON.stringify(currentState) !== JSON.stringify(state)) {
-      return problem(report, "STATE_CHANGED", "Installation state changed during preflight. Re-run setup to recompute the plan.", 4);
-    }
-    let savedState = JSON.stringify(currentState);
-    const saveStateIfChanged = () => {
-      const next = JSON.stringify(nextState);
-      if (next !== savedState) {
-        rt.writeState(statePath, nextState);
-        savedState = next;
+  } catch (error) {
+    stateBoundaryProblem(report, error, statePath, "lock acquisition", {
+      allowRunLocked: true,
+      recoveryAction: recoveryActionFor(state, { useRequestedRefresh: refreshSavePending }),
+    });
+    return finalizeFailure(state, { useRequestedRefresh: refreshSavePending });
+  }
+  try {
+    applyOperation: {
+      // Preflights can take time. Another setup may have committed while they ran.
+      // Revalidate under the exclusive lock before applying or recording anything.
+      const admittedRefresh = refreshSavePending;
+      lockedRereadStarted = true;
+      refreshSavePending = false;
+      refreshPhaseInvalidated = true;
+      stateTransaction = typeof rt.openStateTransaction === "function" ? rt.openStateTransaction(statePath) : null;
+      const currentState = validateBoundState(stateTransaction ? stateTransaction.state : rt.readState(statePath), root);
+      lockedRereadStarted = false;
+      persistedState = currentState ? structuredClone(currentState) : null;
+      persistedStateObserved = true;
+      if (JSON.stringify(currentState) !== JSON.stringify(state)) {
+        const recoveryAction = recoveryActionFor(currentState);
+        if (!report.nextActions.includes(recoveryAction)) report.nextActions.push(recoveryAction);
+        problem(report, "STATE_CHANGED", `Installation state changed during preflight. ${recoveryAction} to recompute the plan.`, 4);
+        break applyOperation;
       }
-    };
-    if (options.command === "upgrade" || state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name]
-      || hosts.some((host) => !state?.components?.[name]?.hosts?.includes(host)))) {
-      nextState.inProgress = {
-        command: options.command,
-        selected,
-        hosts,
-        versions: Object.fromEntries(selected.map((name) => [name, versions[name]])),
+      refreshSavePending = admittedRefresh;
+      refreshPhaseInvalidated = false;
+      let savedState = JSON.stringify(currentState);
+      const saveStateIfChanged = () => {
+        const next = JSON.stringify(nextState);
+        if (next !== savedState) {
+          try {
+            if (stateTransaction) stateTransaction.write(nextState);
+            else rt.writeState(statePath, nextState);
+          } catch (error) {
+            throw Object.assign(new Error(String(error?.message ?? error)), {
+              cause: error,
+              code: error?.code,
+              stateBoundary: true,
+            });
+          }
+          savedState = next;
+          persistedState = structuredClone(nextState);
+          persistedStateObserved = true;
+        }
       };
-      saveStateIfChanged();
-    }
-    for (const component of report.components) {
-      const { name, version } = component;
-      try {
-        let result;
-        if (name === "semctx") result = await applySemctx(rt, root, hosts, version, previews[name]);
-        else if (name === "assertledger") result = await applyAssert(rt, root, hosts, version, previews[name]);
-        else result = await applyCompass(rt, root, hosts, version, previews[name]);
-        nextState.components[name] = { version, hosts: [...new Set([...(nextState.components[name]?.hosts ?? []), ...hosts])] };
+      if (options.command === "upgrade" || state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name]
+        || hosts.some((host) => !state?.components?.[name]?.hosts?.includes(host)))) {
+        nextState.inProgress = {
+          command: options.command,
+          selected,
+          hosts,
+          versions: Object.fromEntries(selected.map((name) => [name, versions[name]])),
+        };
         saveStateIfChanged();
-        component.state = result.ready === false ? "needs-attention" : "configured";
-        component.installed = "yes";
-        component.configured = result.ready === false ? "unknown" : "yes";
-        component.loaded = result.activation;
-        report.nextActions.push(...result.next);
-        if (result.ready === false) {
-          problem(report, "SEMCTX_NOT_READY", "Semctx installed but its workspace analysis is incomplete", 3);
+        refreshSavePending = false;
+      }
+      for (const component of report.components) {
+        const { name, version } = component;
+        try {
+          let result;
+          if (name === "semctx") result = await applySemctx(rt, root, hosts, version, previews[name]);
+          else if (name === "assertledger") result = await applyAssert(rt, root, hosts, version, previews[name]);
+          else result = await applyCompass(rt, root, hosts, version, previews[name]);
+          const componentHosts = new Set([...(nextState.components[name]?.hosts ?? []), ...hosts]);
+          nextState.components[name] = { version, hosts: HOSTS.filter((host) => componentHosts.has(host)) };
+          saveStateIfChanged();
+          component.state = result.ready === false ? "needs-attention" : "configured";
+          component.installed = "yes";
+          component.configured = result.ready === false ? "unknown" : "yes";
+          component.loaded = result.activation;
+          report.nextActions.push(...result.next);
+          if (result.ready === false) {
+            const retry = recoveryCommandFor(recoveryState());
+            const retryAction = renderRetryInstruction(recoveryState()?.inProgress?.hosts ?? hosts, retry,
+              { components: selected, packageManager: recoveryPackageManager });
+            report.nextActions.push(retryAction);
+            problem(report, "SEMCTX_NOT_READY", `Semctx installed but its workspace analysis is incomplete. ${retryAction}.`, 3);
+            break;
+          }
+        } catch (error) {
+          if (error?.stateBoundary === true) throw error;
+          component.state = "partial";
+          component.installed = "unknown";
+          component.configured = "unknown";
+          if (error?.admissionCode) recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
+          else problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error: ${recoveryActionFor(recoveryState())}.`, 5);
           break;
         }
-      } catch (error) {
-        component.state = "partial";
-        component.installed = "unknown";
-        component.configured = "unknown";
-        problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. Re-run setup after resolving the error.`, 5);
-        break;
+      }
+      if (report.conflicts.length === 0 && nextState.inProgress) {
+        delete nextState.inProgress;
+        saveStateIfChanged();
       }
     }
-    if (report.conflicts.length === 0 && nextState.inProgress) {
-      delete nextState.inProgress;
-      saveStateIfChanged();
-    }
   } catch (error) {
-    problem(report, "RUN_LOCKED", String(error.message ?? error), 4);
+    if ((lockedRereadStarted && !persistedStateObserved)
+      || (stateTransaction && error?.code === "STATE_CONFLICT")) {
+      invalidateLockedAuthority();
+    }
+    stateBoundaryProblem(report, error, statePath, "read or write", {
+      recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
+        : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
+    });
   } finally {
-    releaseLock?.();
+    try {
+      stateTransaction?.close();
+    } catch (error) {
+      if (error?.code === "STATE_CONFLICT") invalidateLockedAuthority();
+      stateBoundaryProblem(report, error, statePath, "transaction close", {
+        recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
+          : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
+      });
+    }
+    try {
+      releaseLock?.();
+    } catch (error) {
+      if (error?.code === "STATE_CONFLICT") invalidateLockedAuthority();
+      stateBoundaryProblem(report, error, statePath, "lock release", {
+        recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
+          : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
+      });
+    }
   }
   report.ok = report.conflicts.length === 0;
-  return report;
+  if (!report.ok && lockedStateUnverified) {
+    const guidance = lockedUnknownGuidance();
+    return replaceFailureRecovery(guidance);
+  }
+  return report.ok ? report : finalizeFailure(recoveryState(), {
+    useRequestedRefresh: refreshSavePending,
+    refreshInvalidated: refreshPhaseInvalidated,
+  });
 }
 
 function usage() {
