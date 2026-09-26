@@ -293,7 +293,7 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("BUN_REQUIRED");
     expect(guidance).toContain("inspect and validate the saved Devkit state");
     expect(guidance).toContain("If a saved plan is present, follow it");
-    expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit upgrade /repo --host all --refresh-pending");
+    expect(guidance).toContain("Only if no saved plan exists, restore Bun on PATH before running hoklims-devkit upgrade /repo --host all --refresh-pending");
     expect(rt.calls).toHaveLength(0);
     expect(rt.writes).toHaveLength(0);
   });
@@ -307,7 +307,7 @@ describe("public CLI", () => {
     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
     expect(guidance).toContain("inspect and validate the saved Devkit state");
     expect(guidance).toContain("If a saved plan is present, follow it");
-    expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit upgrade /repo/subdir --host codex --refresh-pending");
+    expect(guidance).toContain("Only if no saved plan exists, restore Bun on PATH before running hoklims-devkit upgrade /repo/subdir --host codex --refresh-pending");
     expect(rt.calls).toHaveLength(0);
   });
 
@@ -1639,6 +1639,31 @@ describe("public CLI", () => {
       expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
       expect(rt.writes).toHaveLength(0);
     }
+    for (const phase of ["before-read", "after-read"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const directoryPresent = rt.directoryPresent;
+      const readPlainText = rt.readPlainText;
+      let distUnsafe = false;
+      rt.directoryPresent = (path) => {
+        if (path === distPath && distUnsafe) throw Object.assign(new Error("dist changed to a regular file"), { code: "STATE_CONFLICT" });
+        return directoryPresent(path);
+      };
+      rt.readPlainText = (path) => {
+        if (path !== join(distPath, "cli.js")) return readPlainText(path);
+        if (phase === "before-read") {
+          distUnsafe = true;
+          throw Object.assign(new Error("open failed with ENOTDIR"), { code: "ENOTDIR" });
+        }
+        const content = readPlainText(path);
+        distUnsafe = true;
+        return content;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(report.exitCode).toBe(4);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
   });
 
   test("AssertLedger CLI metadata, open, and read I/O failures remain STATE_IO_ERROR", async () => {
@@ -2530,7 +2555,7 @@ describe("public CLI", () => {
       const report = await execute(parseArgs(["setup", "/repo", "--host", host, "--with", "assertledger"]), rt);
       const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
       expect(report.ok).toBe(false);
-      expect(guidance).toContain("Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host all --with assertledger");
+      expect(guidance).toContain("Restore claude CLI, Node, npm on PATH before running hoklims-devkit setup /repo --host all --with assertledger");
       expect(rt.writes).toHaveLength(0);
     }
   });
@@ -2907,6 +2932,54 @@ describe("public CLI", () => {
           expect(detail.toLowerCase()).toContain("restore the codex cli on path");
         }
       }
+    }
+  });
+
+  test("late authority loss retains every selected component prerequisite", async () => {
+    const cases = [
+      { missing: ["bun", "bunx"], label: "Bun", with: ["assertledger", "latent-compass"] },
+      { missing: ["node"], label: "Node", with: ["assertledger", "latent-compass"] },
+      { missing: ["npm"], label: "npm", with: ["assertledger", "latent-compass"] },
+      { missing: ["uv"], label: "uv", with: ["assertledger", "latent-compass"] },
+      { missing: ["node", "npm", "uv"], label: null, with: [] },
+    ];
+    for (const scenario of cases) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      };
+      const rt = fakeRuntime({ tools: ["node", "npm", "uv", "claude"], files });
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      let prerequisitesDisappear = false;
+      rt.which = (name) => prerequisitesDisappear && scenario.missing.includes(name) ? null : nativeWhich(name);
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+          prerequisitesDisappear = true;
+          return { code: 5, stdout: "", stderr: "native setup failed" };
+        }
+        return result;
+      };
+      rt.openStateTransaction = () => ({
+        state: null,
+        write: () => {},
+        close: () => { throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" }); },
+      });
+      const argv = ["setup", "/repo", "--host", "all"];
+      if (scenario.with.length) argv.push("--with", scenario.with.join(","));
+      const report = await execute(parseArgs(argv), rt);
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      expect(prerequisitesDisappear).toBe(true);
+      expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+      if (scenario.label) {
+        expect(guidance.toLowerCase()).toContain(`restore ${scenario.label}`.toLowerCase());
+      } else {
+        for (const label of ["Node", "npm", "uv"]) expect(guidance).not.toContain(`Restore ${label}`);
+      }
+      expect(guidance).not.toContain("before running.");
     }
   });
 

@@ -62,10 +62,20 @@ function problem(report, code, detail, exitCode = 4) {
   return report;
 }
 
-function retryInstruction(rt, hosts, command) {
-  const missing = hosts.filter((host) => !rt.which(host));
+function retryInstruction(rt, hosts, command, { components = [], packageManager } = {}) {
+  const missing = [];
+  const add = (label) => { if (!missing.includes(label)) missing.push(label); };
+  if (!rt.which("bun") || !rt.which("bunx")) add("Bun");
+  for (const host of hosts) if (!rt.which(host)) add(`${host} CLI`);
+  if (components.includes("assertledger")) {
+    if (!rt.which("node")) add("Node");
+    const manager = packageManager ?? "npm";
+    if (!rt.which(manager)) add(manager);
+  }
+  if (components.includes("latent-compass") && !rt.which("uv")) add("uv");
   if (!missing.length) return `Run ${command}`;
-  return `Restore the ${missing.join(",")} CLI${missing.length === 1 ? "" : "s"} on PATH before running ${command}`;
+  if (missing.length === 1 && missing[0].endsWith(" CLI")) return `Restore the ${missing[0]} on PATH before running ${command}`;
+  return `Restore ${missing.join(", ")} on PATH before running ${command}`;
 }
 
 function stateIoProblem(report, error, statePath, operation, recoveryAction) {
@@ -117,7 +127,7 @@ function failureGuidance(rt, options, root, hosts, candidateState, recoveryOptio
   const command = stateRecoveryCommand(options, root, candidateState, hosts, effectiveOptions);
   const recoveryHosts = candidateState?.inProgress && !effectiveOptions.useRequestedRefresh
     ? candidateState.inProgress.hosts : hosts;
-  const recoveryAction = retryInstruction(rt, recoveryHosts, command);
+  const recoveryAction = retryInstruction(rt, recoveryHosts, command, effectiveOptions);
   const continuedAction = `${recoveryAction[0].toLowerCase()}${recoveryAction.slice(1)}`;
   if (effectiveOptions.repair) {
     return { action: `${effectiveOptions.repair}, then ${continuedAction}`, command };
@@ -350,17 +360,33 @@ function localAssertEntry(rt, root) {
   const distRoot = join(packageRoot, "dist");
   const packagePath = join(packageRoot, "package.json");
   const cliPath = join(packageRoot, "dist", "cli.js");
+  const assertPackageDirectories = () => {
+    if (!rt.directoryPresent(nodeModules) || !rt.directoryPresent(packageRoot) || !rt.directoryPresent(distRoot)) {
+      throw new Error("The project-local AssertLedger package is incomplete");
+    }
+  };
   if (!rt.directoryPresent(nodeModules)) return null;
   if (!rt.directoryPresent(packageRoot)) return null;
-  if (!rt.directoryPresent(distRoot)) throw new Error("The project-local AssertLedger package is incomplete");
+  assertPackageDirectories();
+  const readPackageFile = (path) => {
+    assertPackageDirectories();
+    try {
+      const content = rt.readPlainText(path);
+      assertPackageDirectories();
+      return content;
+    } catch (error) {
+      assertPackageDirectories();
+      throw error;
+    }
+  };
   const packagePresent = rt.pathPresent(packagePath);
   const cliPresent = rt.pathPresent(cliPath);
   if (!packagePresent || !cliPresent) throw new Error("The project-local AssertLedger package is incomplete");
-  const cli = rt.readPlainText(cliPath);
+  const cli = readPackageFile(cliPath);
   if (typeof cli !== "string") throw new Error("The project-local AssertLedger CLI is not a readable regular file");
   let version;
   try {
-    version = JSON.parse(rt.readPlainText(packagePath))?.version;
+    version = JSON.parse(readPackageFile(packagePath))?.version;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     throw new Error("The project-local AssertLedger package manifest is invalid JSON");
@@ -1082,10 +1108,12 @@ export async function execute(options, rt = createRuntime()) {
     const recoveryHosts = earlyHosts.length ? earlyHosts : HOSTS;
     let guidance;
     if (candidate.verified) {
-      guidance = failureGuidance(rt, options, candidate.root, recoveryHosts, candidate.state, { repair });
+      guidance = failureGuidance(rt, options, candidate.root, recoveryHosts, candidate.state,
+        { repair, components: selectedComponents(options, candidate.state) });
     } else {
       const current = stateRecoveryCommand(options, candidate.root, null, recoveryHosts, { useRequestedRefresh: options.refreshPending });
-      guidance = unverifiedStateGuidance(repair, current);
+      guidance = unverifiedStateGuidance(repair, current,
+        retryInstruction(rt, recoveryHosts, current, { components: selectedComponents(options, null) }));
     }
     problem(report, code, detail, exitCode);
     return recordFailureRecovery(guidance.action, guidance.command);
@@ -1118,22 +1146,31 @@ export async function execute(options, rt = createRuntime()) {
   let state;
   const statePath = rt.statePath(root);
   const requestedRecoveryHosts = hosts.length ? hosts : HOSTS;
+  let recoveryPackageManager;
   const recoveryCommandFor = (candidateState, recoveryOptions) => stateRecoveryCommand(options, root, candidateState, requestedRecoveryHosts, recoveryOptions);
   const recoveryActionFor = (candidateState, recoveryOptions) => {
     const recoveryHosts = candidateState?.inProgress && !recoveryOptions?.useRequestedRefresh
       ? candidateState.inProgress.hosts : requestedRecoveryHosts;
-    return retryInstruction(rt, recoveryHosts, recoveryCommandFor(candidateState, recoveryOptions));
+    return retryInstruction(rt, recoveryHosts, recoveryCommandFor(candidateState, recoveryOptions), {
+      components: selectedComponents(options, candidateState),
+      packageManager: recoveryPackageManager,
+    });
   };
   const finalizeFailure = (candidateState = state, recoveryOptions) => {
     if (report.conflicts.length === 0) return report;
-    const { action, command } = failureGuidance(rt, options, root, requestedRecoveryHosts, candidateState, recoveryOptions);
+    const { action, command } = failureGuidance(rt, options, root, requestedRecoveryHosts, candidateState, {
+      ...recoveryOptions,
+      components: selectedComponents(options, candidateState),
+      packageManager: recoveryPackageManager,
+    });
     return recordFailureRecovery(action, command);
   };
   try {
     state = validateBoundState(rt.readState(statePath), root);
   } catch (error) {
     const current = recoveryCommandFor(null, { useRequestedRefresh: false });
-    const guidance = unverifiedStateGuidance("Resolve the initial state read conflict", current);
+    const guidance = unverifiedStateGuidance("Resolve the initial state read conflict", current,
+      retryInstruction(rt, requestedRecoveryHosts, current, { components: selectedComponents(options, null) }));
     stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: guidance.action });
     return recordFailureRecovery(guidance.action, guidance.command);
   }
@@ -1198,7 +1235,7 @@ export async function execute(options, rt = createRuntime()) {
         } else {
           const optional = selected.filter((item) => item !== "semctx");
           const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
-          const instruction = retryInstruction(rt, previous.hosts, retry);
+          const instruction = retryInstruction(rt, previous.hosts, retry, { components: selected, packageManager: recoveryPackageManager });
           problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; ${instruction} to change its shared version safely`);
           if (!report.nextActions.includes(instruction)) report.nextActions.push(instruction);
         }
@@ -1217,6 +1254,7 @@ export async function execute(options, rt = createRuntime()) {
     else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions["latent-compass"]);
     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
+  recoveryPackageManager = previews.assertledger?.manager;
   if (report.conflicts.length || options.dryRun) {
     if (report.conflicts.length) finalizeFailure(state);
     if (state?.inProgress && !options.refreshPending
@@ -1225,7 +1263,7 @@ export async function execute(options, rt = createRuntime()) {
       const refreshHosts = HOSTS.filter((host) => hosts.includes(host)
         || selected.some((name) => state.components[name]?.hosts?.includes(host)));
       const refreshCommand = `hoklims-devkit upgrade ${quoteShellToken(root)} --host ${refreshHosts.length === 2 ? "all" : refreshHosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`;
-      const refreshInstruction = retryInstruction(rt, refreshHosts, refreshCommand);
+      const refreshInstruction = retryInstruction(rt, refreshHosts, refreshCommand, { components: selected, packageManager: recoveryPackageManager });
       report.nextActions.push(`Review the new stable releases, then ${refreshInstruction[0].toLowerCase()}${refreshInstruction.slice(1)}`);
     }
     report.ok = report.conflicts.length === 0;
@@ -1257,7 +1295,7 @@ export async function execute(options, rt = createRuntime()) {
   const lockedUnknownGuidance = () => {
     const current = stateRecoveryCommand(options, root, null, requestedRecoveryHosts, { useRequestedRefresh: false });
     return unverifiedStateGuidance("Resolve the locked state conflict", current,
-      retryInstruction(rt, requestedRecoveryHosts, current));
+      retryInstruction(rt, requestedRecoveryHosts, current, { components: selected, packageManager: recoveryPackageManager }));
   };
   const replaceFailureRecovery = (guidance) => {
     const stale = [...staleRecoveryFragments].filter(Boolean).sort((left, right) => right.length - left.length);
@@ -1364,7 +1402,8 @@ export async function execute(options, rt = createRuntime()) {
           report.nextActions.push(...result.next);
           if (result.ready === false) {
             const retry = recoveryCommandFor(recoveryState());
-            const retryAction = retryInstruction(rt, recoveryState()?.inProgress?.hosts ?? hosts, retry);
+            const retryAction = retryInstruction(rt, recoveryState()?.inProgress?.hosts ?? hosts, retry,
+              { components: selected, packageManager: recoveryPackageManager });
             report.nextActions.push(retryAction);
             problem(report, "SEMCTX_NOT_READY", `Semctx installed but its workspace analysis is incomplete. ${retryAction}.`, 3);
             break;
