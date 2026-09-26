@@ -753,6 +753,73 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("AssertLedger upgrade rejects an independently changed dependency before writes", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "2.0.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "2.0.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
+    expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("AssertLedger upgrade admits the recorded, pending, and refreshed target versions", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    for (const scenario of [
+      { current: "1.2.0", refresh: false, target: "1.3.0" },
+      { current: "1.3.0", refresh: false, target: "1.3.0" },
+      { current: "1.3.0", refresh: true, target: "1.4.0" },
+    ]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: scenario.current }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: scenario.current }),
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      };
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files });
+      const fetchJson = rt.fetchJson;
+      rt.fetchJson = async (url) => url.includes("registry.npmjs.org/assertledger")
+        ? { version: "1.4.0" } : fetchJson(url);
+      const args = ["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--dry-run"];
+      if (scenario.refresh) args.push("--refresh-pending");
+      const report = await execute(parseArgs(args), rt);
+      expect(report.conflicts.map((item) => item.code)).not.toContain("INSTALLED_VERSION_DRIFT");
+      expect(report.components.find((item) => item.name === "assertledger")?.version).toBe(scenario.target);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
   test("conflicting AssertLedger declarations block every write", async () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],

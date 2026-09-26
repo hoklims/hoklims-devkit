@@ -543,7 +543,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
   return { setup: setupJson, host: hostJson, hostInstallNeeded, skipSetup };
 }
 
-async function preflightAssert(rt, root, hosts, version, previous, command, report) {
+async function preflightAssert(rt, root, hosts, version, previous, command, report, pendingVersion) {
   if (!rt.which("node") || !rt.which("npm")) {
     problem(report, "NODE_REQUIRED", "AssertLedger needs Node >=22.15 and npm", 3);
     return null;
@@ -572,8 +572,17 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     problem(report, "PACKAGE_MANIFEST_CONFLICT", String(error.message ?? error));
     return null;
   }
-  if (command !== "upgrade" && current && current !== version) problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger dependency is ${current}, expected ${version}`);
   const localEntry = localAssertEntry(rt, root);
+  if (command !== "upgrade" && current && current !== version) {
+    problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger dependency is ${current}, expected ${version}`);
+  }
+  if (previous) {
+    const allowed = new Set([previous.version, ...(command === "upgrade" ? [version, pendingVersion] : [])]);
+    const unexpected = [...new Set([current, localEntry?.version].filter((candidate) => candidate && !allowed.has(candidate)))];
+    if (unexpected.length) {
+      problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger installation differs from recorded ${previous.version}: ${unexpected.join(", ")}`);
+    }
+  }
   const needsInstall = current !== version || localEntry?.version !== version;
   const previews = [];
   for (const host of hosts) {
@@ -904,7 +913,9 @@ export async function execute(options, rt = createRuntime()) {
     const previous = state?.components?.[name];
     const version = versions[name];
     if (name === "semctx") previews[name] = await preflightSemctx(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.semctx);
-    else if (name === "assertledger") previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report);
+    else if (name === "assertledger") {
+      previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.assertledger);
+    }
     else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions["latent-compass"]);
     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
