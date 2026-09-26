@@ -93,4 +93,22 @@ describe("validComponentReport", () => {
       expect(validComponentReport(report(exact), projectRoot, expectedNames, options)).toBe(false);
     }
   });
+
+  test("rejects sparse component and expectation arrays", () => {
+    const exact = components();
+    const sparseComponents = [exact[0], , exact[2]];
+    const sparseNames = [expectedNames[0], , expectedNames[2]];
+    expect(validComponentReport(report(sparseComponents), projectRoot, expectedNames)).toBe(false);
+    expect(validComponentReport(report(sparseComponents), projectRoot, sparseNames)).toBe(false);
+  });
+
+  test("rejects throwing option accessors without propagating the exception", () => {
+    const throwingOptions = {};
+    Object.defineProperty(throwingOptions, "expectedState", {
+      get() { throw new Error("boom"); },
+    });
+    let result;
+    expect(() => { result = validComponentReport(report(components()), projectRoot, expectedNames, throwingOptions); }).not.toThrow();
+    expect(result).toBe(false);
+  });
 });
