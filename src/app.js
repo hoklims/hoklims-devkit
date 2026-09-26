@@ -605,6 +605,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
   if (unexpected.length) {
     const baseline = previous ? `recorded ${previous.version}` : `selected ${version}`;
     problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger installation differs from ${baseline}: ${unexpected.join(", ")}`);
+    return null;
   }
   const needsInstall = current !== version || localEntry?.version !== version;
   const previews = [];

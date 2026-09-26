@@ -933,6 +933,7 @@ describe("public CLI", () => {
     const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
     expect(report.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
+    expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec"))).toBe(false);
     expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
     expect(rt.writes).toHaveLength(0);
   });
