@@ -20,7 +20,7 @@ function unsafeManagedPath(path, detail) {
 }
 
 function ownedFileConflict(path, detail) {
-  return Object.assign(new Error(`Managed state file ownership changed at ${path}: ${detail}. Preserve the foreign path, inspect it, then rerun.`), { code: "STATE_IO_ERROR" });
+  return Object.assign(new Error(`Managed state file ownership changed at ${path}: ${detail}. Preserve the foreign path, inspect it, then rerun.`), { code: "STATE_CONFLICT" });
 }
 
 function assertSafeManagedParents(path) {
@@ -135,6 +135,7 @@ export function validateState(state) {
 }
 
 export function createRuntime({
+  beforeLockOpen = () => {},
   randomId = randomUUID,
   removeOwnedFile = unlinkSync,
   writeLockData = writeFileSync,
@@ -224,6 +225,7 @@ export function createRuntime({
       const token = randomId();
       let owned = null;
       try {
+        beforeLockOpen(lockPath);
         owned = openOwnedManagedFile(lockPath);
         try {
           writeLockData(owned.descriptor, JSON.stringify({ token, pid: process.pid }));
@@ -240,7 +242,11 @@ export function createRuntime({
           }
         }
         if (error?.code === "EEXIST") {
-          throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
+          const racedLock = inspectManagedFile(lockPath);
+          if (racedLock) {
+            throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
+          }
+          throw unsafeManagedPath(lockPath, "changed during exclusive lock creation");
         }
         throw error;
       }

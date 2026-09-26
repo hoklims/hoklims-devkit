@@ -33,6 +33,8 @@ bunx hoklims-devkit@latest upgrade . --dry-run --json
 
 `setup` resolves the latest compatible stable release on first installation, runs **all selected preflights before changing the repository or host configuration**, and records the resolved plan and each successfully configured component in a user-local state file. A second `setup` keeps recorded versions. `upgrade` resolves the newest stable releases explicitly. Package and plugin version skew, malformed files, conflicting package managers, foreign hooks, and unsupported runtimes stop the plan before those changes. A failure during application is reported as partial; repair it and rerun the same command to keep the original resolved versions. If the stable channel has moved before an interrupted upgrade can resume, `upgrade --refresh-pending` explicitly replans against current stable releases.
 
+Before `setup` or `upgrade`, stop other Devkit runs and tools that change the same Codex or Claude profile. Keep that profile at a stable local path until the command finishes. If a state conflict is reported, inspect the named path and retry the exact command printed in the report. See the [state safety boundary](docs/state-safety.md) for operational and contributor guidance.
+
 If a component is recorded for both hosts, change its version with `upgrade --host all` so the saved version never describes an untouched host.
 
 `doctor --json` reports installation, configuration, session loading, approval, and observation separately. A successful package install does not establish that a running agent session loaded or approved it. Open a new Codex task or reload Claude plugins when instructed. Review a Latent Compass hook in the host before approving it.

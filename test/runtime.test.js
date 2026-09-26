@@ -160,7 +160,10 @@ test("runtime preserves a replacement temporary file when the writer fails", () 
       throw Object.assign(new Error("disk write failed"), { code: "ENOSPC" });
     },
   });
-  expect(() => rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} })).toThrow(/ownership changed/u);
+  let error;
+  try { rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} }); } catch (caught) { error = caught; }
+  expect(error?.message).toMatch(/ownership changed/u);
+  expect(error?.code).toBe("STATE_CONFLICT");
   expect(readFileSync(tempPath, "utf8")).toBe("foreign replacement\n");
   expect(existsSync(statePath)).toBe(false);
 });
@@ -177,7 +180,10 @@ test("runtime never commits a replacement temporary file after a successful call
       writeFileSync(tempPath, "foreign replacement\n");
     },
   });
-  expect(() => rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} })).toThrow(/ownership changed/u);
+  let error;
+  try { rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} }); } catch (caught) { error = caught; }
+  expect(error?.message).toMatch(/ownership changed/u);
+  expect(error?.code).toBe("STATE_CONFLICT");
   expect(readFileSync(tempPath, "utf8")).toBe("foreign replacement\n");
   expect(existsSync(statePath)).toBe(false);
 });
@@ -207,8 +213,36 @@ test("runtime preserves a replacement lock after its writer returns", () => {
       writeFileSync(lockPath, "foreign lock\n");
     },
   });
-  expect(() => rt.acquireLock(statePath)).toThrow(/ownership changed/u);
+  let error;
+  try { rt.acquireLock(statePath); } catch (caught) { error = caught; }
+  expect(error?.message).toMatch(/ownership changed/u);
+  expect(error?.code).toBe("STATE_CONFLICT");
   expect(readFileSync(lockPath, "utf8")).toBe("foreign lock\n");
+});
+
+test("runtime reclassifies an EEXIST directory race as a state conflict", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-lock-directory-race-")));
+  const statePath = join(root, "repository.json");
+  const lockPath = `${statePath}.lock`;
+  const rt = createRuntime({ beforeLockOpen: () => mkdirSync(lockPath) });
+  let error;
+  try { rt.acquireLock(statePath); } catch (caught) { error = caught; }
+  expect(error?.code).toBe("STATE_CONFLICT");
+  expect(lstatSync(lockPath).isDirectory()).toBe(true);
+});
+
+test("runtime reclassifies an EEXIST symlink race as a state conflict", () => {
+  if (process.platform === "win32") return;
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-lock-link-race-")));
+  const statePath = join(root, "repository.json");
+  const lockPath = `${statePath}.lock`;
+  const outsideTarget = join(root, "outside-lock.json");
+  const rt = createRuntime({ beforeLockOpen: () => symlinkSync(outsideTarget, lockPath) });
+  let error;
+  try { rt.acquireLock(statePath); } catch (caught) { error = caught; }
+  expect(error?.code).toBe("STATE_CONFLICT");
+  expect(lstatSync(lockPath).isSymbolicLink()).toBe(true);
+  expect(existsSync(outsideTarget)).toBe(false);
 });
 
 test("runtime propagates an owned lock unlink failure", () => {

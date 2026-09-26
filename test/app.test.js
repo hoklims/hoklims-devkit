@@ -1257,7 +1257,49 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
     expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_CONFLICT");
     expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/disk space|permissions/u);
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("hoklims-devkit setup /repo --host codex");
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("state I/O recovery repeats the recorded upgrade selectors", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.5", assertledger: "1.3.0" },
+      },
+    };
+    const rt = fakeRuntime({
+      state,
+      version: "0.3.5",
+      stable: "0.3.5",
+      tools: ["node", "npm"],
+      files: {
+        [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+      },
+    });
+    rt.acquireLock = () => { throw Object.assign(new Error("state disk unavailable"), { code: "EIO" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(detail).not.toContain("hoklims-devkit setup");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("doctor state I/O recovery repeats doctor", async () => {
+    const rt = fakeRuntime();
+    rt.readState = () => { throw Object.assign(new Error("state access denied"), { code: "EACCES" }); };
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(detail).toContain("hoklims-devkit doctor /repo --host codex");
+    expect(detail).not.toContain("hoklims-devkit setup");
   });
 
   test("typed state path conflicts stay STATE_CONFLICT at every locked boundary", async () => {

@@ -62,9 +62,9 @@ function problem(report, code, detail, exitCode = 4) {
   return report;
 }
 
-function stateIoProblem(report, error, statePath, operation) {
+function stateIoProblem(report, error, statePath, operation, recoveryCommand) {
   const detail = String(error?.message ?? error);
-  return problem(report, "STATE_IO_ERROR", `Devkit state ${operation} failed at ${statePath}: ${detail}. Check disk space and permissions, replace linked state paths with real local directories or files, then rerun setup.`, 5);
+  return problem(report, "STATE_IO_ERROR", `Devkit state ${operation} failed at ${statePath}: ${detail}. Check disk space and permissions, replace linked state paths with real local directories or files, then retry with: ${recoveryCommand}.`, 5);
 }
 
 function isStateIoError(error) {
@@ -72,14 +72,24 @@ function isStateIoError(error) {
     || (typeof error?.code === "string" && /^E[A-Z0-9_]+$/u.test(error.code));
 }
 
-function stateBoundaryProblem(report, error, statePath, operation, { allowRunLocked = false } = {}) {
+function stateBoundaryProblem(report, error, statePath, operation, { allowRunLocked = false, recoveryCommand } = {}) {
   if (allowRunLocked && (error instanceof RunLockedError || error?.code === "RUN_LOCKED")) {
     return problem(report, "RUN_LOCKED", String(error.message ?? error), 4);
   }
   if (error?.code === "STATE_CONFLICT" || !isStateIoError(error)) {
-    return problem(report, "STATE_CONFLICT", String(error.message ?? error), 4);
+    return problem(report, "STATE_CONFLICT", `${String(error.message ?? error)} After resolving the state conflict, retry with: ${recoveryCommand}.`, 4);
   }
-  return stateIoProblem(report, error, statePath, operation);
+  return stateIoProblem(report, error, statePath, operation, recoveryCommand);
+}
+
+function stateRecoveryCommand(options, root, state, hosts) {
+  const pending = state?.inProgress;
+  const command = pending?.command ?? options.command;
+  const selected = pending?.selected ?? ["semctx", ...options.with];
+  const selectedHosts = pending?.hosts ?? hosts;
+  const host = selectedHosts.length === 2 ? "all" : selectedHosts[0];
+  const optional = selected.filter((name) => name !== "semctx");
+  return `hoklims-devkit ${command} ${root} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}`;
 }
 
 function nativeResult(result, name, report) {
@@ -794,11 +804,12 @@ export async function execute(options, rt = createRuntime()) {
   report.hosts = hosts;
   let state;
   const statePath = rt.statePath(root);
+  const recoveryCommandFor = (candidateState) => stateRecoveryCommand(options, root, candidateState, hosts);
   try {
     state = validateState(rt.readState(statePath));
     if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
   } catch (error) {
-    return stateBoundaryProblem(report, error, statePath, "initial read");
+    return stateBoundaryProblem(report, error, statePath, "initial read", { recoveryCommand: recoveryCommandFor(null) });
   }
   if (options.command === "doctor") {
     const names = new Set(["semctx", ...options.with, ...Object.keys(state?.components ?? {}), ...(state?.inProgress?.selected ?? [])]);
@@ -867,7 +878,10 @@ export async function execute(options, rt = createRuntime()) {
   try {
     releaseLock = rt.acquireLock(statePath);
   } catch (error) {
-    stateBoundaryProblem(report, error, statePath, "lock acquisition", { allowRunLocked: true });
+    stateBoundaryProblem(report, error, statePath, "lock acquisition", {
+      allowRunLocked: true,
+      recoveryCommand: recoveryCommandFor(state),
+    });
     report.ok = false;
     return report;
   }
@@ -876,7 +890,7 @@ export async function execute(options, rt = createRuntime()) {
     // Revalidate under the exclusive lock before applying or recording anything.
     const currentState = validateState(rt.readState(statePath));
     if (JSON.stringify(currentState) !== JSON.stringify(state)) {
-      return problem(report, "STATE_CHANGED", "Installation state changed during preflight. Re-run setup to recompute the plan.", 4);
+      return problem(report, "STATE_CHANGED", `Installation state changed during preflight. Re-run ${recoveryCommandFor(state)} to recompute the plan.`, 4);
     }
     let savedState = JSON.stringify(currentState);
     const saveStateIfChanged = () => {
@@ -927,7 +941,7 @@ export async function execute(options, rt = createRuntime()) {
         component.state = "partial";
         component.installed = "unknown";
         component.configured = "unknown";
-        problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. Re-run setup after resolving the error.`, 5);
+        problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error, re-run ${recoveryCommandFor(nextState)}.`, 5);
         break;
       }
     }
@@ -936,12 +950,12 @@ export async function execute(options, rt = createRuntime()) {
       saveStateIfChanged();
     }
   } catch (error) {
-    stateBoundaryProblem(report, error, statePath, "read or write");
+    stateBoundaryProblem(report, error, statePath, "read or write", { recoveryCommand: recoveryCommandFor(nextState) });
   } finally {
     try {
       releaseLock?.();
     } catch (error) {
-      stateBoundaryProblem(report, error, statePath, "lock release");
+      stateBoundaryProblem(report, error, statePath, "lock release", { recoveryCommand: recoveryCommandFor(nextState) });
     }
   }
   report.ok = report.conflicts.length === 0;

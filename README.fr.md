@@ -31,6 +31,8 @@ bunx hoklims-devkit@latest upgrade . --dry-run --json
 
 Lors de la première installation, `setup` choisit les dernières versions stables compatibles. Il vérifie **tous les composants sélectionnés avant de modifier le dépôt ou la configuration des hôtes**, puis mémorise le plan et chaque installation réussie dans un fichier d'état du profil utilisateur. Une relance conserve ces versions ; seul `upgrade` recherche de nouvelles versions. Si l'installation s'interrompt, relancez la même commande pour reprendre le plan initial. Si le canal stable a changé et empêche la reprise d'une mise à niveau, `upgrade --refresh-pending` recalcule explicitement le plan.
 
+Avant `setup` ou `upgrade`, arrêter les autres exécutions du Devkit et les outils qui modifient le même profil Codex ou Claude. Conserver ce profil à un emplacement local stable jusqu'à la fin de la commande. Si un conflit d'état est signalé, examiner le chemin indiqué puis relancer la commande exacte affichée dans le rapport. La [frontière de sécurité de l'état](docs/state-safety.md) précise les consignes d'exploitation et de contribution.
+
 Si un composant est enregistré pour Codex et Claude, utiliser `upgrade --host all` pour changer sa version sans attribuer la nouvelle version à un hôte non modifié.
 
 `doctor --json` distingue le paquet installé, la configuration, le chargement dans la session, l'approbation et l'usage observé. L'installation seule ne prouve ni le chargement ni l'approbation. Ouvrir une nouvelle tâche Codex ou recharger les plugins Claude lorsque le rapport le demande. Examiner le hook Latent Compass dans l'hôte avant de l'approuver.
