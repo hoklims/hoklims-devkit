@@ -425,9 +425,10 @@ test("runtime classifies a parent replaced during root-down inspection as a conf
         throw Object.assign(new Error("simulated managed parent I/O"), { code: "EIO" });
       }
       const result = nativeLstat.call(this, candidate, options);
-      if (mode === "race" && candidate === parent && !replaced) {
+      if (["race", "directory-race"].includes(mode) && candidate === parent && !replaced) {
         fs.rmdirSync(parent);
-        fs.writeFileSync(parent, foreign);
+        if (mode === "race") fs.writeFileSync(parent, foreign);
+        else fs.mkdirSync(parent);
         replaced = true;
       }
       return result;
@@ -437,7 +438,7 @@ test("runtime classifies a parent replaced during root-down inspection as a conf
     let value;
     let code = null;
     try { value = createRuntime().readState(statePath); } catch (error) { code = error?.code ?? null; }
-    const foreignBytes = replaced ? fs.readFileSync(parent, "utf8") : null;
+    const foreignBytes = mode === "race" && replaced ? fs.readFileSync(parent, "utf8") : null;
     fs.rmSync(root, { recursive: true, force: true });
     process.stdout.write(JSON.stringify({ mode, code, replaced, value: value ?? null, foreignBytes }));
   `;
@@ -448,6 +449,9 @@ test("runtime classifies a parent replaced during root-down inspection as a conf
   };
   expect(run("race")).toEqual({
     mode: "race", code: "STATE_CONFLICT", replaced: true, value: null, foreignBytes: "FOREIGN-PARENT\n",
+  });
+  expect(run("directory-race")).toEqual({
+    mode: "directory-race", code: "STATE_CONFLICT", replaced: true, value: null, foreignBytes: null,
   });
   expect(run("absent")).toEqual({ mode: "absent", code: null, replaced: false, value: null, foreignBytes: null });
   expect(run("eio")).toEqual({ mode: "eio", code: "EIO", replaced: false, value: null, foreignBytes: null });
@@ -564,7 +568,7 @@ test("runtime validates owned files before writing through a raced parent link",
     expect(error?.code).toBe("STATE_CONFLICT");
     expect(lstatSync(parent).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(outside, "marker.txt"), "utf8")).toBe("FOREIGN-MARKER\n");
-    expect(readFileSync(join(outside, ownedName))).toHaveLength(0);
+    expect(existsSync(join(outside, ownedName))).toBe(false);
 
     const controlRoot = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-${kind}-owned-control-`)));
     const controlState = join(controlRoot, "repository.json");
@@ -597,6 +601,41 @@ test("runtime preserves a lock replaced by a third-party link during release", (
   expect(release).toThrow(/ownership changed/u);
   expect(lstatSync(lockPath).isSymbolicLink()).toBe(true);
   expect(existsSync(outsideTarget)).toBe(false);
+});
+
+test("runtime revalidates lock ownership when descriptor reads fail", () => {
+  if (process.platform === "win32") return;
+  for (const replace of [false, true]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-lock-read-error-${replace}-`)));
+    const statePath = join(root, "repository.json");
+    const lockPath = `${statePath}.lock`;
+    const originalPath = `${lockPath}.original`;
+    const readError = Object.assign(new Error("simulated lock read EIO"), { code: "EIO" });
+    let readExecuted = false;
+    const rt = createRuntime({
+      readDescriptorData: () => {
+        readExecuted = true;
+        if (replace) {
+          renameSync(lockPath, originalPath);
+          writeFileSync(lockPath, "FOREIGN-LOCK\n");
+        }
+        throw readError;
+      },
+    });
+    const release = rt.acquireLock(statePath);
+    let error;
+    try { release(); } catch (caught) { error = caught; }
+    expect(readExecuted).toBe(true);
+    if (replace) {
+      expect(error?.code).toBe("STATE_CONFLICT");
+      expect(readFileSync(lockPath, "utf8")).toBe("FOREIGN-LOCK\n");
+      expect(existsSync(originalPath)).toBe(true);
+    } else {
+      expect(error).toBe(readError);
+      expect(error?.code).toBe("EIO");
+      expect(existsSync(lockPath)).toBe(true);
+    }
+  }
 });
 
 test("runtime removes an owned partial temporary state file after a write failure", () => {
