@@ -81,6 +81,35 @@ describe("validComponentReport", () => {
     expect(validComponentReport(report(exact), "", expectedNames, configuredOptions)).toBe(false);
   });
 
+  test("checks all five flags independently for planned, configured, and doctor reports", () => {
+    const modes = [
+      {
+        name: "planned",
+        exact: components("planned").map((component) => ({
+          ...component,
+          ...plannedFlags,
+        })),
+        options: { expectedState: "planned", expectedFlags: plannedFlags },
+      },
+      { name: "configured", exact: components(), options: configuredOptions },
+      {
+        name: "doctor",
+        exact: components().map(({ state: _state, ...component }) => component),
+        options: { expectedState: null, expectedFlags: configuredFlags },
+      },
+    ];
+    for (const mode of modes) {
+      expect(validComponentReport(report(mode.exact), projectRoot, expectedNames, mode.options), mode.name)
+        .toBe(true);
+      for (const flag of ["installed", "configured", "loaded", "approved", "observed"]) {
+        const changed = mode.exact[0][flag] === "unknown" ? "yes" : "no";
+        const mutant = [{ ...mode.exact[0], [flag]: changed }, ...mode.exact.slice(1)];
+        expect(validComponentReport(report(mutant), projectRoot, expectedNames, mode.options), `${mode.name}:${flag}`)
+          .toBe(false);
+      }
+    }
+  });
+
   test("rejects malformed reports, expectations, and options", () => {
     const exact = components();
     const malformed = [

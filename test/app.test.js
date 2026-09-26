@@ -160,6 +160,38 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
 
 const setupOptions = () => parseArgs(["setup", "/repo", "--host", "codex"]);
 
+function decodePowerShellOutput(bytes) {
+  const buffer = Buffer.from(bytes);
+  if (buffer[0] === 0xff && buffer[1] === 0xfe) return new TextDecoder("utf-16le").decode(buffer.subarray(2));
+  if (buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return new TextDecoder().decode(buffer.subarray(3));
+  }
+  return new TextDecoder().decode(buffer);
+}
+
+function parseWithPowerShell(engine, source) {
+  const payload = Buffer.from(source, "utf8").toString("base64");
+  const script = `
+    $source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))
+    $tokens = $null
+    $parseErrors = $null
+    $tree = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$parseErrors)
+    $strings = @($tree.FindAll({ param($item) $item -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value })
+    $commands = @($tree.FindAll({ param($item) $item -is [System.Management.Automation.Language.CommandAst] }, $true))
+    @{ errors = @($parseErrors | ForEach-Object { $_.ErrorId }); values = $strings; commands = $commands.Count; statements = $tree.EndBlock.Statements.Count } | ConvertTo-Json -Compress
+  `;
+  const result = Bun.spawnSync({
+    cmd: [engine, "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = decodePowerShellOutput(result.stdout).trim();
+  const json = stdout.split(/\r?\n/u).findLast((line) => line.trimStart().startsWith("{"));
+  expect(result.exitCode, decodePowerShellOutput(result.stderr)).toBe(0);
+  expect(json, stdout).toBeDefined();
+  return JSON.parse(json);
+}
+
 describe("public CLI", () => {
   test("parses the default profile and rejects unrecognized components", () => {
     expect(setupOptions().with).toEqual([]);
@@ -184,7 +216,9 @@ describe("public CLI", () => {
     expect(failedRuntime.nextActions.join("\n")).toContain("hoklims-devkit setup /repo --host codex");
     expect(failedRuntime.conflicts.map((item) => item.detail).join("\n")).toContain("Install Bun >=1.4");
 
-    const root = process.platform === "win32" ? "C:\\repo with 'quote" : "/tmp/repo with 'quote";
+    const root = process.platform === "win32"
+      ? "C:\\repo  Val's ‘left’ ‚low‛ $() ` tick; Write-Output INJECTED"
+      : "/tmp/repo with 'quote";
     const registry = fakeRuntime({ tools: ["node", "npm"] });
     registry.resolve = () => root;
     registry.realpath = (path) => path;
@@ -200,6 +234,15 @@ describe("public CLI", () => {
     expect(failedRegistry.nextActions.join("\n")).toContain(registryRetry);
     expect(failedRegistry.conflicts.map((item) => item.detail).join("\n")).toContain(registryRetry);
     expect(registry.writes).toHaveLength(0);
+    if (process.platform === "win32") {
+      for (const engine of ["powershell.exe", "pwsh.exe"].filter((candidate) => Bun.which(candidate))) {
+        const parsedRetry = parseWithPowerShell(engine, registryRetry);
+        expect(parsedRetry.errors).toEqual([]);
+        expect(parsedRetry.values).toContain(root);
+        expect(parsedRetry.commands).toBe(1);
+        expect(parsedRetry.statements).toBe(1);
+      }
+    }
 
     const preflight = fakeRuntime({ semctxStatusCode: 5 });
     const failedPreflight = await execute(setupOptions(), preflight);
@@ -3885,6 +3928,28 @@ describe("public CLI", () => {
     expect(result.stderr.toString()).toBe("");
   });
 
+  test("PowerShell recovery quoting preserves every single-quote delimiter as inert data", () => {
+    const root = "C:\\repo  Val's ‘left’ ‚low‛ $() ` tick; Write-Output INJECTED";
+    const quoted = quoteShellToken(root);
+    if (process.platform !== "win32") {
+      expect(quoted).toBe(`'C:\\repo  Val'"'"'s ‘left’ ‚low‛ $() \` tick; Write-Output INJECTED'`);
+      return;
+    }
+
+    expect(quoted).toBe("'C:\\repo  Val''s ‘‘left’’ ‚‚low‛‛ $() ` tick; Write-Output INJECTED'");
+    const command = `hoklims-devkit upgrade ${quoted} --host all --with assertledger,latent-compass --refresh-pending`;
+    const engines = ["powershell.exe", "pwsh.exe"].filter((engine) => Bun.which(engine));
+    expect(engines.length).toBeGreaterThan(0);
+    for (const engine of engines) {
+      expect(parseWithPowerShell(engine, quoted)).toEqual({ errors: [], values: [root], commands: 0, statements: 1 });
+      const parsedCommand = parseWithPowerShell(engine, command);
+      expect(parsedCommand.errors).toEqual([]);
+      expect(parsedCommand.values).toContain(root);
+      expect(parsedCommand.commands).toBe(1);
+      expect(parsedCommand.statements).toBe(1);
+    }
+  });
+
   test("typed state path conflicts stay STATE_CONFLICT at every locked boundary", async () => {
     const conflict = (message) => Object.assign(new Error(message), { code: "STATE_CONFLICT" });
 
@@ -4111,6 +4176,395 @@ describe("public CLI", () => {
         expect(recovery.toLowerCase()).toContain(`run ${command}`.toLowerCase());
         expect(recovery).not.toContain("Restore Node");
       }
+    }
+  });
+
+  test("global preflight blocks writes for last-component and second-host conflicts", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const scenarios = [
+      { name: "last compass", with: "assertledger,latent-compass", tools: ["node", "npm", "uv"], extra: { [executable]: "shim" }, mutate: "compass-codex", code: "COMPASS_HOOK_CONFLICT" },
+      { name: "assert second host", with: "assertledger", tools: ["node", "npm", "claude"], mutate: "assert-claude", code: "ASSERTLEDGER_CONFLICT" },
+      { name: "compass second host", with: "latent-compass", tools: ["uv", "claude"], extra: { [executable]: "shim" }, mutate: "compass-claude", code: "COMPASS_HOOK_CONFLICT" },
+    ];
+    for (const scenario of scenarios) {
+      const rt = fakeRuntime({ tools: scenario.tools, files: { ...files, ...(scenario.extra ?? {}) } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (scenario.mutate === "assert-claude" && argv[0] === "node" && argv.includes("setup") && argv.includes("claude-code")) {
+          return { code: 4, stdout: JSON.stringify(assertSetupReport(argv, "CONFLICT", "dry-run")), stderr: "" };
+        }
+        if (scenario.mutate.startsWith("compass-") && argv[0] === executable && argv.includes("host") && argv.includes("--dry-run")) {
+          const host = argv[argv.indexOf("--host") + 1];
+          const fail = host === scenario.mutate.slice("compass-".length);
+          const body = compassInstallReport(argv);
+          return { code: fail ? 4 : 0, stdout: JSON.stringify(fail ? { ...body, conflicts: ["foreign"] } : body), stderr: "" };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", scenario.name.includes("second") ? "all" : "codex", "--with", scenario.with]), rt);
+      expect(report.conflicts.map((item) => item.code), scenario.name).toContain(scenario.code);
+      expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run")), scenario.name).toBe(false);
+      expect(rt.writes, scenario.name).toHaveLength(0);
+    }
+  });
+
+  test("Semctx rejects independently missing second-host delivery evidence", async () => {
+    for (const leg of ["status", "install"]) {
+      const rt = fakeRuntime({ tools: ["claude"] });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if ((leg === "status" && argv.includes("plugin-status"))
+          || (leg === "install" && argv.includes("install") && argv.includes("--dry-run"))) {
+          const body = JSON.parse(result.stdout);
+          delete body.hosts.claude;
+          return { ...result, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "all"]), rt);
+      expect(report.ok, leg).toBe(false);
+      expect(rt.writes, leg).toHaveLength(0);
+      expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run")), leg).toBe(false);
+    }
+  });
+
+  test("setup pins unmanaged and declared versions without registry refresh", async () => {
+    const semctx = fakeRuntime({ version: "0.3.5", installedSemctxVersion: "0.3.4" });
+    const semctxReport = await execute(setupOptions(), semctx);
+    expect(semctxReport.ok).toBe(false);
+    expect(semctxReport.conflicts.map((item) => item.code)).toContain("EXISTING_VERSION");
+    expect(semctx.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+
+    const assertledger = fakeRuntime({ tools: ["node", "npm"], files: {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+    } });
+    const fetch = assertledger.fetchJson;
+    assertledger.fetchJson = async (url) => url.includes("assertledger") ? Promise.reject(new Error("registry queried")) : fetch(url);
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger", "--dry-run"]), assertledger);
+    expect(report.ok).toBe(true);
+    expect(report.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
+  });
+
+  test("native report guards reject one invalid field at a time", async () => {
+    for (const field of ["operation", "version", "host", "conflicts", "exit"]) {
+      const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+      const rt = fakeRuntime({ tools: ["uv"], files: { [executable]: "shim" } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === executable && argv.includes("host") && argv.includes("--dry-run")) {
+          const body = compassInstallReport(argv);
+          if (field === "operation") body.operation = "status";
+          if (field === "version") body.version = "9.9.9";
+          if (field === "host") body.hosts = ["claude"];
+          if (field === "conflicts") body.conflicts = ["foreign"];
+          return { code: field === "exit" ? 4 : 0, stdout: JSON.stringify(body), stderr: "" };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "latent-compass"]), rt);
+      expect(report.ok, field).toBe(false);
+      expect(rt.writes, field).toHaveLength(0);
+    }
+  });
+
+  test("Semctx report guards reject independent root exit and host outcome defects", async () => {
+    for (const field of ["setup-root", "setup-exit", "host-status"]) {
+      const rt = fakeRuntime();
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv.includes("setup") && argv.includes("--dry-run")) {
+          if (field === "setup-root") return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), repositoryRoot: "/other" }) };
+          if (field === "setup-exit") return { ...result, code: 4 };
+        }
+        if (field === "host-status" && argv.includes("install") && argv.includes("--dry-run")) {
+          const body = JSON.parse(result.stdout);
+          body.hosts.codex.status = "failed";
+          return { ...result, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      const report = await execute(setupOptions(), rt);
+      expect(report.ok, field).toBe(false);
+      expect(rt.writes, field).toHaveLength(0);
+      expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run")), field).toBe(false);
+    }
+  });
+
+  test("AssertLedger report guards reject independent client state and exit mismatches", async () => {
+    for (const field of ["client", "state", "exit"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files: {
+        [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === "npm" && argv.includes("exec")) {
+          const report = assertSetupReport(argv, "WOULD_CREATE", "dry-run");
+          if (field === "client") report.client = "claude-code";
+          if (field === "state") report.artifacts[0].state = "CREATED";
+          return { code: field === "exit" ? 4 : 0, stdout: JSON.stringify(report), stderr: "" };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      expect(report.ok, field).toBe(false);
+      expect(report.conflicts.map((item) => item.code), field).toContain("ASSERTLEDGER_CONFLICT");
+      expect(rt.writes, field).toHaveLength(0);
+    }
+  });
+
+  test("Compass doctor keeps installed configured and observed states independent", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" } });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => argv[0] === executable && argv.includes("status")
+      ? { code: 0, stdout: JSON.stringify({
+        schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo",
+        hosts: [{ host: "codex", status: "OBSERVING" }],
+        states: { codex: { installed: true, configured: false, observed: true } },
+      }), stderr: "" }
+      : nativeExec(argv, cwd, timeout);
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    const compass = report.components.find((item) => item.name === "latent-compass");
+    expect(compass.installed).toBe("yes");
+    expect(compass.configured).not.toBe("yes");
+    expect(compass.observed).toBe("unknown");
+    expect(report.ok).toBe(false);
+  });
+
+  test("setup preserves recorded pending and uv-installed versions without registry refresh", async () => {
+    const recordedState = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+    };
+    const recorded = fakeRuntime({ state: recordedState, version: "0.3.5", stable: "0.3.5" });
+    const recordedFetch = recorded.fetchJson;
+    recorded.fetchJson = async (url) => url.includes("registry.npmjs.org/semctx")
+      ? Promise.reject(new Error("recorded Semctx queried the registry")) : recordedFetch(url);
+    const recordedReport = await execute({ ...setupOptions(), dryRun: true }, recorded);
+    expect(recordedReport.ok).toBe(true);
+    expect(recordedReport.components[0].version).toBe("0.3.4");
+    expect(recorded.writes).toHaveLength(0);
+
+    const pendingState = {
+      ...structuredClone(recordedState),
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    };
+    const pending = fakeRuntime({ state: pendingState, version: "0.3.6", stable: "0.3.6", installedSemctxVersion: "0.3.5" });
+    const pendingFetch = pending.fetchJson;
+    pending.fetchJson = async (url) => url.includes("registry.npmjs.org/semctx")
+      ? Promise.reject(new Error("pending Semctx queried the registry")) : pendingFetch(url);
+    const pendingReport = await execute({ ...parseArgs(["upgrade", "/repo", "--host", "codex"]), dryRun: true }, pending);
+    expect(pendingReport.ok).toBe(true);
+    expect(pendingReport.components[0].version).toBe("0.3.5");
+    expect(pending.writes).toHaveLength(0);
+
+    const compass = fakeRuntime({ tools: ["uv"], uvInstalled: true });
+    const compassFetch = compass.fetchJson;
+    compass.fetchJson = async (url) => url.includes("pypi.org")
+      ? Promise.reject(new Error("uv-installed Compass queried PyPI")) : compassFetch(url);
+    const compassReport = await execute(parseArgs([
+      "setup", "/repo", "--host", "codex", "--with", "latent-compass", "--dry-run",
+    ]), compass);
+    expect(compassReport.ok).toBe(true);
+    expect(compassReport.components.find((item) => item.name === "latent-compass").version).toBe("0.3.0");
+    expect(compass.writes).toHaveLength(0);
+
+    const drift = fakeRuntime({ state: recordedState, installedSemctxVersion: "0.3.5" });
+    const driftReport = await execute(setupOptions(), drift);
+    expect(driftReport.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
+    expect(drift.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(drift.writes).toHaveLength(0);
+  });
+
+  test("Compass apply and status reports keep configuration and identity independent", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+    } };
+
+    const invalidPreview = fakeRuntime({ state: structuredClone(state), tools: ["uv"], files: { [executable]: "shim" } });
+    const nativePreview = invalidPreview.exec;
+    invalidPreview.exec = async (argv, cwd, timeout) => {
+      if (argv[0] === executable && argv.includes("install") && argv.includes("--dry-run")) {
+        const body = compassInstallReport(argv);
+        body.schema_version = 2;
+        return { code: 0, stdout: JSON.stringify(body), stderr: "" };
+      }
+      return nativePreview(argv, cwd, timeout);
+    };
+    const invalidPreviewReport = await execute({ ...setupOptions(), with: ["latent-compass"] }, invalidPreview);
+    expect(invalidPreviewReport.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+    expect(invalidPreview.writes).toHaveLength(0);
+
+    const unconfigured = fakeRuntime({ state: structuredClone(state), tools: ["uv"], files: { [executable]: "shim" } });
+    const nativeUnconfigured = unconfigured.exec;
+    unconfigured.exec = async (argv, cwd, timeout) => argv[0] === executable && argv.includes("install")
+      ? { code: 0, stdout: JSON.stringify(compassInstallReport(argv, {
+        installed: !argv.includes("--dry-run"), configured: argv.includes("--dry-run"),
+      })), stderr: "" }
+      : nativeUnconfigured(argv, cwd, timeout);
+    const unconfiguredReport = await execute({ ...setupOptions(), with: ["latent-compass"] }, unconfigured);
+    expect(unconfiguredReport.ok).toBe(false);
+    expect(unconfiguredReport.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(unconfiguredReport.components.find((item) => item.name === "latent-compass"))
+      .toMatchObject({ state: "partial", configured: "unknown", observed: "unknown" });
+    expect(unconfigured.writes).toHaveLength(0);
+
+    for (const field of ["schema", "operation", "version", "host", "exit"]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["uv"], files: { [executable]: "shim" } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === executable && argv.includes("install")) {
+          return { code: 0, stdout: JSON.stringify(compassInstallReport(argv, { installed: true, configured: true })), stderr: "" };
+        }
+        if (argv[0] === executable && argv.includes("status")) {
+          const result = await nativeExec(argv, cwd, timeout);
+          const body = JSON.parse(result.stdout);
+          if (field === "schema") body.schema_version = 2;
+          if (field === "operation") body.operation = "install";
+          if (field === "version") body.version = "9.9.9";
+          if (field === "host") body.hosts[0].host = "claude";
+          return { ...result, code: field === "exit" ? 4 : 0, stdout: JSON.stringify(body) };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+      expect(report.ok, field).toBe(false);
+      expect(report.conflicts.map((item) => item.code), field).toContain("APPLY_FAILED");
+      expect(report.components.find((item) => item.name === "latent-compass").configured, field).toBe("unknown");
+      expect(rt.writes, field).toHaveLength(0);
+    }
+  });
+
+  test("Semctx native identity readiness and post-install attestation fail independently", async () => {
+    const preflightCases = [
+      ["status-schema", (argv, result, body) => { if (argv.includes("plugin-status")) body.schemaVersion = 1; }],
+      ["status-kind", (argv, result, body) => { if (argv.includes("plugin-status")) body.kind = "other"; }],
+      ["setup-schema", (argv, result, body) => { if (argv.includes("setup") && argv.includes("--dry-run")) body.schemaVersion = 2; }],
+      ["setup-kind", (argv, result, body) => { if (argv.includes("setup") && argv.includes("--dry-run")) body.kind = "setup"; }],
+      ["host-requested", (argv, result, body) => {
+        if (argv.includes("install") && argv.includes("--dry-run")) body.hosts.codex.requested = false;
+      }],
+      ["host-detected", (argv, result, body) => {
+        if (argv.includes("install") && argv.includes("--dry-run")) body.hosts.codex.detected = false;
+      }],
+    ];
+    for (const [name, mutate] of preflightCases) {
+      const rt = fakeRuntime();
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        const relevant = argv.includes("plugin-status")
+          || ((argv.includes("setup") || argv.includes("install")) && argv.includes("--dry-run"));
+        if (!relevant || !result.stdout) return result;
+        const body = JSON.parse(result.stdout);
+        mutate(argv, result, body);
+        return { ...result, stdout: JSON.stringify(body) };
+      };
+      const report = await execute(setupOptions(), rt);
+      expect(report.ok, name).toBe(false);
+      expect(rt.writes, name).toHaveLength(0);
+      expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run")), name).toBe(false);
+    }
+
+    for (const field of ["schema", "kind", "root"]) {
+      const rt = fakeRuntime();
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv.includes("setup") && !argv.includes("--dry-run")) {
+          const body = JSON.parse(result.stdout);
+          if (field === "schema") body.schemaVersion = 2;
+          if (field === "kind") body.kind = "setup_plan";
+          if (field === "root") body.repositoryRoot = "/other";
+          return { ...result, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      const report = await execute(setupOptions(), rt);
+      expect(report.conflicts.map((item) => item.code), field).toContain("APPLY_FAILED");
+      expect(report.components[0].configured, field).toBe("unknown");
+      expect(rt.writes.at(-1).inProgress, field).toBeDefined();
+    }
+
+    for (const field of ["doctor-version", "index-kind", "index-partial"]) {
+      const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+      const rt = fakeRuntime({ state, workspaceReady: true });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (field === "doctor-version" && argv.includes("doctor")) {
+          return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), version: "9.9.9" }) };
+        }
+        if ((field === "index-kind" || field === "index-partial") && argv.includes("index-health")) {
+          const body = JSON.parse(result.stdout);
+          if (field === "index-kind") body.kind = "other";
+          else {
+            body.binding.status = "absent";
+            body.freshness.canRunHighRiskControl = false;
+            body.coverage.status = "partial";
+          }
+          return { ...result, code: field === "index-partial" ? 2 : result.code, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      expect(report.ok, field).toBe(false);
+      expect(report.components[0].configured, field).toBe(field === "index-partial" ? "no" : "unknown");
+      expect(rt.writes, field).toHaveLength(0);
+    }
+
+    for (const field of ["snapshot", "version"]) {
+      const rt = fakeRuntime();
+      const nativeExec = rt.exec;
+      let statusCalls = 0;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv.includes("plugin-status") && ++statusCalls === 2) {
+          const body = JSON.parse(result.stdout);
+          if (field === "snapshot") body.hosts.codex.installed.contentMatchesSnapshot = null;
+          if (field === "version") body.hosts.codex.installed.version = "9.9.9";
+          return { ...result, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      const report = await execute(setupOptions(), rt);
+      expect(report.conflicts.map((item) => item.code), field).toContain("APPLY_FAILED");
+      expect(report.components[0].configured, field).toBe("unknown");
+      expect(rt.writes.at(-1).inProgress, field).toBeDefined();
+    }
+  });
+
+  test("AssertLedger connection mode owner and count guards fail independently", async () => {
+    for (const field of ["connection-client", "mode", "owner", "count"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files: {
+        [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === "npm" && argv.includes("exec")) {
+          const report = assertSetupReport(argv, "WOULD_CREATE", "dry-run");
+          if (field === "connection-client") report.connection.client = "claude-code";
+          if (field === "mode") report.mode = "write";
+          if (field === "owner") report.artifacts[0].owner = "connection";
+          if (field === "count") report.artifacts.pop();
+          return { code: 0, stdout: JSON.stringify(report), stderr: "" };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      expect(report.conflicts.map((item) => item.code), field).toContain("ASSERTLEDGER_CONFLICT");
+      expect(rt.writes, field).toHaveLength(0);
     }
   });
 });

@@ -36,3 +36,39 @@ test("same-version upgrade accepts stable bytes and version-changing upgrade per
   expect(() => assertNoopUpgradeUnchanged(paths, before, report("0.3.5"), report("0.3.6"), report("0.3.5"), "mismatch"))
     .toThrow(/modified the host profile|differ from the upgrade plan/u);
 });
+
+test("upgrade identity rejects version and component selection mismatches with stable snapshots", () => {
+  const root = mkdtempSync(join(tmpdir(), "hoklims-devkit-upgrade-identity-"));
+  const managed = join(root, "managed.json");
+  writeFileSync(managed, "stable\n");
+  const paths = [managed];
+  const before = paths.map(snapshot);
+  const installed = report("0.3.5");
+  const versionPlan = report("0.3.6");
+  const versionApplied = report("0.3.7");
+  expect(() => assertNoopUpgradeUnchanged(
+    paths, before, installed, versionPlan, versionApplied, "version mismatch",
+  )).toThrow(/versions differ from the upgrade plan/u);
+
+  const rename = (source, index, name) => ({
+    components: source.components.map((component, itemIndex) => (
+      itemIndex === index ? { ...component, name } : { ...component }
+    )),
+  });
+  const reordered = { components: [...installed.components].reverse() };
+  const missing = { components: installed.components.slice(0, -1) };
+  const extra = { components: [...installed.components, { name: "latent-compass", version: "0.3.0" }] };
+  const cases = [
+    [rename(installed, 0, "semctx-renamed"), installed],
+    [installed, rename(installed, 1, "assertledger-renamed")],
+    [reordered, reordered],
+    [missing, missing],
+    [extra, extra],
+  ];
+  for (const [plan, applied] of cases) {
+    expect(() => assertNoopUpgradeUnchanged(
+      paths, before, installed, plan, applied, "selection mismatch",
+    )).toThrow(/component selection differs/u);
+  }
+  expect(paths.map(snapshot)).toEqual(before);
+});

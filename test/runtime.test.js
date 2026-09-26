@@ -420,6 +420,8 @@ test("runtime classifies a parent replaced during root-down inspection as a conf
     fs.mkdirSync(parent);
     const nativeLstat = fs.lstatSync;
     let replaced = false;
+    let parentReads = 0;
+    let longLivedCheck = false;
     fs.lstatSync = function(candidate, options) {
       if (mode === "eio" && candidate === managed) {
         throw Object.assign(new Error("simulated managed parent I/O"), { code: "EIO" });
@@ -430,6 +432,35 @@ test("runtime classifies a parent replaced during root-down inspection as a conf
         replaced = true;
       }
       const result = nativeLstat.call(this, candidate, options);
+      if (mode === "long-lived-ancestor-reuse" && candidate.endsWith(".candidate.tmp")) longLivedCheck = true;
+      if (candidate === parent) {
+        parentReads++;
+        if (mode === "sibling-churn" && parentReads === 1) {
+          fs.writeFileSync(path.join(parent, ".unrelated"), "x");
+        }
+        if (mode === "identity-reuse" && parentReads > 1) {
+          return new Proxy(result, { get(target, property) {
+            if (property === "birthtimeNs") return target.birthtimeNs + 1n;
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          } });
+        }
+        if (mode === "identity-reuse-without-birthtime") {
+          return new Proxy(result, { get(target, property) {
+            if (property === "birthtimeNs") return 0n;
+            if (property === "ctimeNs" && parentReads > 1) return target.ctimeNs + 1n;
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          } });
+        }
+        if (mode === "long-lived-ancestor-reuse" && longLivedCheck) {
+          return new Proxy(result, { get(target, property) {
+            if (property === "birthtimeNs") return target.birthtimeNs + 1n;
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          } });
+        }
+      }
       if (mode === "race" && candidate === parent && !replaced) {
         fs.rmdirSync(parent);
         fs.writeFileSync(parent, foreign);
@@ -441,7 +472,12 @@ test("runtime classifies a parent replaced during root-down inspection as a conf
     const { createRuntime } = await import(${JSON.stringify(runtimeUrl)});
     let value;
     let code = null;
-    try { value = createRuntime().readState(statePath); } catch (error) { code = error?.code ?? null; }
+    try {
+      const runtime = createRuntime({ randomId: () => "candidate" });
+      if (mode === "long-lived-ancestor-reuse") {
+        runtime.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} });
+      } else value = runtime.readState(statePath);
+    } catch (error) { code = error?.code ?? null; }
     const foreignBytes = mode === "race" && replaced ? fs.readFileSync(parent, "utf8") : null;
     fs.rmSync(root, { recursive: true, force: true });
     process.stdout.write(JSON.stringify({ mode, code, replaced, value: value ?? null, foreignBytes }));
@@ -456,6 +492,18 @@ test("runtime classifies a parent replaced during root-down inspection as a conf
   });
   expect(run("directory-race")).toEqual({
     mode: "directory-race", code: "STATE_CONFLICT", replaced: true, value: null, foreignBytes: null,
+  });
+  expect(run("identity-reuse")).toEqual({
+    mode: "identity-reuse", code: "STATE_CONFLICT", replaced: false, value: null, foreignBytes: null,
+  });
+  expect(run("identity-reuse-without-birthtime")).toEqual({
+    mode: "identity-reuse-without-birthtime", code: "STATE_CONFLICT", replaced: false, value: null, foreignBytes: null,
+  });
+  expect(run("long-lived-ancestor-reuse")).toEqual({
+    mode: "long-lived-ancestor-reuse", code: "STATE_CONFLICT", replaced: false, value: null, foreignBytes: null,
+  });
+  expect(run("sibling-churn")).toEqual({
+    mode: "sibling-churn", code: null, replaced: false, value: null, foreignBytes: null,
   });
   expect(run("absent")).toEqual({ mode: "absent", code: null, replaced: false, value: null, foreignBytes: null });
   expect(run("eio")).toEqual({ mode: "eio", code: "EIO", replaced: false, value: null, foreignBytes: null });
@@ -674,6 +722,47 @@ test("runtime revalidates lock ownership when descriptor reads fail", () => {
     expect(readFileSync(lockPath, "utf8")).toBe("FOREIGN-BEFORE-READ\n");
     expect(existsSync(originalPath)).toBe(true);
   }
+});
+
+test("runtime preserves an observed conflict when owned-file cleanup also fails", () => {
+  const state = { schemaVersion: 1, projectRoot: "/repo", components: {} };
+  for (const api of ["transaction", "writeState", "acquireLock"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-cleanup-precedence-${api}-`)));
+    const statePath = join(root, "repository.json");
+    const cleanupError = Object.assign(new Error(`cleanup ${api} EBUSY`), { code: "EBUSY" });
+    const primaryConflict = Object.assign(new Error(`primary ${api} conflict`), { code: "STATE_CONFLICT" });
+    const rt = createRuntime({
+      randomId: () => "candidate",
+      writeStateData: (descriptor, data) => {
+        writeFileSync(descriptor, data);
+        writeFileSync(statePath, "FOREIGN-STATE\n");
+      },
+      writeLockData: () => { throw primaryConflict; },
+      removeOwnedFile: () => { throw cleanupError; },
+    });
+    let error;
+    try {
+      if (api === "transaction") rt.openStateTransaction(statePath).write(state);
+      else if (api === "writeState") rt.writeState(statePath, state);
+      else rt.acquireLock(statePath);
+    } catch (caught) { error = caught; }
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(error?.suppressedErrors).toContain(cleanupError);
+    if (api !== "acquireLock") expect(readFileSync(statePath, "utf8")).toBe("FOREIGN-STATE\n");
+  }
+
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-cleanup-io-control-")));
+  const statePath = join(root, "repository.json");
+  const primaryIo = Object.assign(new Error("primary write EIO"), { code: "EIO" });
+  const cleanupIo = Object.assign(new Error("cleanup EBUSY"), { code: "EBUSY" });
+  const rt = createRuntime({
+    writeStateData: () => { throw primaryIo; },
+    removeOwnedFile: () => { throw cleanupIo; },
+  });
+  let error;
+  try { rt.writeState(statePath, state); } catch (caught) { error = caught; }
+  expect(error).toBe(primaryIo);
+  expect(error?.suppressedErrors).toContain(cleanupIo);
 });
 
 test("runtime removes an owned partial temporary state file after a write failure", () => {

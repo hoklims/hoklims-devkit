@@ -36,8 +36,18 @@ function ownedFileConflict(path, detail) {
 }
 
 function preferredBoundaryError(primary, secondary) {
-  if (primary?.code === "STATE_CONFLICT" || secondary?.code !== "STATE_CONFLICT") return primary;
-  return secondary;
+  const preferred = primary?.code === "STATE_CONFLICT" || secondary?.code !== "STATE_CONFLICT" ? primary : secondary;
+  const suppressed = preferred === primary ? secondary : primary;
+  if (preferred && suppressed && preferred !== suppressed && typeof preferred === "object") {
+    const previous = Array.isArray(preferred.suppressedErrors) ? preferred.suppressedErrors : [];
+    try {
+      Object.defineProperty(preferred, "suppressedErrors", {
+        configurable: true,
+        value: [...previous, suppressed],
+      });
+    } catch { /* Preserve the preferred boundary error even when it is not extensible. */ }
+  }
+  return preferred;
 }
 
 function rethrowAfterValidation(error, validate) {
@@ -53,22 +63,23 @@ function unsafeProjectPath(path, detail) {
   return Object.assign(new Error(`Unsafe project package path: ${path} ${detail}. Replace it with a regular local file, then rerun.`), { code: "STATE_CONFLICT" });
 }
 
-function assertManagedParentSnapshot(parents, compareMetadata = false) {
-  const metadataParent = compareMetadata ? [...parents].reverse().find((parent) => parent.identity !== null) : null;
+function assertManagedParentSnapshot(parents) {
   for (const parent of parents) {
     const current = inspectManagedEntry(parent.path, { bigint: true });
+    const currentBirthtime = current?.birthtimeNs > 0n ? current.birthtimeNs : null;
     if (parent.identity === null ? current !== null
       : !current || current.isSymbolicLink() || !current.isDirectory()
         || current.dev !== parent.identity.dev || current.ino !== parent.identity.ino
-        || (parent === metadataParent && current.ctimeNs !== parent.identity.ctimeNs)) {
+        || currentBirthtime !== parent.identity.birthtimeNs
+        || (currentBirthtime === null && current.ctimeNs !== parent.identity.ctimeNs)) {
       throw unsafeManagedPath(parent.path, "changed during managed parent inspection");
     }
   }
 }
 
-function assertSafeManagedParents(path, expectedParents = null, compareMetadata = false) {
+function assertSafeManagedParents(path, expectedParents = null) {
   if (expectedParents) {
-    assertManagedParentSnapshot(expectedParents, compareMetadata);
+    assertManagedParentSnapshot(expectedParents);
     return expectedParents;
   }
   const parents = [];
@@ -85,25 +96,32 @@ function assertSafeManagedParents(path, expectedParents = null, compareMetadata 
     try {
       stat = inspectManagedEntry(candidate, { bigint: true });
     } catch (error) {
-      rethrowAfterValidation(error, () => assertManagedParentSnapshot(observed, true));
+      rethrowAfterValidation(error, () => assertManagedParentSnapshot(observed));
     }
     if (stat?.isSymbolicLink()) throw unsafeManagedPath(candidate, "is a symbolic link");
     if (stat && !stat.isDirectory()) throw unsafeManagedPath(candidate, "is not a directory");
-    observed.push({ path: candidate, identity: stat ? { dev: stat.dev, ino: stat.ino, ctimeNs: stat.ctimeNs } : null });
-    assertManagedParentSnapshot(observed, true);
+    observed.push({ path: candidate, identity: stat ? {
+      // birthtime does not change when unrelated children churn. Filesystems that do not expose it
+      // fall back to ctime so a recycled parent inode is never accepted as the original directory.
+      dev: stat.dev,
+      ino: stat.ino,
+      birthtimeNs: stat.birthtimeNs > 0n ? stat.birthtimeNs : null,
+      ctimeNs: stat.birthtimeNs > 0n ? null : stat.ctimeNs,
+    } : null });
+    assertManagedParentSnapshot(observed);
   }
   return observed;
 }
 
-function inspectManagedFile(path, options, expectedParents = null, compareParentMetadata = expectedParents === null) {
-  const parents = assertSafeManagedParents(path, expectedParents, compareParentMetadata);
+function inspectManagedFile(path, options, expectedParents = null) {
+  const parents = assertSafeManagedParents(path, expectedParents);
   let stat;
   try {
     stat = inspectManagedEntry(path, options);
   } catch (error) {
-    rethrowAfterValidation(error, () => assertSafeManagedParents(path, parents, compareParentMetadata));
+    rethrowAfterValidation(error, () => assertSafeManagedParents(path, parents));
   }
-  assertSafeManagedParents(path, parents, compareParentMetadata);
+  assertSafeManagedParents(path, parents);
   if (stat?.isSymbolicLink()) throw unsafeManagedPath(path, "is a symbolic link");
   if (stat && !stat.isFile()) throw unsafeManagedPath(path, "is not a regular file");
   return stat;
@@ -139,8 +157,8 @@ function openVerifiedReadDescriptor(path) {
   return openSync(path, flags);
 }
 
-function assertInspectedIdentity(path, inspectFile, conflict, identity, detail, parents = null, compareParentMetadata = false) {
-  const current = inspectFile(path, { bigint: true }, parents, compareParentMetadata);
+function assertInspectedIdentity(path, inspectFile, conflict, identity, detail, parents = null) {
+  const current = inspectFile(path, { bigint: true }, parents);
   if (!current || current.dev !== identity.dev || current.ino !== identity.ino) throw conflict(path, detail);
 }
 
@@ -179,9 +197,9 @@ function readDescriptorSnapshot(descriptor, { readWhole, readChunk = readSync, p
 
 function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync,
   openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null, encoding = "utf8", readDescriptorData = readSync,
-  expectedParents = null, compareParentMetadata = true) {
+  expectedParents = null) {
   const parents = inspectFile === inspectManagedFile ? expectedParents ?? assertSafeManagedParents(path) : null;
-  const initial = inspectFile(path, { bigint: true }, parents, compareParentMetadata);
+  const initial = inspectFile(path, { bigint: true }, parents);
   if (!initial) return null;
   const identity = expectedIdentity ?? { dev: initial.dev, ino: initial.ino };
   if (initial.dev !== identity.dev || initial.ino !== identity.ino) {
@@ -194,14 +212,14 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
       descriptor = openReadDescriptor(path);
     } catch (error) {
       rethrowAfterValidation(error, () => assertInspectedIdentity(path, inspectFile, conflict, identity,
-        "the pathname changed before it could be opened for reading", parents, compareParentMetadata));
+        "the pathname changed before it could be opened for reading", parents));
     }
     const assertReadIdentity = () => {
       const opened = fstatSync(descriptor, { bigint: true });
       if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
         throw conflict(path, "the file changed while it was opened for reading");
       }
-      const current = inspectFile(path, { bigint: true }, parents, compareParentMetadata);
+      const current = inspectFile(path, { bigint: true }, parents);
       if (!current || current.dev !== identity.dev || current.ino !== identity.ino) {
         throw conflict(path, "the pathname changed while it was opened for reading");
       }
@@ -233,7 +251,7 @@ function assertManagedDestination(path, expectedIdentity, parents = null) {
 
 function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
   const parents = assertSafeManagedParents(path);
-  const initial = inspectManagedFile(path, { bigint: true }, parents, true);
+  const initial = inspectManagedFile(path, { bigint: true }, parents);
   if (!initial) return { descriptor: null, identity: null, observation: "absent", parents };
   const identity = { dev: initial.dev, ino: initial.ino };
   let descriptor;
@@ -243,7 +261,7 @@ function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
       descriptor = openReadDescriptor(path);
     } catch (error) {
       rethrowAfterValidation(error, () => assertInspectedIdentity(path, inspectManagedFile, ownedFileConflict, identity,
-        "the destination changed before its identity could be captured", parents, true));
+        "the destination changed before its identity could be captured", parents));
     }
     const opened = fstatSync(descriptor, { bigint: true });
     if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
@@ -373,7 +391,7 @@ function readLockRecord(path, beforeOpen, readFileData, openReadDescriptor, owne
   let record;
   try {
     record = JSON.parse(readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeOpen, readFileData,
-      openReadDescriptor, owned?.identity ?? null, "utf8", readSync, owned?.parents ?? null, owned === null));
+      openReadDescriptor, owned?.identity ?? null, "utf8", readSync, owned?.parents ?? null));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
@@ -539,7 +557,7 @@ export function createRuntime({
             try {
               cleanupOwnedFile(owned, removeOwnedFile);
             } catch (cleanupError) {
-              throw cleanupError;
+              throw preferredBoundaryError(error, cleanupError);
             }
           }
           if (error?.code === "EEXIST") {
@@ -647,7 +665,7 @@ export function createRuntime({
           try {
             cleanupOwnedFile(owned, removeOwnedFile);
           } catch (cleanupError) {
-            throw cleanupError;
+            throw preferredBoundaryError(error, cleanupError);
           }
         }
         if (error?.code === "EEXIST") {
@@ -681,7 +699,7 @@ export function createRuntime({
           try {
             cleanupOwnedFile(owned, removeOwnedFile);
           } catch (cleanupError) {
-            throw cleanupError;
+            throw preferredBoundaryError(error, cleanupError);
           }
         }
         if (error?.code === "EEXIST") {

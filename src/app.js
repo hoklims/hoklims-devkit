@@ -133,7 +133,7 @@ export function quoteShellToken(value) {
   const text = String(value);
   const safe = process.platform === "win32" ? /^[A-Za-z0-9_./:\\-]+$/u : /^[A-Za-z0-9_./:-]+$/u;
   if (safe.test(text)) return text;
-  if (process.platform === "win32") return `'${text.replaceAll("'", "''")}'`;
+  if (process.platform === "win32") return `'${text.replace(/['\u2018-\u201b]/gu, "$&$&")}'`;
   return `'${text.replaceAll("'", `'"'"'`)}'`;
 }
 
