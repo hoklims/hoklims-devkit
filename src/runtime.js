@@ -147,7 +147,6 @@ export function validateState(state) {
       || plan.selected.some((name) => !COMPONENT_NAMES.has(name))
       || new Set(plan.selected).size !== plan.selected.length
       || JSON.stringify(plan.selected) !== JSON.stringify(COMPONENT_ORDER.filter((name) => plan.selected.includes(name)))
-      || Object.keys(state.components).some((name) => !plan.selected.includes(name))
       || !Array.isArray(plan.hosts) || plan.hosts.length === 0
       || plan.hosts.some((host) => !HOST_NAMES.has(host))
       || new Set(plan.hosts).size !== plan.hosts.length
@@ -156,6 +155,12 @@ export function validateState(state) {
       || Object.keys(plan.versions).length !== plan.selected.length
       || plan.selected.some((name) => typeof plan.versions[name] !== "string"
         || !/^\d+\.\d+\.\d+$/u.test(plan.versions[name]))
+      || (plan.command === "setup" && plan.selected.some((name) => {
+        const existing = state.components[name];
+        return existing && existing.version !== plan.versions[name];
+      }))
+      || (plan.command === "upgrade" && plan.selected.length === 1
+        && Object.keys(state.components).some((name) => !plan.selected.includes(name)))
       || (plan.command === "upgrade" && plan.selected.some((name) => {
         const existing = state.components[name];
         return existing && existing.version !== plan.versions[name]

@@ -926,7 +926,7 @@ export async function execute(options, rt = createRuntime()) {
   } catch (error) {
     stateBoundaryProblem(report, error, statePath, "lock acquisition", {
       allowRunLocked: true,
-      recoveryCommand: recoveryCommandFor(state),
+      recoveryCommand: recoveryCommandFor(state, { useRequestedRefresh: refreshSavePending }),
     });
     report.ok = false;
     return report;

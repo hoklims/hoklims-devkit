@@ -324,10 +324,25 @@ test("state validation accepts only canonical component and host order", () => {
     expect(() => validateState(invalid)).toThrow(/Invalid in-progress installation plan/u);
   }
 
-  const missingManagedComponent = structuredClone(canonical);
-  missingManagedComponent.inProgress.selected = ["semctx"];
-  missingManagedComponent.inProgress.versions = { semctx: "0.3.5" };
-  expect(() => validateState(missingManagedComponent)).toThrow(/Invalid in-progress installation plan/u);
+  const narrowSetup = structuredClone(canonical);
+  narrowSetup.inProgress.command = "setup";
+  narrowSetup.inProgress.selected = ["semctx"];
+  narrowSetup.inProgress.versions = { semctx: "0.3.5" };
+  expect(validateState(narrowSetup)).toBe(narrowSetup);
+
+  const setupVersionChange = structuredClone(narrowSetup);
+  setupVersionChange.inProgress.versions.semctx = "0.3.6";
+  expect(() => validateState(setupVersionChange)).toThrow(/Invalid in-progress installation plan/u);
+
+  const explicitUpgradeSubset = structuredClone(canonical);
+  explicitUpgradeSubset.inProgress.selected = ["semctx", "assertledger"];
+  explicitUpgradeSubset.inProgress.versions = { semctx: "0.3.6", assertledger: "1.3.0" };
+  expect(validateState(explicitUpgradeSubset)).toBe(explicitUpgradeSubset);
+
+  const unresumableSemctxOnlyUpgrade = structuredClone(canonical);
+  unresumableSemctxOnlyUpgrade.inProgress.selected = ["semctx"];
+  unresumableSemctxOnlyUpgrade.inProgress.versions = { semctx: "0.3.5" };
+  expect(() => validateState(unresumableSemctxOnlyUpgrade)).toThrow(/Invalid in-progress installation plan/u);
 
   const narrowedVersionChange = {
     schemaVersion: 1,

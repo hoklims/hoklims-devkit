@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { execute, parseArgs, quoteShellToken } from "../src/app.js";
+import { validateState } from "../src/runtime.js";
 
 function compassInstallReport(argv, { installed = false, configured = false } = {}) {
   const host = argv[argv.indexOf("--host") + 1];
@@ -310,6 +311,80 @@ describe("public CLI", () => {
     expect(rt.calls.some((args) => args.includes("install"))).toBe(false);
     const upgrade = await execute({ ...setupOptions(), command: "upgrade", dryRun: true }, rt);
     expect(upgrade.components[0].version).toBe("0.3.5");
+  });
+
+  test("a pending setup cannot change an already recorded component version", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+    const report = await execute(setupOptions(), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(rt.calls).toHaveLength(2);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("narrow setup checkpoints preserve managed components outside its scope", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    const rt = fakeRuntime({ state, tools: ["claude"] });
+    const writeState = rt.writeState;
+    rt.writeState = (path, value) => writeState(path, validateState(value));
+    const nativeExec = rt.exec;
+    let interrupt = true;
+    rt.exec = async (argv, cwd, timeout) => interrupt && argv.includes("install") && !argv.includes("--dry-run")
+      ? { code: 5, stdout: "", stderr: "simulated interruption" }
+      : nativeExec(argv, cwd, timeout);
+    const options = parseArgs(["setup", "/repo", "--host", "claude"]);
+    const interrupted = await execute(options, rt);
+    expect(interrupted.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(rt.writes[0].inProgress).toEqual({
+      command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.4" },
+    });
+    expect(rt.writes[0].components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
+    interrupt = false;
+    const resumed = await execute(options, rt);
+    expect(resumed.ok).toBe(true);
+    expect(resumed.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+    expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
+    expect(rt.writes.at(-1).components.semctx.hosts).toEqual(["codex", "claude"]);
+  });
+
+  test("explicit upgrade scope preserves and resumes components outside its scope", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm"], files });
+    const writeState = rt.writeState;
+    rt.writeState = (path, value) => writeState(path, validateState(value));
+    const nativeExec = rt.exec;
+    let interrupt = true;
+    rt.exec = async (argv, cwd, timeout) => interrupt && argv.includes("install") && !argv.includes("--dry-run")
+      ? { code: 5, stdout: "", stderr: "simulated interruption" }
+      : nativeExec(argv, cwd, timeout);
+    const options = parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]);
+    const interrupted = await execute(options, rt);
+    expect(interrupted.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(rt.writes[0].inProgress.selected).toEqual(["semctx", "assertledger"]);
+    expect(rt.writes[0].components["latent-compass"]).toEqual({ version: "0.3.0", hosts: ["codex"] });
+    interrupt = false;
+    const resumed = await execute(options, rt);
+    expect(resumed.ok).toBe(true);
+    expect(resumed.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+    expect(rt.writes.at(-1).components["latent-compass"]).toEqual({ version: "0.3.0", hosts: ["codex"] });
   });
 
   test("adding a host cannot silently move an older Semctx install to current stable", async () => {
@@ -1615,6 +1690,23 @@ describe("public CLI", () => {
     expect(detail).not.toContain("Another setup");
     expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
     expect(report.nextActions.join("\n")).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("lock contention preserves an admitted refresh request", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+    rt.acquireLock = () => { throw Object.assign(new Error("Another operation is running"), { code: "RUN_LOCKED" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
+    expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex --refresh-pending");
+    expect(guidance).not.toContain("hoklims-devkit setup");
     expect(rt.writes).toHaveLength(0);
   });
 
