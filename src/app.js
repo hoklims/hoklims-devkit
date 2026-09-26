@@ -120,7 +120,7 @@ export function quoteShellToken(value) {
 function stateRecoveryPlan(options, state, hosts, { useRequestedRefresh = false } = {}) {
   const pending = state?.inProgress;
   const requestedSelected = options.refreshPending && pending && options.with.length === 0
-    ? pending.selected : ["semctx", ...options.with];
+    ? pending.selected : state ? selectedComponents(options, state) : ["semctx", ...options.with];
   const command = pending && !useRequestedRefresh ? pending.command : options.command;
   const selected = pending && !useRequestedRefresh ? pending.selected : requestedSelected;
   const selectedHosts = pending && !useRequestedRefresh ? pending.hosts : hosts;
@@ -383,8 +383,23 @@ function localAssertEntry(rt, root) {
       throw new Error("The project-local AssertLedger package is incomplete");
     }
   };
-  if (!rt.directoryPresent(nodeModules)) return null;
-  if (!rt.directoryPresent(packageRoot)) return null;
+  const initialDirectoryPresent = (path, ancestors = []) => {
+    const recheckAncestors = () => {
+      for (const ancestor of ancestors) {
+        if (!rt.directoryPresent(ancestor)) throw new Error("The project-local AssertLedger package ancestry changed during admission");
+      }
+    };
+    try {
+      const present = rt.directoryPresent(path);
+      recheckAncestors();
+      return present;
+    } catch (error) {
+      recheckAncestors();
+      throw error;
+    }
+  };
+  if (!initialDirectoryPresent(nodeModules)) return null;
+  if (!initialDirectoryPresent(packageRoot, [nodeModules])) return null;
   assertPackageDirectories();
   const guardedMetadata = (operation) => {
     assertPackageDirectories();

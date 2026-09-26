@@ -1689,6 +1689,33 @@ describe("public CLI", () => {
       expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
       expect(rt.writes).toHaveLength(0);
     }
+    for (const phase of ["before-package-lstat", "after-package-lstat"]) {
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const directoryPresent = rt.directoryPresent;
+      const nodeModules = join("/repo", "node_modules");
+      const packageRoot = join(nodeModules, "assertledger");
+      let nodeModulesUnsafe = false;
+      rt.directoryPresent = (path) => {
+        if (path === nodeModules && nodeModulesUnsafe) {
+          throw Object.assign(new Error("node_modules changed to a regular file"), { code: "STATE_CONFLICT" });
+        }
+        if (path === packageRoot) {
+          if (phase === "before-package-lstat") {
+            nodeModulesUnsafe = true;
+            throw Object.assign(new Error("package lstat failed with ENOTDIR"), { code: "ENOTDIR" });
+          }
+          const present = directoryPresent(path);
+          nodeModulesUnsafe = true;
+          return present;
+        }
+        return directoryPresent(path);
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(report.exitCode).toBe(4);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
   });
 
   test("AssertLedger CLI metadata, open, and read I/O failures remain STATE_IO_ERROR", async () => {
@@ -3046,6 +3073,66 @@ describe("public CLI", () => {
     expect(pnpmGuidance.toLowerCase()).toContain("restore pnpm");
     expect(pnpmGuidance).not.toContain("restore npm");
     expect(missingPnpm.writes).toHaveLength(0);
+  });
+
+  test("implicit upgrade selection is shared by execution and recovery prerequisites", async () => {
+    const allComponents = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+        "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const explicit of [false, true]) {
+      const rt = fakeRuntime({ state: structuredClone(allComponents), tools: ["node", "npm", "uv"], files: { ...files } });
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      let optionalToolsMissing = false;
+      rt.which = (name) => optionalToolsMissing && ["node", "uv"].includes(name) ? null : nativeWhich(name);
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+          optionalToolsMissing = true;
+          return { code: 5, stdout: "", stderr: "native setup failed" };
+        }
+        return result;
+      };
+      const argv = ["upgrade", "/repo", "--host", "codex"];
+      if (explicit) argv.push("--with", "assertledger,latent-compass");
+      const report = await execute(parseArgs(argv), rt);
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+      expect(guidance).toContain("--with assertledger,latent-compass");
+      expect(guidance).toContain("Restore Node, uv on PATH");
+    }
+
+    const semctxOnly = fakeRuntime({
+      state: { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } },
+      tools: ["node", "uv"],
+    });
+    const nativeWhich = semctxOnly.which;
+    const nativeExec = semctxOnly.exec;
+    let optionalToolsMissing = false;
+    semctxOnly.which = (name) => optionalToolsMissing && ["node", "uv"].includes(name) ? null : nativeWhich(name);
+    semctxOnly.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+        optionalToolsMissing = true;
+        return { code: 5, stdout: "", stderr: "native setup failed" };
+      }
+      return result;
+    };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), semctxOnly);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(guidance).not.toContain("Restore Node");
+    expect(guidance).not.toContain("uv on PATH");
   });
 
   test("STATE_CHANGED treats a locked absence as authoritative", async () => {

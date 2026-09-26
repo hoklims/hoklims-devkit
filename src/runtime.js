@@ -434,6 +434,11 @@ export function createRuntime({
           writeStateData(owned.descriptor, data);
           assertOwnedFile(owned);
           assertExpectedDestination();
+          const stagedBytes = readDescriptorSnapshot(owned.descriptor, { readChunk: readDescriptorData, path: temp });
+          assertOwnedFile(owned);
+          if (!stagedBytes.equals(Buffer.from(data, "utf8"))) {
+            throw ownedFileConflict(temp, "the staged state bytes changed before publication");
+          }
           const previousDescriptor = destination.descriptor;
           // Windows cannot replace an open destination. Close only after the final identity and byte
           // check; the already-open owned temporary file becomes the next guard without reopening the path.

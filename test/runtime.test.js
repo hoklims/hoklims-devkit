@@ -716,6 +716,44 @@ test("runtime rejects state growth and metadata races during the final checkpoin
   }
 });
 
+test("runtime revalidates staged ownership after the final destination read", () => {
+  for (const sameBytes of [false, true]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-final-staging-")));
+    const statePath = join(root, "repository.json");
+    const tempPath = `${statePath}.candidate.tmp`;
+    const initial = `${JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }, null, 2)}\n`;
+    const next = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const planned = `${JSON.stringify(next, null, 2)}\n`;
+    const foreign = sameBytes ? planned : "FOREIGN STAGING\n";
+    writeFileSync(statePath, initial);
+    let destinationReads = 0;
+    let swapped = false;
+    let commits = 0;
+    const rt = createRuntime({
+      randomId: () => "candidate",
+      readDescriptorData: (descriptor, buffer, offset, length, position) => {
+        const count = readSync(descriptor, buffer, offset, length, position);
+        if (!swapped && position === 0 && length > 0 && ++destinationReads === 3) {
+          swapped = true;
+          unlinkSync(tempPath);
+          writeFileSync(tempPath, foreign);
+        }
+        return count;
+      },
+      commitOwnedFile: (from, to) => { commits += 1; renameSync(from, to); },
+    });
+    const transaction = rt.openStateTransaction(statePath);
+    let error;
+    try { transaction.write(next); } catch (caught) { error = caught; }
+    expect(swapped).toBe(true);
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(commits).toBe(0);
+    expect(readFileSync(statePath, "utf8")).toBe(initial);
+    expect(readFileSync(tempPath, "utf8")).toBe(foreign);
+    expect(() => transaction.close()).not.toThrow();
+  }
+});
+
 test("runtime rejects invalid UTF-8 state bytes without overwriting them", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-invalid-utf8-")));
   const statePath = join(root, "repository.json");
