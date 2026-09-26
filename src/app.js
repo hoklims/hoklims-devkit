@@ -93,10 +93,19 @@ function existingAssertVersion(rt, root) {
   } catch {
     throw new Error("package.json is invalid JSON");
   }
-  const declared = manifest?.devDependencies?.assertledger ?? manifest?.dependencies?.assertledger;
-  if (declared === undefined) return null;
-  if (!isStableVersion(declared)) throw new Error(`AssertLedger dependency must be pinned exactly; found ${String(declared)}`);
-  return declared;
+  const declarations = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]
+    .filter((group) => manifest?.[group]?.assertledger !== undefined)
+    .map((group) => ({ group, version: manifest[group].assertledger }));
+  if (declarations.length === 0) return null;
+  for (const { group, version } of declarations) {
+    if (!isStableVersion(version)) {
+      throw new Error(`AssertLedger dependency in ${group} must be pinned exactly; found ${String(version)}`);
+    }
+  }
+  if (new Set(declarations.map(({ version }) => version)).size !== 1) {
+    throw new Error(`Conflicting AssertLedger dependency declarations: ${declarations.map(({ group, version }) => `${group}=${version}`).join(", ")}`);
+  }
+  return declarations[0].version;
 }
 
 function packageManager(rt, root) {

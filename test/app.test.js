@@ -611,6 +611,74 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("matching AssertLedger declarations resolve to their shared exact version", async () => {
+    const rt = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({
+        dependencies: { assertledger: "1.2.0" },
+        devDependencies: { assertledger: "1.2.0" },
+      }) },
+    });
+    const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+    expect(report.ok).toBe(true);
+    expect(report.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("conflicting AssertLedger declarations block every write", async () => {
+    const rt = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({
+        dependencies: { assertledger: "1.3.0" },
+        devDependencies: { assertledger: "1.2.0" },
+      }) },
+    });
+    const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("VERSION_UNAVAILABLE");
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/Conflicting AssertLedger dependency declarations/u);
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+
+    const constraintMismatch = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({
+        dependencies: { assertledger: "^1.2.0" },
+        devDependencies: { assertledger: "1.2.0" },
+      }) },
+    });
+    const rejectedConstraint = await execute({ ...setupOptions(), with: ["assertledger"] }, constraintMismatch);
+    expect(rejectedConstraint.ok).toBe(false);
+    expect(rejectedConstraint.conflicts.map((item) => item.code)).toContain("VERSION_UNAVAILABLE");
+    expect(rejectedConstraint.conflicts.map((item) => item.detail).join("\n")).toMatch(/must be pinned exactly/u);
+    expect(constraintMismatch.writes).toHaveLength(0);
+  });
+
+  test("AssertLedger declarations in optional and peer dependency groups are validated", async () => {
+    const matching = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({
+        optionalDependencies: { assertledger: "1.2.0" },
+        peerDependencies: { assertledger: "1.2.0" },
+      }) },
+    });
+    const accepted = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, matching);
+    expect(accepted.ok).toBe(true);
+    expect(accepted.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
+
+    const conflicting = fakeRuntime({
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({
+        optionalDependencies: { assertledger: "1.2.0" },
+        peerDependencies: { assertledger: "1.3.0" },
+      }) },
+    });
+    const rejected = await execute({ ...setupOptions(), with: ["assertledger"] }, conflicting);
+    expect(rejected.ok).toBe(false);
+    expect(rejected.conflicts.map((item) => item.code)).toContain("VERSION_UNAVAILABLE");
+    expect(conflicting.writes).toHaveLength(0);
+  });
+
   test("a listed uv tool without its executable is planned for reinstall", async () => {
     const rt = fakeRuntime({ tools: ["uv"] });
     const report = await execute({ ...setupOptions(), with: ["latent-compass"], dryRun: true }, rt);

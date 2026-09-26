@@ -6,6 +6,15 @@ import { dirname, join, resolve } from "node:path";
 const COMPONENT_NAMES = new Set(["semctx", "assertledger", "latent-compass"]);
 const HOST_NAMES = new Set(["codex", "claude"]);
 
+function lstatIfPresent(path) {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 export function validateState(state) {
   if (state === null) return null;
   if (!state || Array.isArray(state) || typeof state !== "object" || state.schemaVersion !== 1
@@ -84,20 +93,22 @@ export function createRuntime() {
       return join(base, "hoklims-devkit", `${key}.json`);
     },
     readState: (path) => {
-      if (!existsSync(path)) return null;
-      if (!lstatSync(path).isFile()) throw new Error(`Unsafe state path: ${path}`);
+      const stat = lstatIfPresent(path);
+      if (!stat) return null;
+      if (!stat.isFile()) throw new Error(`Unsafe state path: ${path}`);
       return validateState(JSON.parse(readFileSync(path, "utf8")));
     },
     writeState: (path, state) => {
       validateState(state);
       mkdirSync(dirname(path), { recursive: true });
-      if (existsSync(path) && !lstatSync(path).isFile()) throw new Error(`Unsafe state path: ${path}`);
+      const stat = lstatIfPresent(path);
+      if (stat && !stat.isFile()) throw new Error(`Unsafe state path: ${path}`);
       const temp = `${path}.${randomUUID()}.tmp`;
       writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, { flag: "wx", mode: 0o600 });
       try {
         renameSync(temp, path);
       } finally {
-        if (existsSync(temp)) unlinkSync(temp);
+        if (lstatIfPresent(temp)?.isFile()) unlinkSync(temp);
       }
     },
     acquireLock: (statePath) => {
@@ -111,7 +122,7 @@ export function createRuntime() {
         throw error;
       }
       return () => {
-        if (existsSync(lockPath) && lstatSync(lockPath).isFile()) {
+        if (lstatIfPresent(lockPath)?.isFile()) {
           try {
             if (JSON.parse(readFileSync(lockPath, "utf8")).token === token) unlinkSync(lockPath);
           } catch { /* Preserve a lock changed by another process. */ }
