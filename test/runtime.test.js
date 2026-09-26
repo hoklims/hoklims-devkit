@@ -241,7 +241,6 @@ test("runtime checks retained paths when descriptor identity inspection fails", 
     import fs from "node:fs";
     import os from "node:os";
     import path from "node:path";
-    import { syncBuiltinESMExports } from "node:module";
     const mode = process.argv[1];
     const operation = mode.split("-")[0];
     const replaceRequired = !mode.endsWith("-unchanged");
@@ -250,21 +249,16 @@ test("runtime checks retained paths when descriptor identity inspection fails", 
     const originalPath = path.join(root, "original.json");
     const original = JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} });
     if (mode !== "owned") fs.writeFileSync(statePath, original);
-    const nativeLstat = fs.lstatSync;
     const nativeFstat = fs.fstatSync;
     let armed = false;
-    let pathChecksAfterFailure = 0;
-    fs.lstatSync = function(candidate, options) {
-      if (armed) pathChecksAfterFailure++;
-      return nativeLstat.call(this, candidate, options);
-    };
-    fs.fstatSync = function(descriptor, options) {
+    let fstatFailures = 0;
+    const inspectReadDescriptor = function(descriptor, options) {
       if (armed && ["read", "capture"].includes(operation)) {
+        fstatFailures++;
         throw Object.assign(new Error("persistent descriptor EIO"), { code: "EIO" });
       }
       return nativeFstat.call(this, descriptor, options);
     };
-    syncBuiltinESMExports();
     const { createRuntime } = await import(${JSON.stringify(runtimeUrl)});
     const replace = (target) => {
       fs.renameSync(target, originalPath);
@@ -272,16 +266,21 @@ test("runtime checks retained paths when descriptor identity inspection fails", 
       armed = true;
     };
     const runtime = createRuntime(operation === "read" ? {
+      inspectReadDescriptor,
       readFileData: () => {
         if (replaceRequired) replace(statePath); else armed = true;
         throw Object.assign(new Error("read EIO"), { code: "EIO" });
       },
     } : operation === "capture" ? {
+      inspectReadDescriptor,
       beforeManagedReadOpen: () => { if (replaceRequired) replace(statePath); else armed = true; },
     } : {
       randomId: () => "candidate",
       inspectOwnedDescriptor: (descriptor, options) => {
-        if (armed) throw Object.assign(new Error("persistent owned fstat EIO"), { code: "EIO" });
+        if (armed) {
+          fstatFailures++;
+          throw Object.assign(new Error("persistent owned fstat EIO"), { code: "EIO" });
+        }
         return nativeFstat(descriptor, options);
       },
       readDescriptorData: (_descriptor, _buffer, _offset, _length, position) => {
@@ -299,32 +298,34 @@ test("runtime checks retained paths when descriptor identity inspection fails", 
     const foreignPath = ["read", "capture"].includes(operation) ? statePath : statePath + ".candidate.tmp";
     const foreignPresent = fs.existsSync(foreignPath);
     process.stdout.write(JSON.stringify({
-      mode, code: error?.code ?? null, pathChecksAfterFailure, foreignPresent,
+      mode, code: error?.code ?? null, message: error?.message ?? null,
+      fstatFailures, foreignPresent,
       foreign: foreignPresent ? fs.readFileSync(foreignPath, "utf8") : null,
     }));
   `;
   const modes = process.platform === "win32" ? ["read", "capture"] : ["read", "capture", "owned"];
   for (const mode of modes) {
-    const child = Bun.spawnSync({ cmd: ["node", "--input-type=module", "--eval", script, mode], stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawnSync({ cmd: [process.execPath, "--eval", script, mode], stdout: "pipe", stderr: "pipe" });
     expect(child.exitCode, new TextDecoder().decode(child.stderr)).toBe(0);
     const observed = JSON.parse(new TextDecoder().decode(child.stdout));
     expect(observed.mode).toBe(mode);
     expect(observed.code).toBe("STATE_CONFLICT");
-    expect(observed.pathChecksAfterFailure).toBeGreaterThan(0);
+    expect(observed.fstatFailures, mode).toBeGreaterThan(0);
+    expect(observed.message, mode).toMatch(/pathname|destination (?:changed|was replaced)/u);
     expect(observed.foreignPresent).toBe(true);
     expect(observed.foreign).toBe("FOREIGN-BYTES\n");
   }
 
   const control = Bun.spawnSync({
-    cmd: ["node", "--input-type=module", "--eval", script, "read-unchanged"], stdout: "pipe", stderr: "pipe",
+    cmd: [process.execPath, "--eval", script, "read-unchanged"], stdout: "pipe", stderr: "pipe",
   });
   expect(control.exitCode, new TextDecoder().decode(control.stderr)).toBe(0);
   const unchanged = JSON.parse(new TextDecoder().decode(control.stdout));
   expect(unchanged).toMatchObject({
-    mode: "read-unchanged", code: "EIO", foreignPresent: true,
+    mode: "read-unchanged", code: "EIO", message: "read EIO", foreignPresent: true,
     foreign: JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }),
   });
-  expect(unchanged.pathChecksAfterFailure).toBeGreaterThan(0);
+  expect(unchanged.fstatFailures).toBeGreaterThan(0);
 });
 
 test("runtime descriptor snapshots reject growth, shrink, and same-size mutation after reads", () => {

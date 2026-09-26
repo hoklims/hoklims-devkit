@@ -225,7 +225,7 @@ function readDescriptorSnapshot(descriptor, { readWhole, readChunk = readSync, p
 
 function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync,
   openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null, encoding = "utf8", readDescriptorData = readSync,
-  expectedParents = null) {
+  expectedParents = null, inspectReadDescriptor = fstatSync) {
   const parents = inspectFile === inspectManagedFile ? expectedParents ?? assertSafeManagedParents(path) : null;
   const initial = inspectFile(path, { bigint: true }, parents);
   if (!initial) return null;
@@ -245,7 +245,7 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
     const assertReadIdentity = () => {
       validateEveryBoundary([
         () => {
-          const opened = fstatSync(descriptor, { bigint: true });
+          const opened = inspectReadDescriptor(descriptor, { bigint: true });
           if (!opened.isFile() || !matchesFileIdentity(opened, identity)) {
             throw conflict(path, "the file changed while it was opened for reading");
           }
@@ -279,7 +279,7 @@ function assertManagedDestination(path, expectedIdentity, parents = null) {
   }
 }
 
-function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
+function captureManagedDestination(path, beforeOpen, openReadDescriptor, inspectReadDescriptor = fstatSync) {
   const parents = assertSafeManagedParents(path);
   const initial = inspectManagedFile(path, { bigint: true }, parents);
   if (!initial) return { descriptor: null, identity: null, observation: "absent", parents };
@@ -295,7 +295,7 @@ function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
     }
     validateEveryBoundary([
       () => {
-        const opened = fstatSync(descriptor, { bigint: true });
+        const opened = inspectReadDescriptor(descriptor, { bigint: true });
         if (!opened.isFile() || !matchesFileIdentity(opened, identity)) {
           throw ownedFileConflict(path, "the destination changed while its identity was captured");
         }
@@ -524,6 +524,7 @@ export function createRuntime({
   commitOwnedFile = renameSync,
   createManagedParent = mkdirSync,
   createOwnedFile = openSync,
+  inspectReadDescriptor = fstatSync,
   inspectOwnedDescriptor = fstatSync,
   inspectPlainFile = inspectPlainProjectFile,
   openReadDescriptor = openVerifiedReadDescriptor,
@@ -538,7 +539,7 @@ export function createRuntime({
 } = {}) {
   const openStateTransaction = (path) => {
     prepareManagedParent(path, createManagedParent);
-    const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor);
+    const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor, inspectReadDescriptor);
     let expectedBytes = null;
     let state = null;
     let closed = false;
@@ -550,7 +551,7 @@ export function createRuntime({
       if (destination.observation === "closed-existing") {
         const currentBytes = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
           beforeManagedReadOpen, readFileData, openReadDescriptor, destination.identity, null, readDescriptorData,
-          destination.parents);
+          destination.parents, inspectReadDescriptor);
         if (currentBytes === null || !Buffer.from(currentBytes).equals(expectedBytes)) {
           throw ownedFileConflict(path, "the validated state bytes changed after publication failed");
         }
@@ -694,7 +695,8 @@ export function createRuntime({
     },
     readState: (path) => {
       const bytes = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
-        beforeManagedReadOpen, readFileData, openReadDescriptor, null, null, readDescriptorData);
+        beforeManagedReadOpen, readFileData, openReadDescriptor, null, null, readDescriptorData, null,
+        inspectReadDescriptor);
       if (bytes === null) return null;
       return parseStateBytes(Buffer.from(bytes));
     },
@@ -702,7 +704,7 @@ export function createRuntime({
     writeState: (path, state) => {
       validateState(state);
       prepareManagedParent(path, createManagedParent);
-      const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor);
+      const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor, inspectReadDescriptor);
       const temp = `${path}.${randomId()}.tmp`;
       let owned = null;
       try {
