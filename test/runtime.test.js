@@ -318,6 +318,16 @@ test("state validation accepts only canonical component and host order", () => {
   wrongComponentHosts.components.semctx.hosts = ["claude", "codex"];
   expect(() => validateState(wrongComponentHosts)).toThrow(/Invalid devkit state component/u);
 
+  for (const version of ["01.2.3", "1.02.3", "1.2.03"]) {
+    const wrongComponentVersion = structuredClone(canonical);
+    wrongComponentVersion.components.semctx.version = version;
+    expect(() => validateState(wrongComponentVersion)).toThrow(/Invalid devkit state component/u);
+
+    const wrongPlanVersion = structuredClone(canonical);
+    wrongPlanVersion.inProgress.versions.semctx = version;
+    expect(() => validateState(wrongPlanVersion)).toThrow(/Invalid in-progress installation plan/u);
+  }
+
   for (const selected of [["semctx", "assertledger", "assertledger"], ["semctx", "unknown"]]) {
     const invalid = structuredClone(canonical);
     invalid.inProgress.selected = selected;

@@ -113,7 +113,8 @@ function nativeResult(result, name, report) {
 }
 
 function isStableVersion(version) {
-  return typeof version === "string" && /^\d+\.\d+\.\d+$/u.test(version);
+  return typeof version === "string"
+    && /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(version);
 }
 
 function compareVersions(left, right) {
@@ -212,13 +213,18 @@ function installPackageCommand(manager, version) {
 function localAssertEntry(rt, root) {
   const packagePath = join(root, "node_modules", "assertledger", "package.json");
   const cliPath = join(root, "node_modules", "assertledger", "dist", "cli.js");
-  if (!rt.exists(packagePath) || !rt.exists(cliPath)) return null;
+  const packagePresent = rt.exists(packagePath);
+  const cliPresent = rt.exists(cliPath);
+  if (!packagePresent && !cliPresent) return null;
+  if (!packagePresent || !cliPresent) throw new Error("The project-local AssertLedger package is incomplete");
+  let version;
   try {
-    const version = JSON.parse(rt.readText(packagePath))?.version;
-    return isStableVersion(version) ? { version, cliPath } : null;
+    version = JSON.parse(rt.readText(packagePath))?.version;
   } catch {
-    return null;
+    throw new Error("The project-local AssertLedger package manifest is invalid JSON");
   }
+  if (!isStableVersion(version)) throw new Error(`The project-local AssertLedger package has an invalid version: ${String(version)}`);
+  return { version, cliPath };
 }
 
 function localAssertCommand(entry, args) {
@@ -575,7 +581,13 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     problem(report, "PACKAGE_MANIFEST_CONFLICT", String(error.message ?? error));
     return null;
   }
-  const localEntry = localAssertEntry(rt, root);
+  let localEntry;
+  try {
+    localEntry = localAssertEntry(rt, root);
+  } catch (error) {
+    problem(report, "PACKAGE_MANIFEST_CONFLICT", String(error.message ?? error));
+    return null;
+  }
   if (command !== "upgrade" && current && current !== version) {
     problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger dependency is ${current}, expected ${version}`);
   }

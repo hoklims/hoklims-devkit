@@ -739,6 +739,26 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("a malformed installed AssertLedger package blocks package mutation", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.5", hosts: ["codex"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
+    } };
+    for (const packageData of [JSON.stringify({ version: "bad" }), JSON.stringify({}), "not-json"]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+        [join("/repo", "node_modules", "assertledger", "package.json")]: packageData,
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      };
+      const rt = fakeRuntime({ state: structuredClone(state), version: "0.3.5", tools: ["node", "npm"], files });
+      const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
   test("matching AssertLedger declarations resolve to their shared exact version", async () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],

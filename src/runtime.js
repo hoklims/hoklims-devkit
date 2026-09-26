@@ -7,6 +7,7 @@ const COMPONENT_ORDER = ["semctx", "assertledger", "latent-compass"];
 const HOST_ORDER = ["codex", "claude"];
 const COMPONENT_NAMES = new Set(COMPONENT_ORDER);
 const HOST_NAMES = new Set(HOST_ORDER);
+const STABLE_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 
 function lstatIfPresent(path, options) {
   try {
@@ -131,7 +132,7 @@ export function validateState(state) {
   }
   for (const [name, component] of Object.entries(state.components)) {
     if (!COMPONENT_NAMES.has(name) || !component || Array.isArray(component) || typeof component !== "object"
-      || typeof component.version !== "string" || !/^\d+\.\d+\.\d+$/u.test(component.version)
+      || typeof component.version !== "string" || !STABLE_VERSION.test(component.version)
       || !Array.isArray(component.hosts) || component.hosts.length === 0
       || component.hosts.some((host) => !HOST_NAMES.has(host))
       || new Set(component.hosts).size !== component.hosts.length
@@ -154,7 +155,7 @@ export function validateState(state) {
       || !plan.versions || Array.isArray(plan.versions) || typeof plan.versions !== "object"
       || Object.keys(plan.versions).length !== plan.selected.length
       || plan.selected.some((name) => typeof plan.versions[name] !== "string"
-        || !/^\d+\.\d+\.\d+$/u.test(plan.versions[name]))
+        || !STABLE_VERSION.test(plan.versions[name]))
       || (plan.command === "setup" && plan.selected.some((name) => {
         const existing = state.components[name];
         return existing && existing.version !== plan.versions[name];
