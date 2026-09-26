@@ -152,6 +152,11 @@ function closeOwnedFile(owned) {
 }
 
 function assertOwnedFile(owned) {
+  if (owned.descriptor === null) throw ownedFileConflict(owned.path, "the owned descriptor was closed before validation");
+  const opened = fstatSync(owned.descriptor, { bigint: true });
+  if (!opened.isFile() || opened.dev !== owned.identity.dev || opened.ino !== owned.identity.ino) {
+    throw ownedFileConflict(owned.path, "the opened file identity changed");
+  }
   assertSafeManagedParents(owned.path);
   const stat = lstatIfPresent(owned.path, { bigint: true });
   if (!stat) throw ownedFileConflict(owned.path, "the owned path was removed");
@@ -163,15 +168,19 @@ function assertOwnedFile(owned) {
 }
 
 function cleanupOwnedFile(owned, removeOwnedFile) {
-  let closeError = null;
+  let operationError = null;
+  try {
+    assertOwnedFile(owned);
+    removeOwnedFile(owned.path);
+  } catch (error) {
+    operationError = error;
+  }
   try {
     closeOwnedFile(owned);
   } catch (error) {
-    closeError = error;
+    if (!operationError) operationError = error;
   }
-  assertOwnedFile(owned);
-  removeOwnedFile(owned.path);
-  if (closeError) throw closeError;
+  if (operationError) throw operationError;
 }
 
 function readLockRecord(path, beforeOpen) {
@@ -251,6 +260,7 @@ export function validateState(state) {
 export function createRuntime({
   beforeLockOpen = () => {},
   beforeManagedReadOpen = () => {},
+  commitOwnedFile = renameSync,
   randomId = randomUUID,
   removeOwnedFile = unlinkSync,
   writeLockData = writeFileSync,
@@ -321,17 +331,15 @@ export function createRuntime({
       let owned = null;
       try {
         owned = openOwnedManagedFile(temp);
-        try {
-          writeStateData(owned.descriptor, `${JSON.stringify(state, null, 2)}\n`);
-        } finally {
-          closeOwnedFile(owned);
-        }
+        writeStateData(owned.descriptor, `${JSON.stringify(state, null, 2)}\n`);
         assertOwnedFile(owned);
         assertManagedDestination(path, destination.identity);
         // Node has no portable identity-bound rename/CAS. This identity check cannot eliminate a hostile
         // pathname swap between the final validation and rename by a peer outside this lock.
-        renameSync(temp, path);
+        commitOwnedFile(temp, path);
+        const committed = owned;
         owned = null;
+        closeOwnedFile(committed);
       } catch (error) {
         if (owned) {
           try {
@@ -359,11 +367,7 @@ export function createRuntime({
       try {
         beforeLockOpen(lockPath);
         owned = openOwnedManagedFile(lockPath);
-        try {
-          writeLockData(owned.descriptor, JSON.stringify({ token, pid: process.pid }));
-        } finally {
-          closeOwnedFile(owned);
-        }
+        writeLockData(owned.descriptor, JSON.stringify({ token, pid: process.pid }));
         assertOwnedFile(owned);
       } catch (error) {
         if (owned) {
@@ -384,10 +388,15 @@ export function createRuntime({
         throw error;
       }
       return () => {
-        assertOwnedFile(owned);
-        const current = readLockRecord(lockPath, beforeManagedReadOpen);
-        if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
-        removeOwnedFile(lockPath);
+        try {
+          assertOwnedFile(owned);
+          const current = readLockRecord(lockPath, beforeManagedReadOpen);
+          if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
+          cleanupOwnedFile(owned, removeOwnedFile);
+        } catch (error) {
+          try { closeOwnedFile(owned); } catch { /* Preserve the release error. */ }
+          throw error;
+        }
       };
     },
     resolve,

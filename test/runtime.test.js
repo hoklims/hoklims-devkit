@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntime, validateState } from "../src/runtime.js";
@@ -203,6 +203,42 @@ test("runtime removes an owned partial temporary state file after a write failur
   expect(existsSync(statePath)).toBe(false);
 });
 
+test("runtime keeps the owned temporary descriptor open through commit and cleanup", () => {
+  for (const outcome of ["commit", "cleanup"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-state-owned-${outcome}-`)));
+    const statePath = join(root, "repository.json");
+    let descriptor;
+    let checkedOpen = false;
+    const rt = createRuntime({
+      randomId: () => "owned",
+      writeStateData: (fd, data) => {
+        descriptor = fd;
+        writeFileSync(fd, data);
+        if (outcome === "cleanup") throw Object.assign(new Error("forced cleanup"), { code: "ENOSPC" });
+      },
+      commitOwnedFile: (from, to) => {
+        checkedOpen = fstatSync(descriptor).isFile();
+        renameSync(from, to);
+      },
+      removeOwnedFile: (path) => {
+        checkedOpen = fstatSync(descriptor).isFile();
+        unlinkSync(path);
+      },
+    });
+    let error;
+    try { rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} }); } catch (caught) { error = caught; }
+    expect(checkedOpen).toBe(true);
+    expect(() => fstatSync(descriptor)).toThrow();
+    if (outcome === "commit") {
+      expect(error).toBeUndefined();
+      expect(JSON.parse(readFileSync(statePath, "utf8")).projectRoot).toBe("/repo");
+    } else {
+      expect(error?.message).toMatch(/forced cleanup/u);
+      expect(existsSync(statePath)).toBe(false);
+    }
+  }
+});
+
 test("runtime preserves a state destination replaced during temporary write", () => {
   for (const scenario of ["appeared", "recreated", "distinct-replacement"]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-destination-")));
@@ -292,6 +328,29 @@ test("runtime removes an owned partial lock after its write fails", () => {
   });
   expect(() => rt.acquireLock(statePath)).toThrow(/lock write failed/u);
   expect(existsSync(lockPath)).toBe(false);
+});
+
+test("runtime keeps the owned lock descriptor open through release", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-lock-owned-release-")));
+  const statePath = join(root, "repository.json");
+  let descriptor;
+  let checkedOpen = false;
+  const rt = createRuntime({
+    writeLockData: (fd, data) => {
+      descriptor = fd;
+      writeFileSync(fd, data);
+    },
+    removeOwnedFile: (path) => {
+      checkedOpen = fstatSync(descriptor).isFile();
+      unlinkSync(path);
+    },
+  });
+  const release = rt.acquireLock(statePath);
+  expect(fstatSync(descriptor).isFile()).toBe(true);
+  release();
+  expect(checkedOpen).toBe(true);
+  expect(() => fstatSync(descriptor)).toThrow();
+  expect(existsSync(`${statePath}.lock`)).toBe(false);
 });
 
 test("runtime preserves a replacement lock after its writer returns", () => {
