@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import packageJson from "../package.json" with { type: "json" };
-import { createRuntime, parseJsonOutput, RunLockedError, shortError, validateState } from "./runtime.js";
+import { createRuntime, parseJsonOutput, preferredBoundaryError, RunLockedError, shortError, validateState } from "./runtime.js";
 
 const COMPONENTS = ["semctx", "assertledger", "latent-compass"];
 const HOSTS = ["codex", "claude"];
@@ -455,16 +455,22 @@ function localAssertEntry(rt, root) {
   const inspectDirectory = (path, ancestors = []) => {
     const classifyDirectoryError = (error, failedPath) => {
       if (error?.code === "ENOTDIR") {
-        throw new Error(`The project-local AssertLedger path has a non-directory component before ${failedPath}`);
+        return Object.assign(new Error(`The project-local AssertLedger path has a non-directory component before ${failedPath}`), {
+          code: "STATE_CONFLICT",
+        });
       }
-      throw error;
+      return error;
     };
     const recheckAncestors = () => {
       for (const ancestor of ancestors) {
         try {
-          if (!rt.directoryPresent(ancestor)) throw new Error("The project-local AssertLedger package ancestry changed during admission");
+          if (!rt.directoryPresent(ancestor)) {
+            throw Object.assign(new Error("The project-local AssertLedger package ancestry changed during admission"), {
+              code: "STATE_CONFLICT",
+            });
+          }
         } catch (error) {
-          classifyDirectoryError(error, ancestor);
+          throw classifyDirectoryError(error, ancestor);
         }
       }
     };
@@ -473,8 +479,13 @@ function localAssertEntry(rt, root) {
       recheckAncestors();
       return present;
     } catch (error) {
-      recheckAncestors();
-      classifyDirectoryError(error, path);
+      const primary = classifyDirectoryError(error, path);
+      try {
+        recheckAncestors();
+      } catch (reinspectionError) {
+        throw preferredBoundaryError(primary, reinspectionError);
+      }
+      throw primary;
     }
   };
   const assertPackageDirectories = () => {
@@ -493,7 +504,11 @@ function localAssertEntry(rt, root) {
       assertPackageDirectories();
       return result;
     } catch (error) {
-      assertPackageDirectories();
+      try {
+        assertPackageDirectories();
+      } catch (reinspectionError) {
+        throw preferredBoundaryError(error, reinspectionError);
+      }
       throw error;
     }
   };

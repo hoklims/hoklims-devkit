@@ -35,7 +35,7 @@ function ownedFileConflict(path, detail) {
   return Object.assign(new Error(`Managed state file ownership changed at ${path}: ${detail}. Preserve the foreign path, inspect it, then rerun.`), { code: "STATE_CONFLICT" });
 }
 
-function preferredBoundaryError(primary, secondary) {
+export function preferredBoundaryError(primary, secondary) {
   const preferred = primary?.code === "STATE_CONFLICT" || secondary?.code !== "STATE_CONFLICT" ? primary : secondary;
   const suppressed = preferred === primary ? secondary : primary;
   if (preferred && suppressed && preferred !== suppressed && typeof preferred === "object") {

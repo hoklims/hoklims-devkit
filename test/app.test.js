@@ -870,11 +870,14 @@ describe("public CLI", () => {
 
   test("AssertLedger admission preserves secondary filesystem diagnostics in every phase", async () => {
     const manifestPath = join("/repo", "package.json");
+    const localManifestPath = join("/repo", "node_modules", "assertledger", "package.json");
+    const nodeModulesPath = join("/repo", "node_modules");
     const manifestBytes = JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" });
+    const localManifestBytes = JSON.stringify({ version: "1.2.0" });
     const baseFiles = () => ({
       [manifestPath]: manifestBytes,
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [localManifestPath]: localManifestBytes,
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     });
     const state = {
@@ -882,28 +885,38 @@ describe("public CLI", () => {
       components: { semctx: { version: "0.3.4", hosts: ["codex"] }, assertledger: { version: "1.2.0", hosts: ["codex"] } },
     };
     for (const phase of ["doctor", "preflight", "apply"]) {
-      for (const closeFails of [false, true]) {
-        const root = realpathSync(mkdtempSync(join(tmpdir(), `devkit-assert-admission-${phase}-${closeFails}-`)));
+      for (const scenario of ["read-only", "read-close", "read-close-ancestry-io", "ownership-ancestry-io"]) {
+        const root = realpathSync(mkdtempSync(join(tmpdir(), `devkit-assert-admission-${phase}-${scenario}-`)));
         const actualManifest = join(root, "package.json");
-        writeFileSync(actualManifest, manifestBytes);
-        const readError = Object.assign(new Error(`${phase} manifest read EIO`), { code: "EIO" });
+        writeFileSync(actualManifest, localManifestBytes);
+        const primaryConflict = scenario === "ownership-ancestry-io";
+        const readError = Object.assign(new Error(`${phase} local manifest ${primaryConflict ? "ownership conflict" : "read EIO"}`), {
+          code: primaryConflict ? "STATE_CONFLICT" : "EIO",
+        });
         const closeError = Object.assign(new Error(`${phase} manifest close EBUSY`), {
           code: "EBUSY", path: actualManifest,
         });
+        const ancestryError = Object.assign(new Error(`${phase} ancestry EACCES`), { code: "EACCES" });
+        let primaryReadFailed = false;
         const native = createRuntime({
           closeDescriptor: (descriptor) => {
             closeSync(descriptor);
-            if (closeFails) throw closeError;
+            if (scenario.includes("close")) throw closeError;
           },
-          readFileData: () => { throw readError; },
+          readFileData: () => { primaryReadFailed = true; throw readError; },
         });
         const files = baseFiles();
         const rt = fakeRuntime({ state: phase === "doctor" ? structuredClone(state) : null, tools: ["node", "npm"], files });
         const fakeRead = rt.readPlainText;
+        const directoryPresent = rt.directoryPresent;
         const nativeExec = rt.exec;
         let failManifestRead = phase !== "apply";
-        rt.readPlainText = (path) => path === manifestPath && failManifestRead
+        rt.readPlainText = (path) => path === localManifestPath && failManifestRead
           ? native.readPlainText(actualManifest) : fakeRead(path);
+        rt.directoryPresent = (path) => {
+          if (primaryReadFailed && scenario.includes("ancestry-io") && path === nodeModulesPath) throw ancestryError;
+          return directoryPresent(path);
+        };
         rt.exec = async (argv, cwd, timeout) => {
           const result = await nativeExec(argv, cwd, timeout);
           if (phase === "apply" && argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
@@ -914,20 +927,28 @@ describe("public CLI", () => {
         const options = phase === "doctor" ? parseArgs(["doctor", "/repo", "--host", "codex"])
           : { ...setupOptions(), with: ["assertledger"], dryRun: phase === "preflight" };
         const report = await execute(options, rt);
-        const conflict = report.conflicts.find((item) => item.code === "STATE_IO_ERROR");
-        expect(conflict, `${phase}:${closeFails}`).toBeDefined();
-        expect(report.exitCode).toBe(5);
+        const expectedCode = primaryConflict ? "PACKAGE_MANIFEST_CONFLICT" : "STATE_IO_ERROR";
+        const conflict = report.conflicts.find((item) => item.code === expectedCode);
+        expect(conflict, `${phase}:${scenario}`).toBeDefined();
+        expect(report.exitCode).toBe(primaryConflict ? 4 : 5);
         expect(conflict.detail).toContain(readError.message);
         expect(report.nextActions.join("\n")).toContain("hoklims-devkit");
-        if (closeFails) {
-          expect(conflict.diagnostics).toEqual([{ code: "EBUSY", message: closeError.message, path: actualManifest }]);
+        const expectedDiagnostics = [];
+        if (scenario.includes("close")) {
+          expectedDiagnostics.push({ code: "EBUSY", message: closeError.message, path: actualManifest });
           expect(conflict.detail).toContain(closeError.message);
           expect(JSON.stringify(report)).toContain(closeError.message);
-        } else {
+        }
+        if (scenario.includes("ancestry-io")) {
+          expectedDiagnostics.push({ code: "EACCES", message: ancestryError.message });
+          expect(conflict.detail).toContain(ancestryError.message);
+        }
+        if (expectedDiagnostics.length) expect(conflict.diagnostics).toEqual(expectedDiagnostics);
+        else {
           expect(conflict.diagnostics).toBeUndefined();
           expect(conflict.detail).not.toContain("close EBUSY");
         }
-        expect(readFileSync(actualManifest, "utf8")).toBe(manifestBytes);
+        expect(readFileSync(actualManifest, "utf8")).toBe(localManifestBytes);
         if (phase === "apply") {
           expect(rt.calls.filter((argv) => argv[0] === "node" && argv.includes("--write"))).toHaveLength(0);
         }
