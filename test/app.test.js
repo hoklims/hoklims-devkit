@@ -3062,17 +3062,19 @@ describe("public CLI", () => {
     rt.openStateTransaction = () => ({
       state: null,
       write: () => {},
-      close: () => {
-        npmMissing = true;
-        throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" });
-      },
+      close: () => { throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" }); },
     });
+    rt.acquireLock = () => () => {
+      npmMissing = true;
+      throw Object.assign(new Error("lock replaced before release"), { code: "STATE_CONFLICT" });
+    };
     const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
     const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
     expect(guidance.toLowerCase()).toContain("restore node, npm on path before running hoklims-devkit setup /repo --host codex --with assertledger");
     expect(guidance).not.toContain("Restore Node on PATH before running.");
     for (const detail of report.conflicts.map((item) => item.detail)) {
       expect(detail).not.toContain("Restore Node on PATH before running.");
+      expect(detail.toLowerCase()).toContain("restore node, npm on path");
     }
   });
 

@@ -1121,6 +1121,12 @@ export async function execute(options, rt = createRuntime()) {
     if (segment) authoredRecoverySegments.add(segment);
     return segment;
   };
+  const renderUnverifiedRecovery = (repair, command, retry) => {
+    const guidance = unverifiedStateGuidance(repair, command, retry);
+    rememberRecovery(guidance.action);
+    rememberRecovery(guidance.command);
+    return guidance;
+  };
   const recordFailureRecovery = (action, command) => {
     rememberRecovery(action);
     rememberRecovery(command);
@@ -1155,7 +1161,7 @@ export async function execute(options, rt = createRuntime()) {
         { repair, components: selectedComponents(options, candidate.state) });
     } else {
       const current = stateRecoveryCommand(options, candidate.root, null, recoveryHosts, { useRequestedRefresh: options.refreshPending });
-      guidance = unverifiedStateGuidance(repair, current,
+      guidance = renderUnverifiedRecovery(repair, current,
         retryInstruction(rt, recoveryHosts, current, { components: selectedComponents(options, null) }));
     }
     problem(report, code, detail, exitCode);
@@ -1210,7 +1216,7 @@ export async function execute(options, rt = createRuntime()) {
     state = validateBoundState(rt.readState(statePath), root);
   } catch (error) {
     const current = recoveryCommandFor(null, { useRequestedRefresh: false });
-    const guidance = unverifiedStateGuidance("Resolve the initial state read conflict", current,
+    const guidance = renderUnverifiedRecovery("Resolve the initial state read conflict", current,
       retryInstruction(rt, requestedRecoveryHosts, current, { components: selectedComponents(options, null) }));
     stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: guidance.action });
     return recordFailureRecovery(guidance.action, guidance.command);
@@ -1338,7 +1344,7 @@ export async function execute(options, rt = createRuntime()) {
   const lockedUnknownGuidance = () => {
     const plan = stateRecoveryPlan(options, null, requestedRecoveryHosts, { useRequestedRefresh: false });
     const current = stateRecoveryCommand(options, root, null, requestedRecoveryHosts, { useRequestedRefresh: false });
-    return unverifiedStateGuidance("Resolve the locked state conflict", current,
+    return renderUnverifiedRecovery("Resolve the locked state conflict", current,
       retryInstruction(rt, plan.hosts, current, { components: plan.selected, packageManager: recoveryPackageManager }));
   };
   const replaceFailureRecovery = (guidance) => {
