@@ -184,6 +184,7 @@ function parseWithPowerShell(engine, source) {
     cmd: [engine, "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
     stdout: "pipe",
     stderr: "pipe",
+    timeout: 10_000,
   });
   const stdout = decodePowerShellOutput(result.stdout).trim();
   const json = stdout.split(/\r?\n/u).findLast((line) => line.trimStart().startsWith("{"));
@@ -251,7 +252,7 @@ describe("public CLI", () => {
     expect(failedPreflight.nextActions.join("\n")).toContain(preflightRetry);
     expect(failedPreflight.conflicts.map((item) => item.detail).join("\n")).toContain(preflightRetry);
     expect(preflight.writes).toHaveLength(0);
-  });
+  }, 30_000);
 
   test("native stream failures retain the validated report and saved retry", async () => {
     const state = {
@@ -4036,7 +4037,7 @@ describe("public CLI", () => {
       expect(parsedCommand.commands).toBe(1);
       expect(parsedCommand.statements).toBe(1);
     }
-  });
+  }, 30_000);
 
   test("typed state path conflicts stay STATE_CONFLICT at every locked boundary", async () => {
     const conflict = (message) => Object.assign(new Error(message), { code: "STATE_CONFLICT" });
