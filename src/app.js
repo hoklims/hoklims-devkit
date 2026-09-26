@@ -72,6 +72,16 @@ function isStateIoError(error) {
     || (typeof error?.code === "string" && /^E[A-Z0-9_]+$/u.test(error.code));
 }
 
+function stateBoundaryProblem(report, error, statePath, operation, { allowRunLocked = false } = {}) {
+  if (allowRunLocked && (error instanceof RunLockedError || error?.code === "RUN_LOCKED")) {
+    return problem(report, "RUN_LOCKED", String(error.message ?? error), 4);
+  }
+  if (error?.code === "STATE_CONFLICT" || !isStateIoError(error)) {
+    return problem(report, "STATE_CONFLICT", String(error.message ?? error), 4);
+  }
+  return stateIoProblem(report, error, statePath, operation);
+}
+
 function nativeResult(result, name, report) {
   const json = parseJsonOutput(result);
   if (!json) {
@@ -788,8 +798,7 @@ export async function execute(options, rt = createRuntime()) {
     state = validateState(rt.readState(statePath));
     if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
   } catch (error) {
-    if (isStateIoError(error)) return stateIoProblem(report, error, statePath, "initial read");
-    return problem(report, "STATE_CONFLICT", String(error.message ?? error));
+    return stateBoundaryProblem(report, error, statePath, "initial read");
   }
   if (options.command === "doctor") {
     const names = new Set(["semctx", ...options.with, ...Object.keys(state?.components ?? {}), ...(state?.inProgress?.selected ?? [])]);
@@ -858,11 +867,7 @@ export async function execute(options, rt = createRuntime()) {
   try {
     releaseLock = rt.acquireLock(statePath);
   } catch (error) {
-    if (error instanceof RunLockedError || error?.code === "RUN_LOCKED") {
-      problem(report, "RUN_LOCKED", String(error.message ?? error), 4);
-    } else {
-      stateIoProblem(report, error, statePath, "lock acquisition");
-    }
+    stateBoundaryProblem(report, error, statePath, "lock acquisition", { allowRunLocked: true });
     report.ok = false;
     return report;
   }
@@ -880,7 +885,11 @@ export async function execute(options, rt = createRuntime()) {
         try {
           rt.writeState(statePath, nextState);
         } catch (error) {
-          throw Object.assign(new Error(String(error.message ?? error)), { code: "STATE_IO_ERROR", cause: error });
+          throw Object.assign(new Error(String(error?.message ?? error)), {
+            cause: error,
+            code: error?.code,
+            stateBoundary: true,
+          });
         }
         savedState = next;
       }
@@ -914,7 +923,7 @@ export async function execute(options, rt = createRuntime()) {
           break;
         }
       } catch (error) {
-        if (error?.code === "STATE_IO_ERROR") throw error;
+        if (error?.stateBoundary === true) throw error;
         component.state = "partial";
         component.installed = "unknown";
         component.configured = "unknown";
@@ -927,12 +936,12 @@ export async function execute(options, rt = createRuntime()) {
       saveStateIfChanged();
     }
   } catch (error) {
-    stateIoProblem(report, error, statePath, "read or write");
+    stateBoundaryProblem(report, error, statePath, "read or write");
   } finally {
     try {
       releaseLock?.();
     } catch (error) {
-      stateIoProblem(report, error, statePath, "lock release");
+      stateBoundaryProblem(report, error, statePath, "lock release");
     }
   }
   report.ok = report.conflicts.length === 0;

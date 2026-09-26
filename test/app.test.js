@@ -1260,6 +1260,52 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("typed state path conflicts stay STATE_CONFLICT at every locked boundary", async () => {
+    const conflict = (message) => Object.assign(new Error(message), { code: "STATE_CONFLICT" });
+
+    const acquireFailure = fakeRuntime();
+    acquireFailure.acquireLock = () => { throw conflict("unsafe linked lock parent; inspect the path and retry"); };
+    const failedAcquire = await execute(setupOptions(), acquireFailure);
+    expect(failedAcquire.ok).toBe(false);
+    expect(failedAcquire.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(failedAcquire.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+    expect(failedAcquire.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
+    expect(failedAcquire.conflicts.map((item) => item.detail).join("\n")).toMatch(/inspect the path and retry/u);
+    expect(acquireFailure.writes).toHaveLength(0);
+
+    const rereadFailure = fakeRuntime();
+    const initialRead = rereadFailure.readState;
+    let reads = 0;
+    let rereadReleased = false;
+    rereadFailure.readState = (path) => {
+      reads += 1;
+      if (reads === 1) return initialRead(path);
+      throw conflict("state path became linked");
+    };
+    rereadFailure.acquireLock = () => () => { rereadReleased = true; };
+    const failedReread = await execute(setupOptions(), rereadFailure);
+    expect(failedReread.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(failedReread.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+    expect(rereadReleased).toBe(true);
+
+    const writeFailure = fakeRuntime();
+    let writeReleased = false;
+    writeFailure.acquireLock = () => () => { writeReleased = true; };
+    writeFailure.writeState = () => { throw conflict("state destination became linked"); };
+    const failedWrite = await execute(setupOptions(), writeFailure);
+    expect(failedWrite.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(failedWrite.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+    expect(failedWrite.conflicts.map((item) => item.code)).not.toContain("APPLY_FAILED");
+    expect(writeReleased).toBe(true);
+
+    const releaseFailure = fakeRuntime();
+    releaseFailure.acquireLock = () => () => { throw conflict("lock path became linked"); };
+    const failedRelease = await execute(setupOptions(), releaseFailure);
+    expect(failedRelease.ok).toBe(false);
+    expect(failedRelease.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(failedRelease.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+  });
+
   test("genuine lock contention remains RUN_LOCKED", async () => {
     const rt = fakeRuntime();
     rt.acquireLock = () => { throw Object.assign(new Error("another setup is running"), { code: "RUN_LOCKED" }); };
