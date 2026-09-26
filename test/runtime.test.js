@@ -107,7 +107,8 @@ test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
   if (process.platform === "win32") return;
   const runtimeUrl = new URL("../src/runtime.js", import.meta.url).href;
   const script = `
-    import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+    import { lstatSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+    import { spawnSync } from "node:child_process";
     import { tmpdir } from "node:os";
     import { join } from "node:path";
     import { createRuntime } from ${JSON.stringify(runtimeUrl)};
@@ -116,13 +117,21 @@ test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
     writeFileSync(statePath, JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }));
     const rt = createRuntime({ beforeManagedReadOpen: (path) => {
       unlinkSync(path);
-      const made = Bun.spawnSync({ cmd: ["mkfifo", path], stdout: "pipe", stderr: "pipe" });
-      if (made.exitCode !== 0) throw new Error(new TextDecoder().decode(made.stderr));
+      const made = spawnSync("mkfifo", [path], { encoding: "utf8" });
+      if (made.status !== 0) throw new Error(made.stderr || String(made.error));
     } });
     let error;
     try { rt.readState(statePath); } catch (caught) { error = caught; }
-    const fifo = Bun.spawnSync({ cmd: ["test", "-p", statePath], stdout: "pipe", stderr: "pipe" }).exitCode === 0;
-    process.stdout.write(JSON.stringify({ code: error?.code ?? null, fifo }));
+    const probe = spawnSync("test", ["-p", statePath], { encoding: "utf8" });
+    const stat = lstatSync(statePath);
+    process.stdout.write(JSON.stringify({
+      code: error?.code ?? null,
+      fifo: probe.status === 0,
+      probeStatus: probe.status,
+      probeStderr: probe.stderr,
+      mode: stat.mode,
+      isFile: stat.isFile(),
+    }));
     rmSync(root, { recursive: true, force: true });
   `;
   const child = Bun.spawn({ cmd: [process.execPath, "--eval", script], stdout: "pipe", stderr: "pipe", stdin: "ignore" });
@@ -135,7 +144,12 @@ test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
   expect(timedOut).toBe(false);
   expect(exitCode).toBe(0);
   expect(stderr).toBe("");
-  expect(JSON.parse(stdout)).toEqual({ code: "STATE_CONFLICT", fifo: true });
+  const result = JSON.parse(stdout);
+  expect(result.code).toBe("STATE_CONFLICT");
+  expect(result.fifo).toBe(true);
+  expect(result.probeStatus).toBe(0);
+  expect(result.probeStderr).toBe("");
+  expect(result.isFile).toBe(false);
 });
 
 test("runtime project-file inspection rejects linked and non-file entries", () => {
