@@ -452,6 +452,49 @@ describe("public CLI", () => {
     expect(report.components.find((item) => item.name === "latent-compass")).toMatchObject({ configured: "yes", observed: "unknown" });
   });
 
+  test("doctor accepts configured Compass status when Windows observation enumeration is unavailable", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+    } };
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, workspaceReady: true });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd) => argv[0] === executable && argv.includes("status")
+      ? { code: 0, stdout: JSON.stringify({
+        schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo",
+        hosts: [{ host: "codex", status: "OBSERVATION_UNKNOWN" }],
+        states: { codex: { installed: true, configured: true, observed: "UNKNOWN" } },
+      }), stderr: "" }
+      : nativeExec(argv, cwd);
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+    expect(report.ok).toBe(true);
+    expect(report.components.find((item) => item.name === "latent-compass")).toMatchObject({ configured: "yes", observed: "unknown" });
+  });
+
+  test("doctor rejects observation-unknown Compass reports with missing or foreign identity", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
+    const reports = [
+      { hosts: [{ host: "codex", status: "OBSERVATION_UNKNOWN" }], states: { codex: { installed: true, configured: true, observed: "UNKNOWN" } } },
+      {
+        schema_version: 1, operation: "status", version: "0.3.0", project_root: "/foreign",
+        hosts: [{ host: "codex", status: "OBSERVATION_UNKNOWN" }],
+        states: { codex: { installed: true, configured: true, observed: "UNKNOWN" } },
+      },
+    ];
+    for (const nativeReport of reports) {
+      const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd) => argv[0] === executable && argv.includes("status")
+        ? { code: 0, stdout: JSON.stringify(nativeReport), stderr: "" }
+        : nativeExec(argv, cwd);
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      expect(report.ok).toBe(false);
+      expect(report.components.find((item) => item.name === "latent-compass")).toMatchObject({ configured: "unknown", observed: "unknown" });
+    }
+  });
+
   test("doctor rejects Compass host flags without status identity", async () => {
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
@@ -957,6 +1000,30 @@ describe("public CLI", () => {
     expect(report.ok).toBe(false);
     expect(report.components.find((item) => item.name === "latent-compass").configured).toBe("unknown");
     expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+  });
+
+  test("Compass setup accepts a configured install when Windows observation enumeration is unavailable", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, workspaceReady: true });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => {
+      if (argv[0] === executable && argv.includes("install")) {
+        return { code: 0, stdout: JSON.stringify(compassInstallReport(argv, { installed: true, configured: true })), stderr: "" };
+      }
+      if (argv[0] === executable && argv.includes("status")) {
+        return { code: 0, stdout: JSON.stringify({
+          schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo",
+          hosts: [{ host: "codex", status: "OBSERVATION_UNKNOWN" }],
+          states: { codex: { installed: true, configured: true, observed: "UNKNOWN" } },
+        }), stderr: "" };
+      }
+      return nativeExec(argv, cwd, timeout);
+    };
+    const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+    expect(report.ok).toBe(true);
+    expect(report.components.find((item) => item.name === "latent-compass")).toMatchObject({ state: "configured", configured: "yes", loaded: "unknown", observed: "unknown" });
+    expect(rt.writes.at(-1).components["latent-compass"]).toEqual({ version: "0.3.0", hosts: ["codex"] });
   });
 
   test("Compass post-install status needs a matching host snapshot", async () => {
