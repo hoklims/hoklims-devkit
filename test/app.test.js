@@ -676,6 +676,49 @@ describe("public CLI", () => {
     const assertledger = report.components.find((item) => item.name === "assertledger");
     expect(assertledger.configured).toBe("no");
     expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).not.toContain("NATIVE_REPORT_INVALID");
+  });
+
+  test("doctor keeps invalid AssertLedger artifact evidence unknown", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { assertledger: { version: "1.2.0", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"], versions: { semctx: "0.3.4", assertledger: "1.2.0" } },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const variants = [
+      [null],
+      [
+        { owner: "init", path: "/foreign/assertledger.config.json", state: "UNCHANGED" },
+        { owner: "init", path: "/foreign/assertledger.lock.json", state: "UNCHANGED" },
+        { owner: "connection", path: "/foreign/.codex/config.toml", state: "UNCHANGED" },
+        { owner: "connection", path: "/foreign/.agents/skills/assertledger/SKILL.md", state: "UNCHANGED" },
+      ],
+    ];
+    for (const artifacts of variants) {
+      const rt = fakeRuntime({ state: structuredClone(state), files });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => argv[0] === "node" && argv.includes("setup")
+        ? { code: 0, stdout: JSON.stringify({ ...assertSetupReport(argv, "UNCHANGED", "dry-run"), artifacts }), stderr: "" }
+        : nativeExec(argv, cwd, timeout);
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+      expect(report.conflicts.map((item) => item.code)).toContain("NATIVE_REPORT_INVALID");
+      expect(guidance).toContain("hoklims-devkit setup /repo --host codex --with assertledger");
+      expect(rt.writes).toHaveLength(0);
+    }
+
+    const valid = fakeRuntime({ state: structuredClone(state), files });
+    const accepted = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), valid);
+    expect(accepted.components.find((item) => item.name === "assertledger").configured).toBe("yes");
+    expect(accepted.conflicts.map((item) => item.code)).not.toContain("NATIVE_REPORT_INVALID");
+    expect(valid.writes).toHaveLength(0);
   });
 
   test("doctor does not infer AssertLedger configuration from empty artifacts", async () => {
@@ -694,6 +737,7 @@ describe("public CLI", () => {
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
     expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+    expect(report.conflicts.map((item) => item.code)).toContain("NATIVE_REPORT_INVALID");
   });
 
   test("doctor applies AssertLedger project admission before native preview", async () => {

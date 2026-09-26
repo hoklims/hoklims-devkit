@@ -433,12 +433,14 @@ function fileBelongsToRoot(rt, path, relativePath, root) {
   }
 }
 
-function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifactStates) {
+function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifactStates, options = {}) {
   const expected = [
     ["init", "assertledger.config.json"], ["init", "assertledger.lock.json"],
     ["connection", client === "codex" ? ".codex/config.toml" : ".mcp.json"],
     ["connection", client === "codex" ? ".agents/skills/assertledger/SKILL.md" : ".claude/skills/assertledger/SKILL.md"],
   ];
+  const initStatuses = options.initStatuses ?? (mode === "dry-run" ? ["WOULD_CREATE", "UNCHANGED"] : ["CREATED", "UNCHANGED"]);
+  const connectionStatuses = options.connectionStatuses ?? (mode === "dry-run" ? ["EMITTED"] : ["CREATED", "UNCHANGED"]);
   return statuses.includes(parsed?.status) && parsed.client === client && parsed.mode === mode
     && Array.isArray(parsed.artifacts) && parsed.artifacts.length === expected.length
     && parsed.artifacts.every((artifact) => artifact !== null && !Array.isArray(artifact) && typeof artifact === "object")
@@ -447,10 +449,8 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && parsed.artifacts.every((artifact) => ["init", "connection"].includes(artifact?.owner)
       && typeof artifact.path === "string" && artifact.path.length > 0
       && artifactStates.includes(artifact.state))
-    && (mode === "dry-run" ? ["WOULD_CREATE", "UNCHANGED"].includes(parsed.init?.status)
-      && parsed.connection?.status === "EMITTED"
-      : ["CREATED", "UNCHANGED"].includes(parsed.init?.status)
-        && ["CREATED", "UNCHANGED"].includes(parsed.connection?.status))
+    && initStatuses.includes(parsed.init?.status)
+    && connectionStatuses.includes(parsed.connection?.status)
     && parsed.connection?.client === client
     && parsed.rollback?.status === "NOT_REQUIRED";
 }
@@ -923,15 +923,21 @@ async function diagnoseAssert(rt, root, hosts, version) {
     const result = await rt.exec(argv, root);
     checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result) });
   }
-  const recognizable = checks.every((item, index) => item.report && item.report.mode === "dry-run"
-    && item.report.client === (hosts[index] === "claude" ? "claude-code" : "codex")
-    && ["UNCHANGED", "WOULD_CREATE", "BLOCKED", "CONFLICT", "PARTIAL_FAILURE"].includes(item.report.status)
-    && Array.isArray(item.report.artifacts) && item.report.artifacts.length > 0);
-  const configured = recognizable && checks.every((item) => item.exitCode === 0 && item.report.status === "UNCHANGED"
+  const exitCodes = { UNCHANGED: 0, WOULD_CREATE: 0, BLOCKED: 3, CONFLICT: 4 };
+  const admitted = checks.every((item, index) => {
+    const client = hosts[index] === "claude" ? "claude-code" : "codex";
+    return item.exitCode === exitCodes[item.report?.status]
+      && validAssertSetupReport(rt, item.report, root, client, "dry-run",
+        Object.keys(exitCodes), ["UNCHANGED", "WOULD_CREATE", "CONFLICT"], {
+          initStatuses: ["UNCHANGED", "WOULD_CREATE", "BLOCKED", "CONFLICT"],
+          connectionStatuses: ["EMITTED", "CONFLICT"],
+        });
+  });
+  const configured = admitted && checks.every((item) => item.exitCode === 0 && item.report.status === "UNCHANGED"
     && validAssertSetupReport(rt, item.report, root, item.command.slice(6), "dry-run", ["UNCHANGED"], ["UNCHANGED"]));
   return {
-    name: "assertledger", version, installed: "yes", configured: !recognizable ? "unknown" : configured ? "yes" : "no",
-    loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured,
+    name: "assertledger", version, installed: "yes", configured: !admitted ? "unknown" : configured ? "yes" : "no",
+    loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured, evidenceInvalid: !admitted,
   };
 }
 
@@ -1066,9 +1072,10 @@ export async function execute(options, rt = createRuntime()) {
         const diagnostic = name === "semctx" ? await diagnoseSemctx(rt, root, hosts, version)
           : name === "assertledger" ? await diagnoseAssert(rt, root, hosts, version)
             : await diagnoseCompass(rt, root, hosts, version);
-        const { ready, ...publicDiagnostic } = diagnostic;
+        const { ready, evidenceInvalid, ...publicDiagnostic } = diagnostic;
         report.components.push(publicDiagnostic);
-        if (!ready) problem(report, "DOCTOR_NOT_READY", `${name}: installed=${diagnostic.installed}, configured=${diagnostic.configured}`, 3);
+        if (evidenceInvalid) problem(report, "NATIVE_REPORT_INVALID", `${name}: native diagnostic structure or repository identity is invalid`, 3);
+        else if (!ready) problem(report, "DOCTOR_NOT_READY", `${name}: installed=${diagnostic.installed}, configured=${diagnostic.configured}`, 3);
       } catch (error) {
         report.components.push({ name, version, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
         problem(report, "DOCTOR_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
