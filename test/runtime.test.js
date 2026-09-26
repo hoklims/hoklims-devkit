@@ -107,17 +107,21 @@ test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
   if (process.platform === "win32") return;
   const runtimeUrl = new URL("../src/runtime.js", import.meta.url).href;
   const script = `
-    import { lstatSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+    import { lstatSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
     import { spawnSync } from "node:child_process";
     import { tmpdir } from "node:os";
     import { join } from "node:path";
     import { createRuntime } from ${JSON.stringify(runtimeUrl)};
-    const root = mkdtempSync(join(tmpdir(), "hoklims-devkit-fifo-read-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-fifo-read-")));
     const statePath = join(root, "repository.json");
     writeFileSync(statePath, JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }));
+    let replacementExecuted = false;
+    let mkfifoStatus = null;
     const rt = createRuntime({ beforeManagedReadOpen: (path) => {
+      replacementExecuted = true;
       unlinkSync(path);
       const made = spawnSync("mkfifo", [path], { encoding: "utf8" });
+      mkfifoStatus = made.status;
       if (made.status !== 0) throw new Error(made.stderr || String(made.error));
     } });
     let error;
@@ -129,6 +133,8 @@ test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
       fifo: probe.status === 0,
       probeStatus: probe.status,
       probeStderr: probe.stderr,
+      replacementExecuted,
+      mkfifoStatus,
       mode: stat.mode,
       isFile: stat.isFile(),
     }));
@@ -149,6 +155,8 @@ test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
   expect(result.fifo).toBe(true);
   expect(result.probeStatus).toBe(0);
   expect(result.probeStderr).toBe("");
+  expect(result.replacementExecuted).toBe(true);
+  expect(result.mkfifoStatus).toBe(0);
   expect(result.isFile).toBe(false);
 });
 
