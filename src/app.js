@@ -75,6 +75,14 @@ function requireAssertLedgerTools(rt, packageManager) {
   if (missing.length) throw new Error(`AssertLedger prerequisite disappeared from PATH: ${missing.join(", ")}`);
 }
 
+function recordMissingAssertLedgerTools(report, rt, packageManager) {
+  const missing = missingAssertLedgerTools(rt, packageManager);
+  if (missing.length === 0) return false;
+  const code = missing.some((name) => name === "node" || name === "npm") ? "NODE_REQUIRED" : "PACKAGE_MANAGER_MISSING";
+  problem(report, code, `AssertLedger prerequisites missing from PATH: ${missing.join(", ")}`, 3);
+  return true;
+}
+
 function retryGuidance(rt, hosts, command, { components = [], packageManager } = {}) {
   const missing = [];
   const add = (label) => { if (!missing.includes(label)) missing.push(label); };
@@ -803,10 +811,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
 }
 
 async function preflightAssert(rt, root, hosts, version, previous, command, report, pendingVersion) {
-  if (missingAssertLedgerTools(rt).length) {
-    problem(report, "NODE_REQUIRED", "AssertLedger needs Node >=22.15 and npm", 3);
-    return null;
-  }
+  if (recordMissingAssertLedgerTools(report, rt)) return null;
   const node = await rt.exec(["node", "--version"], root);
   const match = node.stdout.trim().match(/^v(\d+)\.(\d+)\./u);
   if (!match || Number(match[1]) < 22 || (Number(match[1]) === 22 && Number(match[2]) < 15)) {
@@ -821,10 +826,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     return null;
   }
   const { manager, version: current } = project;
-  if (missingAssertLedgerTools(rt, manager).includes(manager)) {
-    problem(report, "PACKAGE_MANAGER_MISSING", `${manager} is not on PATH`, 3);
-    return null;
-  }
+  if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
   let localEntry;
   try {
     localEntry = localAssertEntry(rt, root);
@@ -848,6 +850,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
   const previews = [];
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
+    if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
     let admission;
     try {
       admission = assertAssertAdmission(rt, root, manager, admittedVersions, admittedVersions, needsInstall);
@@ -859,6 +862,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
       ? localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"])
       : ["npm", "exec", "--yes", "--ignore-scripts", `--package=assertledger@${version}`, "--", "assertledger", "setup", root, "--client", client, "--dry-run", "--json"];
     const result = await rt.exec(previewCommand, root);
+    if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
     try {
       assertAssertAdmission(rt, root, manager, admittedVersions, admittedVersions, needsInstall);
     } catch (error) {
@@ -878,6 +882,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
       requiredOperatorInputs: parsed.init?.requiredOperatorInputs ?? [],
     });
   }
+  if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
   report.plannedChanges.push({ component: "assertledger", packageManager: manager, installPackage: needsInstall, previews });
   return { manager, current, needsInstall, previews, admittedVersions };
 }
@@ -1084,12 +1089,15 @@ async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [ve
   const checks = [];
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
+    requireAssertLedgerTools(rt, project.manager);
     const admission = assertAssertAdmission(rt, root, project.manager, [version], [version]);
     const argv = localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]);
     const result = await rt.exec(argv, root);
+    requireAssertLedgerTools(rt, project.manager);
     assertAssertAdmission(rt, root, project.manager, [version], [version]);
     checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result) });
   }
+  requireAssertLedgerTools(rt, project.manager);
   const exitCodes = { UNCHANGED: 0, WOULD_CREATE: 0, BLOCKED: 3, CONFLICT: 4 };
   const admitted = checks.every((item, index) => {
     const client = hosts[index] === "claude" ? "claude-code" : "codex";
@@ -1353,6 +1361,7 @@ export async function execute(options, rt = createRuntime()) {
     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
   recoveryPackageManager = previews.assertledger?.manager ?? recoveryPackageManager;
+  if (previews.assertledger) recordMissingAssertLedgerTools(report, rt, previews.assertledger.manager);
   if (report.conflicts.length || options.dryRun) {
     if (report.conflicts.length) finalizeFailure(state);
     if (state?.inProgress && !options.refreshPending

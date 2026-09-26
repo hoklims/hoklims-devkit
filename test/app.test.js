@@ -718,7 +718,7 @@ describe("public CLI", () => {
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
-    const rt = fakeRuntime({ state, files, assertStatus: "CONFLICT" });
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files, assertStatus: "CONFLICT" });
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     const assertledger = report.components.find((item) => item.name === "assertledger");
     expect(assertledger.configured).toBe("no");
@@ -748,7 +748,7 @@ describe("public CLI", () => {
       ],
     ];
     for (const artifacts of variants) {
-      const rt = fakeRuntime({ state: structuredClone(state), files });
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files });
       const nativeExec = rt.exec;
       rt.exec = async (argv, cwd, timeout) => argv[0] === "node" && argv.includes("setup")
         ? { code: 0, stdout: JSON.stringify({ ...assertSetupReport(argv, "UNCHANGED", "dry-run"), artifacts }), stderr: "" }
@@ -761,7 +761,7 @@ describe("public CLI", () => {
       expect(rt.writes).toHaveLength(0);
     }
 
-    const valid = fakeRuntime({ state: structuredClone(state), files });
+    const valid = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files });
     const accepted = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), valid);
     expect(accepted.components.find((item) => item.name === "assertledger").configured).toBe("yes");
     expect(accepted.conflicts.map((item) => item.code)).not.toContain("NATIVE_REPORT_INVALID");
@@ -1502,6 +1502,121 @@ describe("public CLI", () => {
       else expect(report.components.find((item) => item.name === "assertledger").configured).toBe("yes");
       expect(rt.calls.filter((argv) => argv[0] === "node" && argv[1]?.endsWith(join("assertledger", "dist", "cli.js")) && argv.includes("claude-code"))).toHaveLength(1);
     }
+  });
+
+  test("AssertLedger multi-host preflight rechecks every required tool before managed writes", async () => {
+    const scenarios = [
+      { manager: "pnpm", missing: "npm", afterClient: "codex", code: "NODE_REQUIRED" },
+      { manager: "bun", missing: "node", afterClient: "claude-code", code: "NODE_REQUIRED", saved: true },
+      { manager: "pnpm", missing: "pnpm", afterClient: "claude-code", code: "PACKAGE_MANAGER_MISSING" },
+    ];
+    const filesFor = (manager) => ({
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: `${manager}@10.0.0` }),
+      [join("/repo", manager === "pnpm" ? "pnpm-lock.yaml" : "bun.lock")]: "lock",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    });
+    for (const scenario of scenarios) {
+      const state = scenario.saved ? {
+        schemaVersion: 1, projectRoot: "/repo",
+        components: {
+          semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+          assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+        },
+        inProgress: {
+          command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex", "claude"],
+          versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+        },
+      } : null;
+      const rt = fakeRuntime({ state, tools: ["node", "npm", scenario.manager, "claude"], files: filesFor(scenario.manager) });
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      let missing = false;
+      rt.which = (name) => missing && name === scenario.missing ? null : nativeWhich(name);
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        const client = argv[argv.indexOf("--client") + 1];
+        if (argv[0] === "node" && argv.includes("--dry-run") && client === scenario.afterClient) missing = true;
+        return result;
+      };
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "all", "--with", "assertledger"]), rt);
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      expect(missing, `${scenario.manager}:${scenario.missing}`).toBe(true);
+      expect(report.conflicts.map((item) => item.code), `${scenario.manager}:${scenario.missing}`).toContain(scenario.code);
+      expect(guidance.toLowerCase(), `${scenario.manager}:${scenario.missing}`).toContain(`restore ${scenario.missing}`.toLowerCase());
+      expect(guidance).toContain("hoklims-devkit setup /repo --host all --with assertledger");
+      expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+      if (scenario.afterClient === "codex") {
+        expect(rt.calls.some((argv) => argv.includes("--client") && argv.includes("claude-code"))).toBe(false);
+      }
+    }
+
+    const available = fakeRuntime({ tools: ["node", "npm", "pnpm", "claude"], files: filesFor("pnpm") });
+    const accepted = await execute(parseArgs(["setup", "/repo", "--host", "all", "--with", "assertledger", "--dry-run"]), available);
+    expect(accepted.ok).toBe(true);
+
+    const semctxOnly = fakeRuntime();
+    const noOptionalRequirement = await execute({ ...setupOptions(), dryRun: true }, semctxOnly);
+    expect(noOptionalRequirement.conflicts.map((item) => item.code)).not.toContain("NODE_REQUIRED");
+  });
+
+  test("global preflight rechecks AssertLedger tools after later component previews", async () => {
+    const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      [executable]: "shim",
+    };
+    const rt = fakeRuntime({ tools: ["node", "npm", "pnpm", "uv"], files });
+    const nativeWhich = rt.which;
+    const nativeExec = rt.exec;
+    let npmMissing = false;
+    rt.which = (name) => npmMissing && name === "npm" ? null : nativeWhich(name);
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if ((argv[0] === executable || argv[0] === "uv") && argv.includes("host") && argv.includes("--dry-run")) npmMissing = true;
+      return result;
+    };
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger,latent-compass"]), rt);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(npmMissing).toBe(true);
+    expect(report.conflicts.map((item) => item.code)).toContain("NODE_REQUIRED");
+    expect(guidance).toContain("Restore npm on PATH");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("doctor refuses readiness when AssertLedger prerequisites change between host previews", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+      assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm", "pnpm", "claude"], files, workspaceReady: true });
+    const nativeWhich = rt.which;
+    const nativeExec = rt.exec;
+    let npmMissing = false;
+    rt.which = (name) => npmMissing && name === "npm" ? null : nativeWhich(name);
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "node" && argv.includes("--client") && argv.includes("codex")) npmMissing = true;
+      return result;
+    };
+    const report = await execute(parseArgs(["doctor", "/repo", "--host", "all", "--with", "assertledger"]), rt);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(report.ok).toBe(false);
+    expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+    expect(guidance).toContain("Restore npm on PATH");
+    expect(rt.calls.some((argv) => argv.includes("--client") && argv.includes("claude-code"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
   });
 
   test("valid packageManager declarations retain supported manager selection", async () => {
