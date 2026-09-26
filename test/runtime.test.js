@@ -178,6 +178,139 @@ test("runtime revalidates every pathname after descriptor reads", () => {
   }
 });
 
+test("runtime binds pre-open file generation until the descriptor is held", () => {
+  const runtimeUrl = new URL("../src/runtime.js", import.meta.url).href;
+  const script = `
+    import fs from "node:fs";
+    import os from "node:os";
+    import path from "node:path";
+    import { syncBuiltinESMExports } from "node:module";
+    const mode = process.argv[1];
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hoklims-devkit-file-generation-")));
+    const statePath = path.join(root, "repository.json");
+    const original = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const foreign = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "9.9.9", hosts: ["codex"] } } };
+    fs.writeFileSync(statePath, JSON.stringify(original));
+    const nativeLstat = fs.lstatSync;
+    const nativeFstat = fs.fstatSync;
+    const initial = nativeLstat(statePath, { bigint: true });
+    let replaced = false;
+    const substituteIdentity = (stat) => new Proxy(stat, { get(target, property) {
+      if (property === "dev") return initial.dev;
+      if (property === "ino") return initial.ino;
+      if (property === "birthtimeNs") return initial.birthtimeNs + 1n;
+      if (property === "ctimeNs") return initial.ctimeNs + 1n;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    fs.lstatSync = function(candidate, options) {
+      const stat = nativeLstat.call(this, candidate, options);
+      return replaced && candidate === statePath ? substituteIdentity(stat) : stat;
+    };
+    fs.fstatSync = function(descriptor, options) {
+      const stat = nativeFstat.call(this, descriptor, options);
+      return replaced ? substituteIdentity(stat) : stat;
+    };
+    syncBuiltinESMExports();
+    const { createRuntime } = await import(${JSON.stringify(runtimeUrl)});
+    const runtime = createRuntime({ beforeManagedReadOpen: () => {
+      if (replaced) return;
+      fs.unlinkSync(statePath);
+      fs.writeFileSync(statePath, JSON.stringify(foreign));
+      replaced = true;
+    } });
+    let error;
+    let observed;
+    try {
+      observed = mode === "read" ? runtime.readState(statePath) : runtime.openStateTransaction(statePath).state;
+    } catch (caught) { error = caught; }
+    process.stdout.write(JSON.stringify({ mode, replaced, code: error?.code ?? null, version: observed?.components?.semctx?.version ?? null }));
+  `;
+  for (const mode of ["read", "transaction"]) {
+    const child = Bun.spawnSync({ cmd: ["node", "--input-type=module", "--eval", script, mode], stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode, new TextDecoder().decode(child.stderr)).toBe(0);
+    expect(JSON.parse(new TextDecoder().decode(child.stdout))).toEqual({
+      mode, replaced: true, code: "STATE_CONFLICT", version: null,
+    });
+  }
+});
+
+test("runtime checks retained paths when descriptor identity inspection fails", () => {
+  const runtimeUrl = new URL("../src/runtime.js", import.meta.url).href;
+  const script = `
+    import fs from "node:fs";
+    import os from "node:os";
+    import path from "node:path";
+    import { syncBuiltinESMExports } from "node:module";
+    const mode = process.argv[1];
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hoklims-devkit-fstat-path-check-")));
+    const statePath = path.join(root, "repository.json");
+    const originalPath = path.join(root, "original.json");
+    const original = JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} });
+    fs.writeFileSync(statePath, original);
+    const nativeLstat = fs.lstatSync;
+    const nativeFstat = fs.fstatSync;
+    let armed = false;
+    let pathChecksAfterFailure = 0;
+    fs.lstatSync = function(candidate, options) {
+      if (armed) pathChecksAfterFailure++;
+      return nativeLstat.call(this, candidate, options);
+    };
+    fs.fstatSync = function(descriptor, options) {
+      if (armed && ["read", "capture"].includes(mode)) {
+        throw Object.assign(new Error("persistent descriptor EIO"), { code: "EIO" });
+      }
+      return nativeFstat.call(this, descriptor, options);
+    };
+    syncBuiltinESMExports();
+    const { createRuntime } = await import(${JSON.stringify(runtimeUrl)});
+    const replace = (target) => {
+      fs.renameSync(target, originalPath);
+      fs.writeFileSync(target, "FOREIGN-BYTES\\n");
+      armed = true;
+    };
+    const runtime = createRuntime(mode === "read" ? {
+      readFileData: (descriptor) => { replace(statePath); throw Object.assign(new Error("read EIO"), { code: "EIO" }); },
+    } : mode === "capture" ? {
+      beforeManagedReadOpen: () => replace(statePath),
+    } : {
+      randomId: () => "candidate",
+      inspectOwnedDescriptor: (descriptor, options) => {
+        if (armed) throw Object.assign(new Error("persistent owned fstat EIO"), { code: "EIO" });
+        return nativeFstat(descriptor, options);
+      },
+      readDescriptorData: (_descriptor, _buffer, _offset, _length, position) => {
+        if (!armed && position === 0) replace(statePath + ".candidate.tmp");
+        throw Object.assign(new Error("snapshot EIO"), { code: "EIO" });
+      },
+    });
+    let error;
+    try {
+      if (mode === "read") runtime.readState(statePath);
+      else if (mode === "capture") runtime.openStateTransaction(statePath);
+      else runtime.openStateTransaction(statePath)
+        .write({ schemaVersion: 1, projectRoot: "/repo", components: {} });
+    } catch (caught) { error = caught; }
+    const foreignPath = ["read", "capture"].includes(mode) ? statePath : statePath + ".candidate.tmp";
+    const foreignPresent = fs.existsSync(foreignPath);
+    process.stdout.write(JSON.stringify({
+      mode, code: error?.code ?? null, pathChecksAfterFailure, foreignPresent,
+      foreign: foreignPresent ? fs.readFileSync(foreignPath, "utf8") : null,
+    }));
+  `;
+  const modes = process.platform === "win32" ? ["read", "capture"] : ["read", "capture", "owned"];
+  for (const mode of modes) {
+    const child = Bun.spawnSync({ cmd: ["node", "--input-type=module", "--eval", script, mode], stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode, new TextDecoder().decode(child.stderr)).toBe(0);
+    const observed = JSON.parse(new TextDecoder().decode(child.stdout));
+    expect(observed.mode).toBe(mode);
+    expect(observed.code).toBe("STATE_CONFLICT");
+    expect(observed.pathChecksAfterFailure).toBeGreaterThan(0);
+    expect(observed.foreignPresent).toBe(true);
+    expect(observed.foreign).toBe("FOREIGN-BYTES\n");
+  }
+});
+
 test("runtime descriptor snapshots reject growth, shrink, and same-size mutation after reads", () => {
   for (const scenario of ["unchanged", "growth", "shrink", "same-size"]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-read-snapshot-")));
@@ -842,7 +975,7 @@ test("runtime preserves a state destination replaced during temporary write", ()
 });
 
 test("runtime revalidates Windows destination bytes after publication fails", () => {
-  for (const scenario of ["unchanged", "same-inode-changed-bytes", "different-inode-same-bytes", "replacement-decoding-equivalent"]) {
+  for (const scenario of ["unchanged", "same-inode-changed-bytes", "different-inode-same-bytes", "replacement-decoding-equivalent", "parent-generation"]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-windows-publish-")));
     const statePath = join(root, "repository.json");
     const foreignPath = join(root, "foreign.json");
@@ -869,6 +1002,12 @@ test("runtime revalidates Windows destination bytes after publication fails", ()
           renameSync(foreignPath, statePath);
         }
         unlinkSync(path);
+        if (scenario === "parent-generation") {
+          const previousParent = `${root}.previous-parent`;
+          renameSync(root, previousParent);
+          mkdirSync(root);
+          renameSync(join(previousParent, "repository.json"), statePath);
+        }
       },
     });
     const transaction = rt.openStateTransaction(statePath);
@@ -881,7 +1020,7 @@ test("runtime revalidates Windows destination bytes after publication fails", ()
     expect(platformObserved).toBe(true);
     expect(writeError?.code).toBe("EIO");
     if (scenario !== "unchanged") {
-      expect(() => transaction.close()).toThrow(/validated|state bytes changed/u);
+      expect(() => transaction.close()).toThrow(/validated|state bytes changed|managed parent inspection/u);
       if (scenario === "replacement-decoding-equivalent") expect(readFileSync(statePath).equals(invalidBytes)).toBe(true);
       else expect(readFileSync(statePath, "utf8")).toBe(scenario === "same-inode-changed-bytes" ? "FOREIGN STATE\n" : original);
     } else {

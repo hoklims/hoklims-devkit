@@ -43,7 +43,7 @@ function preferredBoundaryError(primary, secondary) {
     try {
       Object.defineProperty(preferred, "suppressedErrors", {
         configurable: true,
-        value: [...previous, suppressed],
+        value: previous.includes(suppressed) ? previous : [...previous, suppressed],
       });
     } catch { /* Preserve the preferred boundary error even when it is not extensible. */ }
   }
@@ -57,6 +57,34 @@ function rethrowAfterValidation(error, validate) {
     throw preferredBoundaryError(error, validationError);
   }
   throw error;
+}
+
+function validateEveryBoundary(validations) {
+  let error = null;
+  for (const validate of validations) {
+    try {
+      validate();
+    } catch (validationError) {
+      error = error ? preferredBoundaryError(error, validationError) : validationError;
+    }
+  }
+  if (error) throw error;
+}
+
+function fileIdentity(stat, includeGeneration = false) {
+  const identity = { dev: stat.dev, ino: stat.ino };
+  if (!includeGeneration) return identity;
+  identity.birthtimeNs = stat.birthtimeNs > 0n ? stat.birthtimeNs : null;
+  identity.ctimeNs = identity.birthtimeNs === null ? stat.ctimeNs : null;
+  return identity;
+}
+
+function matchesFileIdentity(stat, identity) {
+  if (!stat || stat.dev !== identity.dev || stat.ino !== identity.ino) return false;
+  if (!Object.hasOwn(identity, "birthtimeNs")) return true;
+  const birthtimeNs = stat.birthtimeNs > 0n ? stat.birthtimeNs : null;
+  return birthtimeNs === identity.birthtimeNs
+    && (birthtimeNs !== null || stat.ctimeNs === identity.ctimeNs);
 }
 
 function unsafeProjectPath(path, detail) {
@@ -159,7 +187,7 @@ function openVerifiedReadDescriptor(path) {
 
 function assertInspectedIdentity(path, inspectFile, conflict, identity, detail, parents = null) {
   const current = inspectFile(path, { bigint: true }, parents);
-  if (!current || current.dev !== identity.dev || current.ino !== identity.ino) throw conflict(path, detail);
+  if (!matchesFileIdentity(current, identity)) throw conflict(path, detail);
 }
 
 function readDescriptorSnapshot(descriptor, { readWhole, readChunk = readSync, path } = {}) {
@@ -201,8 +229,8 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
   const parents = inspectFile === inspectManagedFile ? expectedParents ?? assertSafeManagedParents(path) : null;
   const initial = inspectFile(path, { bigint: true }, parents);
   if (!initial) return null;
-  const identity = expectedIdentity ?? { dev: initial.dev, ino: initial.ino };
-  if (initial.dev !== identity.dev || initial.ino !== identity.ino) {
+  const identity = expectedIdentity ?? fileIdentity(initial, true);
+  if (!matchesFileIdentity(initial, identity)) {
     throw conflict(path, "the pathname no longer identifies the validated file");
   }
   beforeOpen(path);
@@ -215,14 +243,16 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
         "the pathname changed before it could be opened for reading", parents));
     }
     const assertReadIdentity = () => {
-      const opened = fstatSync(descriptor, { bigint: true });
-      if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
-        throw conflict(path, "the file changed while it was opened for reading");
-      }
-      const current = inspectFile(path, { bigint: true }, parents);
-      if (!current || current.dev !== identity.dev || current.ino !== identity.ino) {
-        throw conflict(path, "the pathname changed while it was opened for reading");
-      }
+      validateEveryBoundary([
+        () => {
+          const opened = fstatSync(descriptor, { bigint: true });
+          if (!opened.isFile() || !matchesFileIdentity(opened, identity)) {
+            throw conflict(path, "the file changed while it was opened for reading");
+          }
+        },
+        () => assertInspectedIdentity(path, inspectFile, conflict, identity,
+          "the pathname changed while it was opened for reading", parents),
+      ]);
     };
     assertReadIdentity();
     let content;
@@ -244,7 +274,7 @@ function assertManagedDestination(path, expectedIdentity, parents = null) {
     if (stat) throw ownedFileConflict(path, "a destination appeared during the write");
     return;
   }
-  if (!stat || stat.dev !== expectedIdentity.dev || stat.ino !== expectedIdentity.ino) {
+  if (!matchesFileIdentity(stat, expectedIdentity)) {
     throw ownedFileConflict(path, "the destination was replaced during the write");
   }
 }
@@ -253,7 +283,7 @@ function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
   const parents = assertSafeManagedParents(path);
   const initial = inspectManagedFile(path, { bigint: true }, parents);
   if (!initial) return { descriptor: null, identity: null, observation: "absent", parents };
-  const identity = { dev: initial.dev, ino: initial.ino };
+  const identity = fileIdentity(initial, true);
   let descriptor;
   try {
     beforeOpen(path);
@@ -263,11 +293,15 @@ function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
       rethrowAfterValidation(error, () => assertInspectedIdentity(path, inspectManagedFile, ownedFileConflict, identity,
         "the destination changed before its identity could be captured", parents));
     }
-    const opened = fstatSync(descriptor, { bigint: true });
-    if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
-      throw ownedFileConflict(path, "the destination changed while its identity was captured");
-    }
-    assertManagedDestination(path, identity, parents);
+    validateEveryBoundary([
+      () => {
+        const opened = fstatSync(descriptor, { bigint: true });
+        if (!opened.isFile() || !matchesFileIdentity(opened, identity)) {
+          throw ownedFileConflict(path, "the destination changed while its identity was captured");
+        }
+      },
+      () => assertManagedDestination(path, identity, parents),
+    ]);
     return { descriptor, identity, observation: "held", parents };
   } catch (error) {
     if (descriptor !== undefined) {
@@ -319,7 +353,18 @@ function openOwnedManagedFile(path, createOwnedFile, flags = "wx", inspectOwnedD
     rethrowAfterValidation(error, () => assertSafeManagedParents(path, parents));
   }
   try {
-    const stat = inspectOwnedDescriptor(descriptor, { bigint: true });
+    let stat;
+    try {
+      stat = inspectOwnedDescriptor(descriptor, { bigint: true });
+    } catch (error) {
+      rethrowAfterValidation(error, () => {
+        assertSafeManagedParents(path, parents);
+        const current = inspectManagedEntry(path, { bigint: true });
+        if (!current || current.isSymbolicLink() || !current.isFile()) {
+          throw ownedFileConflict(path, "the newly opened path changed before its identity could be captured");
+        }
+      });
+    }
     const owned = { path, descriptor, identity: { dev: stat.dev, ino: stat.ino }, parents, inspectOwnedDescriptor };
     assertOwnedFile(owned);
     owned.parents = assertSafeManagedParents(path);
@@ -337,14 +382,8 @@ function closeOwnedFile(owned) {
   closeSync(descriptor);
 }
 
-function assertOwnedFile(owned) {
-  if (owned.descriptor === null) throw ownedFileConflict(owned.path, "the owned descriptor was closed before validation");
-  const opened = (owned.inspectOwnedDescriptor ?? fstatSync)(owned.descriptor, { bigint: true });
-  if (!opened.isFile() || opened.dev !== owned.identity.dev || opened.ino !== owned.identity.ino) {
-    throw ownedFileConflict(owned.path, "the opened file identity changed");
-  }
+function assertOwnedPath(owned) {
   const parents = assertSafeManagedParents(owned.path, owned.parents ?? null);
-  owned.parents = parents;
   let stat;
   try {
     stat = inspectManagedEntry(owned.path, { bigint: true });
@@ -354,10 +393,26 @@ function assertOwnedFile(owned) {
   assertSafeManagedParents(owned.path, parents);
   if (!stat) throw ownedFileConflict(owned.path, "the owned path was removed");
   if (stat.isSymbolicLink() || !stat.isFile()
-    || stat.dev !== owned.identity.dev || stat.ino !== owned.identity.ino) {
+    || !matchesFileIdentity(stat, owned.identity)) {
     throw ownedFileConflict(owned.path, "the pathname now identifies another file");
   }
-  return stat;
+  return { stat, parents };
+}
+
+function assertOwnedFile(owned) {
+  if (owned.descriptor === null) throw ownedFileConflict(owned.path, "the owned descriptor was closed before validation");
+  let pathResult;
+  validateEveryBoundary([
+    () => {
+      const opened = (owned.inspectOwnedDescriptor ?? fstatSync)(owned.descriptor, { bigint: true });
+      if (!opened.isFile() || !matchesFileIdentity(opened, owned.identity)) {
+        throw ownedFileConflict(owned.path, "the opened file identity changed");
+      }
+    },
+    () => { pathResult = assertOwnedPath(owned); },
+  ]);
+  owned.parents = pathResult.parents;
+  return pathResult.stat;
 }
 
 function readOwnedSnapshot(owned, options) {
@@ -494,7 +549,8 @@ export function createRuntime({
       }
       if (destination.observation === "closed-existing") {
         const currentBytes = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
-          beforeManagedReadOpen, readFileData, openReadDescriptor, destination.identity, null, readDescriptorData);
+          beforeManagedReadOpen, readFileData, openReadDescriptor, destination.identity, null, readDescriptorData,
+          destination.parents);
         if (currentBytes === null || !Buffer.from(currentBytes).equals(expectedBytes)) {
           throw ownedFileConflict(path, "the validated state bytes changed after publication failed");
         }

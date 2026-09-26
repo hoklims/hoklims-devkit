@@ -56,8 +56,10 @@ function reportFor(options) {
   };
 }
 
-function problem(report, code, detail, exitCode = 4) {
-  report.conflicts.push({ code, detail });
+function problem(report, code, detail, exitCode = 4, diagnostics = []) {
+  const conflict = { code, detail };
+  if (diagnostics.length) conflict.diagnostics = diagnostics;
+  report.conflicts.push(conflict);
   report.exitCode = Math.max(report.exitCode ?? 0, exitCode);
   return report;
 }
@@ -108,9 +110,55 @@ function retryInstruction(rt, hosts, command, requirements) {
   return retryGuidance(rt, hosts, command, requirements).instruction;
 }
 
-function stateIoProblem(report, error, statePath, operation, recoveryAction) {
+function suppressedErrorDiagnostics(error, limit = 16) {
+  const diagnostics = [];
+  const seenErrors = new Set();
+  const seenDiagnostics = new Set();
+  const visitSuppressed = (candidate, depth = 0) => {
+    if (!candidate || typeof candidate !== "object" || seenErrors.has(candidate) || depth > 8
+      || diagnostics.length >= limit) return;
+    seenErrors.add(candidate);
+    for (const suppressed of Array.isArray(candidate.suppressedErrors) ? candidate.suppressedErrors : []) {
+      if (!suppressed || typeof suppressed !== "object" || seenErrors.has(suppressed)) continue;
+      const diagnostic = {
+        code: typeof suppressed.code === "string" ? suppressed.code : "SECONDARY_ERROR",
+        message: String(suppressed.message ?? suppressed),
+        ...(typeof suppressed.path === "string" ? { path: suppressed.path } : {}),
+      };
+      const key = `${diagnostic.code}\u0000${diagnostic.message}\u0000${diagnostic.path ?? ""}`;
+      if (!seenDiagnostics.has(key) && diagnostics.length < limit) {
+        seenDiagnostics.add(key);
+        diagnostics.push(diagnostic);
+      }
+      visitSuppressed(suppressed, depth + 1);
+    }
+    visitSuppressed(candidate.cause, depth + 1);
+  };
+  visitSuppressed(error);
+  return diagnostics;
+}
+
+function recordSuppressedStateDiagnostics(report, error) {
+  const diagnostics = suppressedErrorDiagnostics(error);
+  for (const diagnostic of diagnostics) {
+    const location = diagnostic.path ? ` at ${diagnostic.path}` : "";
+    const action = `Resolve secondary state cleanup failure ${diagnostic.code}${location}: ${diagnostic.message}`;
+    if (!report.nextActions.includes(action)) report.nextActions.push(action);
+  }
+  return diagnostics;
+}
+
+function withSuppressedDiagnosticDetail(detail, diagnostics) {
+  if (diagnostics.length === 0) return detail;
+  const rendered = diagnostics.map((item) => `${item.code}${item.path ? ` at ${item.path}` : ""}: ${item.message}`).join("; ");
+  return `${detail} Secondary state cleanup failures: ${rendered}.`;
+}
+
+function stateIoProblem(report, error, statePath, operation, recoveryAction, diagnostics = null) {
   const detail = String(error?.message ?? error);
-  return problem(report, "STATE_IO_ERROR", `Devkit state ${operation} failed at ${statePath}: ${detail}. Check disk space and permissions, replace linked state paths with real local directories or files. ${recoveryAction}.`, 5);
+  const observedDiagnostics = diagnostics ?? recordSuppressedStateDiagnostics(report, error);
+  const message = withSuppressedDiagnosticDetail(`Devkit state ${operation} failed at ${statePath}: ${detail}. Check disk space and permissions, replace linked state paths with real local directories or files. ${recoveryAction}.`, observedDiagnostics);
+  return problem(report, "STATE_IO_ERROR", message, 5, observedDiagnostics);
 }
 
 function isStateIoError(error) {
@@ -119,14 +167,17 @@ function isStateIoError(error) {
 }
 
 function stateBoundaryProblem(report, error, statePath, operation, { allowRunLocked = false, recoveryAction } = {}) {
+  const diagnostics = recordSuppressedStateDiagnostics(report, error);
   if (allowRunLocked && (error instanceof RunLockedError || error?.code === "RUN_LOCKED")) {
     report.nextActions.push(`After resolving the state lock: ${recoveryAction}`);
-    return problem(report, "RUN_LOCKED", `State lock unavailable at ${statePath}; another Devkit operation may be running. Wait for active operations to finish. If none is active, inspect the lock and state paths; remove a lock only after confirming it is stale and belongs to this Devkit state. ${recoveryAction}.`, 4);
+    const detail = withSuppressedDiagnosticDetail(`State lock unavailable at ${statePath}; another Devkit operation may be running. Wait for active operations to finish. If none is active, inspect the lock and state paths; remove a lock only after confirming it is stale and belongs to this Devkit state. ${recoveryAction}.`, diagnostics);
+    return problem(report, "RUN_LOCKED", detail, 4, diagnostics);
   }
   if (error?.code === "STATE_CONFLICT" || !isStateIoError(error)) {
-    return problem(report, "STATE_CONFLICT", `${String(error.message ?? error)} After resolving the state conflict: ${recoveryAction}.`, 4);
+    const detail = withSuppressedDiagnosticDetail(`${String(error.message ?? error)} After resolving the state conflict: ${recoveryAction}.`, diagnostics);
+    return problem(report, "STATE_CONFLICT", detail, 4, diagnostics);
   }
-  return stateIoProblem(report, error, statePath, operation, recoveryAction);
+  return stateIoProblem(report, error, statePath, operation, recoveryAction, diagnostics);
 }
 
 export function quoteShellToken(value) {

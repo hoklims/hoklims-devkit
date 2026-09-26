@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { execute, parseArgs, quoteShellToken } from "../src/app.js";
+import { execute, main, parseArgs, quoteShellToken } from "../src/app.js";
 import { createRuntime, validateState } from "../src/runtime.js";
 
 function compassInstallReport(argv, { installed = false, configured = false } = {}) {
@@ -4014,6 +4014,56 @@ describe("public CLI", () => {
     for (const detail of interrupted.conflicts.map((item) => item.detail)) {
       expect(detail).toContain("inspect and validate the saved Devkit state");
       expect(detail).not.toContain("complete the recorded plan");
+    }
+  });
+
+  test("state boundary reports preserve suppressed cleanup diagnostics", async () => {
+    const cleanupPath = "/state/repo.json.candidate.tmp";
+    const cleanupError = Object.assign(new Error(`EBUSY: cannot remove '${cleanupPath}'`), {
+      code: "EBUSY",
+      path: cleanupPath,
+    });
+    const primary = Object.assign(new Error("state destination was replaced"), {
+      code: "STATE_CONFLICT",
+      suppressedErrors: [cleanupError, cleanupError],
+    });
+    cleanupError.suppressedErrors = [primary];
+    const makeRuntime = () => {
+      const rt = fakeRuntime();
+      rt.openStateTransaction = () => ({
+        state: null,
+        write: () => { throw primary; },
+        close: () => {},
+      });
+      return rt;
+    };
+    const rt = makeRuntime();
+    const report = await execute(setupOptions(), rt);
+    const conflict = report.conflicts.find((item) => item.code === "STATE_CONFLICT");
+    expect(conflict).toBeDefined();
+    expect(conflict.diagnostics).toEqual([{
+      code: "EBUSY", message: `EBUSY: cannot remove '${cleanupPath}'`, path: cleanupPath,
+    }]);
+    expect(conflict.detail).toContain("EBUSY");
+    expect(conflict.detail).toContain(cleanupPath);
+    expect(report.nextActions.join("\n")).toContain(cleanupPath);
+    expect(report.nextActions.join("\n")).toContain("hoklims-devkit setup /repo --host codex");
+    expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+
+    for (const json of [false, true]) {
+      let stdout = "";
+      let stderr = "";
+      const argv = ["setup", "/repo", "--host", "codex", ...(json ? ["--json"] : [])];
+      const code = await main(argv, makeRuntime(), { write: (value) => { stdout += value; } },
+        { write: (value) => { stderr += value; } });
+      expect(code).toBe(4);
+      if (json) {
+        const rendered = JSON.parse(stdout);
+        expect(rendered.conflicts.find((item) => item.code === "STATE_CONFLICT")?.diagnostics).toEqual(conflict.diagnostics);
+      } else {
+        expect(`${stdout}\n${stderr}`).toContain("EBUSY");
+        expect(`${stdout}\n${stderr}`).toContain(cleanupPath);
+      }
     }
   });
 
