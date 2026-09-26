@@ -955,7 +955,7 @@ export async function execute(options, rt = createRuntime()) {
       const candidateState = validateBoundState(rt.readState(rt.statePath(candidateRoot)), candidateRoot);
       return { root: candidateRoot, state: candidateState, verified: true };
     } catch {
-      return { root: options.project, state: null, verified: false };
+      return { root: projectPath, state: null, verified: false };
     }
   };
   const earlyFailure = (code, detail, repair, exitCode = 3, resolvedProject) => {
@@ -993,7 +993,14 @@ export async function execute(options, rt = createRuntime()) {
   if (rootResult.code !== 0) {
     return earlyFailure("GIT_REPOSITORY_REQUIRED", "Open a Git repository and retry", "Open the requested path inside a Git repository", 3, project);
   }
-  const root = rt.realpath(rootResult.stdout.trim());
+  const discoveredRoot = rootResult.stdout.trim();
+  report.projectRoot = discoveredRoot;
+  let root;
+  try {
+    root = rt.realpath(discoveredRoot);
+  } catch (error) {
+    return earlyFailure("REPOSITORY_PATH_IO_ERROR", `Repository path validation failed at ${discoveredRoot}: ${String(error.message ?? error)}`, "Restore access to the discovered repository path", 5, discoveredRoot);
+  }
   report.projectRoot = root;
   const hosts = options.host === "auto" ? HOSTS.filter((host) => rt.which(host))
     : options.host === "all" ? HOSTS : [options.host];

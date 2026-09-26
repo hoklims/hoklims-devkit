@@ -245,6 +245,19 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("a discovered repository realpath failure keeps typed context and conditional recovery", async () => {
+    const rt = fakeRuntime();
+    rt.realpath = () => { throw Object.assign(new Error("repository access denied"), { code: "EACCES" }); };
+    const report = await execute(setupOptions(), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.projectRoot).toBe("/repo");
+    expect(report.conflicts.map((item) => item.code)).toContain("REPOSITORY_PATH_IO_ERROR");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit setup /repo --host codex");
+    expect(rt.calls).toHaveLength(2);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("dry-run performs every preflight without installation or state writes", async () => {
     const rt = fakeRuntime();
     const report = await execute({ ...setupOptions(), dryRun: true }, rt);

@@ -165,7 +165,7 @@ for (const host of ["codex", "claude", "all"]) {
     })) {
       throw new Error(`${host} upgrade did not configure every component: ${JSON.stringify(appliedUpgrade)}`);
     }
-    assertNoopUpgradeUnchanged(targets, beforeUpgradePlan, installed, upgrade, `${host} same-version upgrade`);
+    assertNoopUpgradeUnchanged(targets, beforeUpgradePlan, installed, upgrade, appliedUpgrade, `${host} same-version upgrade`);
     const afterUpgrade = targets.map(snapshot);
     const diagnosedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
     if (!validComponentReport(diagnosedUpgrade, resolve(scenarioRepository), expected, {
