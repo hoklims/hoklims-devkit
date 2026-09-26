@@ -62,6 +62,12 @@ describe("validComponentReport", () => {
     })).toBe(false);
     expect(validComponentReport(report(exact), projectRoot, expectedNames, { expectedState: "planned" })).toBe(false);
     expect(validComponentReport(report(exact, { projectRoot: "/wrong" }), projectRoot, expectedNames)).toBe(false);
+    expect(validComponentReport(report(exact, { projectRoot: undefined }), projectRoot, expectedNames)).toBe(false);
+    expect(validComponentReport(report(exact, { projectRoot: null }), projectRoot, expectedNames)).toBe(false);
+    expect(validComponentReport(report(exact, { projectRoot: "" }), projectRoot, expectedNames)).toBe(false);
+    expect(validComponentReport(report(exact), undefined, expectedNames)).toBe(false);
+    expect(validComponentReport(report(exact), null, expectedNames)).toBe(false);
+    expect(validComponentReport(report(exact), "", expectedNames)).toBe(false);
   });
 
   test("rejects malformed reports, expectations, and options", () => {
@@ -83,5 +89,8 @@ describe("validComponentReport", () => {
     expect(validComponentReport(report(exact), projectRoot, expectedNames, {
       requireInstalledAndConfigured: "yes",
     })).toBe(false);
+    for (const options of [null, [], "planned", new Date(0), Object.create(null)]) {
+      expect(validComponentReport(report(exact), projectRoot, expectedNames, options)).toBe(false);
+    }
   });
 });
