@@ -84,7 +84,7 @@ function openVerifiedReadDescriptor(path) {
   return openSync(path, flags);
 }
 
-function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}) {
+function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync) {
   const initial = inspectFile(path, { bigint: true });
   if (!initial) return null;
   const identity = { dev: initial.dev, ino: initial.ino };
@@ -97,15 +97,20 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}) {
       inspectFile(path, { bigint: true });
       throw error;
     }
-    const opened = fstatSync(descriptor, { bigint: true });
-    if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
-      throw conflict(path, "the file changed while it was opened for reading");
-    }
-    const current = inspectFile(path, { bigint: true });
-    if (!current || current.dev !== identity.dev || current.ino !== identity.ino) {
-      throw conflict(path, "the pathname changed while it was opened for reading");
-    }
-    return readFileSync(descriptor, "utf8");
+    const assertReadIdentity = () => {
+      const opened = fstatSync(descriptor, { bigint: true });
+      if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
+        throw conflict(path, "the file changed while it was opened for reading");
+      }
+      const current = inspectFile(path, { bigint: true });
+      if (!current || current.dev !== identity.dev || current.ino !== identity.ino) {
+        throw conflict(path, "the pathname changed while it was opened for reading");
+      }
+    };
+    assertReadIdentity();
+    const content = readFileData(descriptor, "utf8", path);
+    assertReadIdentity();
+    return content;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
@@ -211,10 +216,10 @@ function cleanupOwnedFile(owned, removeOwnedFile) {
   if (operationError) throw operationError;
 }
 
-function readLockRecord(path, beforeOpen) {
+function readLockRecord(path, beforeOpen, readFileData) {
   let record;
   try {
-    record = JSON.parse(readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeOpen));
+    record = JSON.parse(readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeOpen, readFileData));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
@@ -290,6 +295,7 @@ export function createRuntime({
   beforeManagedReadOpen = () => {},
   commitOwnedFile = renameSync,
   randomId = randomUUID,
+  readFileData = readFileSync,
   removeOwnedFile = unlinkSync,
   writeLockData = writeFileSync,
   writeStateData = writeFileSync,
@@ -338,7 +344,7 @@ export function createRuntime({
       }
     },
     readText: (path) => readFileSync(path, "utf8"),
-    readPlainText: (path) => readVerifiedFile(path, inspectPlainProjectFile, unsafeProjectPath),
+    readPlainText: (path) => readVerifiedFile(path, inspectPlainProjectFile, unsafeProjectPath, undefined, readFileData),
     realpath: realpathSync,
     statePath: (root) => {
       const base = platform() === "win32"
@@ -348,7 +354,7 @@ export function createRuntime({
       return join(base, "hoklims-devkit", `${key}.json`);
     },
     readState: (path) => {
-      const text = readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeManagedReadOpen);
+      const text = readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeManagedReadOpen, readFileData);
       if (text === null) return null;
       return validateState(JSON.parse(text));
     },
@@ -393,7 +399,7 @@ export function createRuntime({
       const lockPath = `${statePath}.lock`;
       const existingLock = inspectManagedFile(lockPath);
       if (existingLock) {
-        readLockRecord(lockPath, beforeManagedReadOpen);
+        readLockRecord(lockPath, beforeManagedReadOpen, readFileData);
         throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
       }
       const token = randomId();
@@ -414,7 +420,7 @@ export function createRuntime({
         if (error?.code === "EEXIST") {
           const racedLock = inspectManagedFile(lockPath);
           if (racedLock) {
-            readLockRecord(lockPath, beforeManagedReadOpen);
+            readLockRecord(lockPath, beforeManagedReadOpen, readFileData);
             throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
           }
           throw unsafeManagedPath(lockPath, "changed during exclusive lock creation");
@@ -424,7 +430,7 @@ export function createRuntime({
       return () => {
         try {
           assertOwnedFile(owned);
-          const current = readLockRecord(lockPath, beforeManagedReadOpen);
+          const current = readLockRecord(lockPath, beforeManagedReadOpen, readFileData);
           if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
           cleanupOwnedFile(owned, removeOwnedFile);
         } catch (error) {

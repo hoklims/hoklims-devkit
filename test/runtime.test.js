@@ -103,6 +103,42 @@ test("runtime binds state and lock reads to the inspected regular file", () => {
   }
 });
 
+test("runtime revalidates every pathname after descriptor reads", () => {
+  for (const kind of ["state", "lock", "project"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-${kind}-post-read-`)));
+    const statePath = join(root, "repository.json");
+    const readPath = kind === "lock" ? `${statePath}.lock`
+      : kind === "project" ? join(root, "package.json") : statePath;
+    const original = kind === "lock"
+      ? JSON.stringify({ token: "00000000-0000-4000-8000-000000000000", pid: 42 })
+      : kind === "state" ? JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} })
+        : JSON.stringify({ name: "fixture" });
+    const foreign = `foreign-${kind}-replacement\n`;
+    writeFileSync(readPath, original);
+    let replaced = false;
+    const rt = createRuntime({
+      readFileData: (descriptor, encoding, path) => {
+        const content = readFileSync(descriptor, encoding);
+        if (!replaced && path === readPath) {
+          replaced = true;
+          unlinkSync(readPath);
+          writeFileSync(readPath, foreign);
+        }
+        return content;
+      },
+    });
+    let error;
+    try {
+      if (kind === "state") rt.readState(statePath);
+      else if (kind === "lock") rt.acquireLock(statePath);
+      else rt.readPlainText(readPath);
+    } catch (caught) { error = caught; }
+    expect(replaced).toBe(true);
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(readFileSync(readPath, "utf8")).toBe(foreign);
+  }
+});
+
 test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
   if (process.platform === "win32") return;
   const runtimeUrl = new URL("../src/runtime.js", import.meta.url).href;
