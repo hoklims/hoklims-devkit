@@ -231,6 +231,20 @@ describe("public CLI", () => {
     }
   });
 
+  test("an unverifiable early state makes the current retry explicitly conditional", async () => {
+    const rt = fakeRuntime({ tools: ["claude"] });
+    rt.which = (name) => ["codex", "claude"].includes(name) ? `/bin/${name}` : null;
+    rt.realpath = () => { throw Object.assign(new Error("profile access denied"), { code: "EACCES" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "all", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("BUN_REQUIRED");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).toContain("If a saved plan is present, follow it");
+    expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit upgrade /repo --host all --refresh-pending");
+    expect(rt.calls).toHaveLength(0);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("dry-run performs every preflight without installation or state writes", async () => {
     const rt = fakeRuntime();
     const report = await execute({ ...setupOptions(), dryRun: true }, rt);
@@ -522,6 +536,33 @@ describe("public CLI", () => {
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
     expect(report.components[0].configured).toBe("unknown");
+  });
+
+  test("doctor rejects malformed check entries while preserving the saved retry", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    for (const malformed of [false, true]) {
+      const rt = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+      if (malformed) {
+        const exec = rt.exec;
+        rt.exec = async (argv, cwd, timeout) => {
+          const result = await exec(argv, cwd, timeout);
+          if (!argv.includes("doctor")) return result;
+          const native = JSON.parse(result.stdout);
+          native.checks.push(null);
+          return { ...result, stdout: JSON.stringify(native) };
+        };
+      }
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.projectRoot).toBe("/repo");
+      expect(report.components[0].configured).toBe(malformed ? "unknown" : "yes");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("UNEXPECTED_ERROR");
+      expect(guidance).toContain("hoklims-devkit setup /repo --host codex");
+    }
   });
 
   test("doctor rejects a Semctx diagnostic naming another repository", async () => {
@@ -1983,6 +2024,26 @@ describe("public CLI", () => {
     expect(actions).not.toContain("--host codex");
     expect(rt.writes).toHaveLength(0);
     expect(released).toBe(true);
+  });
+
+  test("STATE_CHANGED release failures keep the latest locked recovery plan", async () => {
+    const lockedState = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.4" } },
+    };
+    const rt = fakeRuntime({ tools: ["claude"] });
+    const which = rt.which;
+    rt.which = (name) => name === "claude" ? null : which(name);
+    let reads = 0;
+    rt.readState = () => ++reads === 1 ? null : structuredClone(lockedState);
+    rt.acquireLock = () => () => { throw Object.assign(new Error("release denied"), { code: "EACCES" }); };
+    const report = await execute(setupOptions(), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(guidance).toContain("Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude");
+    expect(guidance).not.toContain("--host codex");
+    expect(rt.writes).toHaveLength(0);
   });
 
   test("noncanonical persisted plan order is a state conflict", async () => {

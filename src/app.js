@@ -504,6 +504,8 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
   const requiredChecks = ["cli", "workspace", "config", "index", "runtime"];
   const doctorStructured = [0, 1].includes(doctorCode) && typeof doctor?.healthy === "boolean"
     && doctor.version === version && Array.isArray(doctor.checks)
+    && doctor.checks.every((check) => check && typeof check === "object"
+      && typeof check.name === "string" && typeof check.ok === "boolean")
     && requiredChecks.every((name) => doctor.checks.some((check) => check.name === name && typeof check.ok === "boolean"));
   const healthStructured = [0, 2, 3].includes(healthCode) && health?.schemaVersion === 1
     && health.kind === "index_health" && ["valid", "invalid", "absent"].includes(health.binding?.status)
@@ -512,7 +514,8 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
   if (!doctorStructured || !healthStructured) return "unknown";
   const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
     && Array.isArray(doctor.checks) && requiredChecks.every((name) => doctor.checks.some((check) =>
-      check.name === name && check.ok === true && (name !== "index" || check.status === "healthy")));
+      check && typeof check === "object" && check.name === name && check.ok === true
+      && (name !== "index" || check.status === "healthy")));
   const indexReady = healthCode === 0 && health?.schemaVersion === 1 && health.kind === "index_health"
     && health.binding?.status === "valid" && health.freshness?.canRunHighRiskControl === true
     && health.coverage?.status === "complete";
@@ -947,11 +950,18 @@ export async function execute(options, rt = createRuntime()) {
     const earlyHosts = options.host === "auto" ? HOSTS.filter((host) => rt.which(host))
       : options.host === "all" ? HOSTS : [options.host];
     const recoveryHosts = earlyHosts.length ? earlyHosts : HOSTS;
-    const boundedRepair = candidate.verified
-      ? repair : `${repair} and inspect the saved Devkit state for the requested path`;
-    const { action, command } = failureGuidance(rt, options, candidate.root, recoveryHosts, candidate.state, { repair: boundedRepair });
+    let guidance;
+    if (candidate.verified) {
+      guidance = failureGuidance(rt, options, candidate.root, recoveryHosts, candidate.state, { repair });
+    } else {
+      const current = stateRecoveryCommand(options, candidate.root, null, recoveryHosts, { useRequestedRefresh: options.refreshPending });
+      guidance = {
+        command: current,
+        action: `${repair}, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, run ${current}`,
+      };
+    }
     problem(report, code, detail, exitCode);
-    return recordFailureRecovery(action, command);
+    return recordFailureRecovery(guidance.action, guidance.command);
   };
   if (!rt.which("bun") || !rt.which("bunx")) {
     return earlyFailure("BUN_REQUIRED", "Bun >=1.4 is required", "Install Bun >=1.4 and ensure bun and bunx are on PATH");
@@ -1093,78 +1103,80 @@ export async function execute(options, rt = createRuntime()) {
     return finalizeFailure(state, { useRequestedRefresh: refreshSavePending });
   }
   try {
-    // Preflights can take time. Another setup may have committed while they ran.
-    // Revalidate under the exclusive lock before applying or recording anything.
-    const currentState = validateState(rt.readState(statePath));
-    if (JSON.stringify(currentState) !== JSON.stringify(state)) {
-      const recoveryAction = recoveryActionFor(currentState);
-      if (!report.nextActions.includes(recoveryAction)) report.nextActions.push(recoveryAction);
-      problem(report, "STATE_CHANGED", `Installation state changed during preflight. ${recoveryAction} to recompute the plan.`, 4);
-      return finalizeFailure(currentState);
-    }
-    let savedState = JSON.stringify(currentState);
-    persistedState = currentState ? structuredClone(currentState) : null;
-    const saveStateIfChanged = () => {
-      const next = JSON.stringify(nextState);
-      if (next !== savedState) {
-        try {
-          rt.writeState(statePath, nextState);
-        } catch (error) {
-          throw Object.assign(new Error(String(error?.message ?? error)), {
-            cause: error,
-            code: error?.code,
-            stateBoundary: true,
-          });
-        }
-        savedState = next;
-        persistedState = structuredClone(nextState);
+    applyOperation: {
+      // Preflights can take time. Another setup may have committed while they ran.
+      // Revalidate under the exclusive lock before applying or recording anything.
+      const currentState = validateState(rt.readState(statePath));
+      persistedState = currentState ? structuredClone(currentState) : null;
+      if (JSON.stringify(currentState) !== JSON.stringify(state)) {
+        const recoveryAction = recoveryActionFor(currentState);
+        if (!report.nextActions.includes(recoveryAction)) report.nextActions.push(recoveryAction);
+        problem(report, "STATE_CHANGED", `Installation state changed during preflight. ${recoveryAction} to recompute the plan.`, 4);
+        break applyOperation;
       }
-    };
-    if (options.command === "upgrade" || state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name]
-      || hosts.some((host) => !state?.components?.[name]?.hosts?.includes(host)))) {
-      nextState.inProgress = {
-        command: options.command,
-        selected,
-        hosts,
-        versions: Object.fromEntries(selected.map((name) => [name, versions[name]])),
+      let savedState = JSON.stringify(currentState);
+      const saveStateIfChanged = () => {
+        const next = JSON.stringify(nextState);
+        if (next !== savedState) {
+          try {
+            rt.writeState(statePath, nextState);
+          } catch (error) {
+            throw Object.assign(new Error(String(error?.message ?? error)), {
+              cause: error,
+              code: error?.code,
+              stateBoundary: true,
+            });
+          }
+          savedState = next;
+          persistedState = structuredClone(nextState);
+        }
       };
-      saveStateIfChanged();
-      refreshSavePending = false;
-    }
-    for (const component of report.components) {
-      const { name, version } = component;
-      try {
-        let result;
-        if (name === "semctx") result = await applySemctx(rt, root, hosts, version, previews[name]);
-        else if (name === "assertledger") result = await applyAssert(rt, root, hosts, version, previews[name]);
-        else result = await applyCompass(rt, root, hosts, version, previews[name]);
-        const componentHosts = new Set([...(nextState.components[name]?.hosts ?? []), ...hosts]);
-        nextState.components[name] = { version, hosts: HOSTS.filter((host) => componentHosts.has(host)) };
+      if (options.command === "upgrade" || state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name]
+        || hosts.some((host) => !state?.components?.[name]?.hosts?.includes(host)))) {
+        nextState.inProgress = {
+          command: options.command,
+          selected,
+          hosts,
+          versions: Object.fromEntries(selected.map((name) => [name, versions[name]])),
+        };
         saveStateIfChanged();
-        component.state = result.ready === false ? "needs-attention" : "configured";
-        component.installed = "yes";
-        component.configured = result.ready === false ? "unknown" : "yes";
-        component.loaded = result.activation;
-        report.nextActions.push(...result.next);
-        if (result.ready === false) {
-          const retry = recoveryCommandFor(persistedState);
-          const retryAction = retryInstruction(rt, persistedState?.inProgress?.hosts ?? hosts, retry);
-          report.nextActions.push(retryAction);
-          problem(report, "SEMCTX_NOT_READY", `Semctx installed but its workspace analysis is incomplete. ${retryAction}.`, 3);
+        refreshSavePending = false;
+      }
+      for (const component of report.components) {
+        const { name, version } = component;
+        try {
+          let result;
+          if (name === "semctx") result = await applySemctx(rt, root, hosts, version, previews[name]);
+          else if (name === "assertledger") result = await applyAssert(rt, root, hosts, version, previews[name]);
+          else result = await applyCompass(rt, root, hosts, version, previews[name]);
+          const componentHosts = new Set([...(nextState.components[name]?.hosts ?? []), ...hosts]);
+          nextState.components[name] = { version, hosts: HOSTS.filter((host) => componentHosts.has(host)) };
+          saveStateIfChanged();
+          component.state = result.ready === false ? "needs-attention" : "configured";
+          component.installed = "yes";
+          component.configured = result.ready === false ? "unknown" : "yes";
+          component.loaded = result.activation;
+          report.nextActions.push(...result.next);
+          if (result.ready === false) {
+            const retry = recoveryCommandFor(persistedState);
+            const retryAction = retryInstruction(rt, persistedState?.inProgress?.hosts ?? hosts, retry);
+            report.nextActions.push(retryAction);
+            problem(report, "SEMCTX_NOT_READY", `Semctx installed but its workspace analysis is incomplete. ${retryAction}.`, 3);
+            break;
+          }
+        } catch (error) {
+          if (error?.stateBoundary === true) throw error;
+          component.state = "partial";
+          component.installed = "unknown";
+          component.configured = "unknown";
+          problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error: ${recoveryActionFor(persistedState)}.`, 5);
           break;
         }
-      } catch (error) {
-        if (error?.stateBoundary === true) throw error;
-        component.state = "partial";
-        component.installed = "unknown";
-        component.configured = "unknown";
-        problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error: ${recoveryActionFor(persistedState)}.`, 5);
-        break;
       }
-    }
-    if (report.conflicts.length === 0 && nextState.inProgress) {
-      delete nextState.inProgress;
-      saveStateIfChanged();
+      if (report.conflicts.length === 0 && nextState.inProgress) {
+        delete nextState.inProgress;
+        saveStateIfChanged();
+      }
     }
   } catch (error) {
     stateBoundaryProblem(report, error, statePath, "read or write", {

@@ -187,7 +187,9 @@ function openOwnedManagedFile(path, createOwnedFile) {
   }
   try {
     const stat = fstatSync(descriptor, { bigint: true });
-    return { path, descriptor, identity: { dev: stat.dev, ino: stat.ino } };
+    const owned = { path, descriptor, identity: { dev: stat.dev, ino: stat.ino } };
+    assertOwnedFile(owned);
+    return owned;
   } catch (error) {
     try { closeSync(descriptor); } catch { /* Preserve the identity error. */ }
     throw error;

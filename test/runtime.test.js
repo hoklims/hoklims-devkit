@@ -438,6 +438,57 @@ test("runtime rechecks parents after every exclusive owned-file open failure", (
   expect(existsSync(statePath)).toBe(false);
 });
 
+test("runtime validates owned files before writing through a raced parent link", () => {
+  for (const kind of ["temporary", "lock"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-${kind}-owned-link-`)));
+    const parent = join(root, "profile");
+    const outside = join(root, "outside");
+    const statePath = join(parent, "repository.json");
+    const ownedName = kind === "temporary" ? "repository.json.candidate.tmp" : "repository.json.lock";
+    mkdirSync(parent);
+    mkdirSync(outside);
+    writeFileSync(join(outside, "marker.txt"), "FOREIGN-MARKER\n");
+    let hookExecuted = false;
+    let markerWriteExecuted = false;
+    const linkParent = () => {
+      hookExecuted = true;
+      rmdirSync(parent);
+      symlinkSync(outside, parent, process.platform === "win32" ? "junction" : "dir");
+    };
+    const rt = createRuntime(kind === "temporary" ? {
+      randomId: () => { linkParent(); return "candidate"; },
+      writeStateData: () => { markerWriteExecuted = true; },
+    } : {
+      beforeLockOpen: linkParent,
+      writeLockData: () => { markerWriteExecuted = true; },
+    });
+    let error;
+    try {
+      if (kind === "temporary") rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} });
+      else rt.acquireLock(statePath);
+    } catch (caught) { error = caught; }
+    expect(hookExecuted).toBe(true);
+    expect(markerWriteExecuted).toBe(false);
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(lstatSync(parent).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(outside, "marker.txt"), "utf8")).toBe("FOREIGN-MARKER\n");
+    expect(readFileSync(join(outside, ownedName))).toHaveLength(0);
+
+    const controlRoot = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-${kind}-owned-control-`)));
+    const controlState = join(controlRoot, "repository.json");
+    let controlWriteExecuted = false;
+    const control = createRuntime(kind === "temporary" ? {
+      randomId: () => "candidate",
+      writeStateData: (descriptor, data) => { controlWriteExecuted = true; writeFileSync(descriptor, data); },
+    } : {
+      writeLockData: (descriptor, data) => { controlWriteExecuted = true; writeFileSync(descriptor, data); },
+    });
+    if (kind === "temporary") control.writeState(controlState, { schemaVersion: 1, projectRoot: "/repo", components: {} });
+    else control.acquireLock(controlState)();
+    expect(controlWriteExecuted).toBe(true);
+  }
+});
+
 test("runtime preserves a lock replaced by a third-party link during release", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-lock-link-")));
   const statePath = join(root, "repository.json");
