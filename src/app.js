@@ -1266,7 +1266,6 @@ export async function execute(options, rt = createRuntime()) {
       detail = detail
         .replace(/\s+to recompute the plan\./gu, ".")
         .replace(/After resolving (?:the error|the state conflict):\s*\./gu, "")
-        .replace(/\s+/gu, " ")
         .trim()
         .replace(/[.\s]+$/u, "");
       conflict.detail = detail.includes(guidance.action) ? `${detail}.` : `${detail}. ${guidance.action}.`;

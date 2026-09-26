@@ -2796,25 +2796,42 @@ describe("public CLI", () => {
   });
 
   test("late authority loss replaces every earlier recovery instruction", async () => {
+    const root = "/repo  with 'quote";
     const lockedState = {
-      schemaVersion: 1, projectRoot: "/repo", components: {},
+      schemaVersion: 1, projectRoot: root, components: {},
       inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.4" } },
     };
     const rt = fakeRuntime({ tools: ["claude"] });
+    rt.resolve = () => root;
+    rt.realpath = () => root;
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] !== "bunx" || !result.stdout) return result;
+      const parsed = JSON.parse(result.stdout);
+      if (Object.hasOwn(parsed, "repositoryRoot")) parsed.repositoryRoot = root;
+      if (parsed.workspace?.root) parsed.workspace.root = root;
+      return { ...result, stdout: JSON.stringify(parsed) };
+    };
     rt.openStateTransaction = () => ({
       state: structuredClone(lockedState),
       close: () => { throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" }); },
     });
-    const report = await execute(setupOptions(), rt);
+    const report = await execute(parseArgs(["setup", root, "--host", "codex"]), rt);
     const details = report.conflicts.map((item) => item.detail);
+    const expectedCommand = `hoklims-devkit setup ${quoteShellToken(root)} --host codex`;
+    const collapsedCommand = `hoklims-devkit setup ${quoteShellToken(root.replace("  ", " "))} --host codex`;
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
     expect(report.nextActions).toHaveLength(1);
     expect(report.nextActions[0]).toContain("inspect and validate the saved Devkit state");
-    expect(report.nextActions[0]).toContain("Only if no saved plan exists, run hoklims-devkit setup /repo --host codex");
+    expect(report.nextActions[0]).toContain(`Only if no saved plan exists, run ${expectedCommand}`);
+    expect(report.nextActions[0]).not.toContain(collapsedCommand);
     expect(report.nextActions.join("\n")).not.toContain("--host claude");
     for (const detail of details) {
       expect(detail).toContain("inspect and validate the saved Devkit state");
+      expect(detail).toContain(expectedCommand);
+      expect(detail).not.toContain(collapsedCommand);
       expect(detail).not.toContain("--host claude");
       expect(detail).not.toContain("complete the recorded plan");
     }
@@ -3127,8 +3144,8 @@ describe("public CLI", () => {
 
   test("shell-quoted recovery paths round-trip as one inert token", () => {
     const root = process.platform === "win32"
-      ? "C:\\repo with 'quote $() ` tick"
-      : "/tmp/a\\b repo with 'quote $() ` tick";
+      ? "C:\\repo  with 'quote $() ` tick"
+      : "/tmp/a\\b repo  with 'quote $() ` tick";
     const quoted = quoteShellToken(root);
     const command = process.platform === "win32"
       ? ["powershell", "-NoProfile", "-Command", `[Console]::Out.Write(${quoted})`]

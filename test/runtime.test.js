@@ -584,11 +584,18 @@ test("runtime preserves a state destination replaced during temporary write", ()
 });
 
 test("runtime revalidates Windows destination bytes after publication fails", () => {
-  for (const scenario of ["unchanged", "same-inode-changed-bytes", "different-inode-same-bytes"]) {
+  for (const scenario of ["unchanged", "same-inode-changed-bytes", "different-inode-same-bytes", "replacement-decoding-equivalent"]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-windows-publish-")));
     const statePath = join(root, "repository.json");
     const foreignPath = join(root, "foreign.json");
-    const original = `${JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }, null, 2)}\n`;
+    const projectRoot = scenario === "replacement-decoding-equivalent" ? "/repo\uFFFD" : "/repo";
+    const original = `${JSON.stringify({ schemaVersion: 1, projectRoot, components: {} }, null, 2)}\n`;
+    const originalBytes = Buffer.from(original, "utf8");
+    const replacement = Buffer.from("\uFFFD", "utf8");
+    const replacementIndex = originalBytes.indexOf(replacement);
+    const invalidBytes = scenario === "replacement-decoding-equivalent"
+      ? Buffer.concat([originalBytes.subarray(0, replacementIndex), Buffer.from([0xff]), originalBytes.subarray(replacementIndex + replacement.length)])
+      : null;
     writeFileSync(statePath, original);
     if (scenario === "different-inode-same-bytes") writeFileSync(foreignPath, original);
     let platformObserved = false;
@@ -598,6 +605,7 @@ test("runtime revalidates Windows destination bytes after publication fails", ()
       commitOwnedFile: () => { throw Object.assign(new Error("Windows rename failed"), { code: "EIO" }); },
       removeOwnedFile: (path) => {
         if (scenario === "same-inode-changed-bytes") writeFileSync(statePath, "FOREIGN STATE\n");
+        if (scenario === "replacement-decoding-equivalent") writeFileSync(statePath, invalidBytes);
         if (scenario === "different-inode-same-bytes") {
           unlinkSync(statePath);
           renameSync(foreignPath, statePath);
@@ -608,7 +616,7 @@ test("runtime revalidates Windows destination bytes after publication fails", ()
     const transaction = rt.openStateTransaction(statePath);
     let writeError;
     try {
-      transaction.write({ schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } });
+      transaction.write({ schemaVersion: 1, projectRoot, components: { semctx: { version: "0.3.4", hosts: ["codex"] } } });
     } catch (error) {
       writeError = error;
     }
@@ -616,12 +624,27 @@ test("runtime revalidates Windows destination bytes after publication fails", ()
     expect(writeError?.code).toBe("EIO");
     if (scenario !== "unchanged") {
       expect(() => transaction.close()).toThrow(/validated|state bytes changed/u);
-      expect(readFileSync(statePath, "utf8")).toBe(scenario === "same-inode-changed-bytes" ? "FOREIGN STATE\n" : original);
+      if (scenario === "replacement-decoding-equivalent") expect(readFileSync(statePath).equals(invalidBytes)).toBe(true);
+      else expect(readFileSync(statePath, "utf8")).toBe(scenario === "same-inode-changed-bytes" ? "FOREIGN STATE\n" : original);
     } else {
       expect(() => transaction.close()).not.toThrow();
       expect(readFileSync(statePath, "utf8")).toBe(original);
     }
   }
+});
+
+test("runtime rejects invalid UTF-8 state bytes without overwriting them", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-invalid-utf8-")));
+  const statePath = join(root, "repository.json");
+  const bytes = Buffer.from('{"schemaVersion":1,"projectRoot":"/repo\uFFFD","components":{}}\n', "utf8");
+  const marker = Buffer.from("\uFFFD", "utf8");
+  const index = bytes.indexOf(marker);
+  const invalid = Buffer.concat([bytes.subarray(0, index), Buffer.from([0xff]), bytes.subarray(index + marker.length)]);
+  writeFileSync(statePath, invalid);
+  let error;
+  try { createRuntime().openStateTransaction(statePath); } catch (caught) { error = caught; }
+  expect(error?.code).toBe("STATE_CONFLICT");
+  expect(readFileSync(statePath).equals(invalid)).toBe(true);
 });
 
 test("runtime preserves and classifies every foreign temporary-file collision", () => {

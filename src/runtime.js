@@ -90,7 +90,7 @@ function assertInspectedIdentity(path, inspectFile, conflict, identity, detail) 
 }
 
 function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync,
-  openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null) {
+  openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null, encoding = "utf8") {
   const initial = inspectFile(path, { bigint: true });
   if (!initial) return null;
   const identity = expectedIdentity ?? { dev: initial.dev, ino: initial.ino };
@@ -117,7 +117,7 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
       }
     };
     assertReadIdentity();
-    const content = readFileData(descriptor, "utf8", path);
+    const content = readFileData(descriptor, encoding, path);
     assertReadIdentity();
     return content;
   } finally {
@@ -171,7 +171,7 @@ function closeManagedDestination(destination) {
   closeSync(descriptor);
 }
 
-function readDescriptorText(descriptor) {
+function readDescriptorBytes(descriptor) {
   const stat = fstatSync(descriptor, { bigint: true });
   if (!stat.isFile() || stat.size > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw Object.assign(new Error("Managed state file is not a readable regular file"), { code: "STATE_CONFLICT" });
@@ -183,10 +183,19 @@ function readDescriptorText(descriptor) {
     if (count === 0) throw Object.assign(new Error("Managed state file changed while it was read"), { code: "STATE_CONFLICT" });
     offset += count;
   }
-  return buffer.toString("utf8");
+  return buffer;
 }
 
-function parseStateText(text) {
+function decodeStateBytes(bytes) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch (error) {
+    throw Object.assign(new Error(`Managed state file is not valid UTF-8: ${String(error?.message ?? error)}`), { code: "STATE_CONFLICT" });
+  }
+}
+
+function parseStateBytes(bytes) {
+  const text = decodeStateBytes(bytes);
   const parsed = JSON.parse(text);
   if (parsed === null) throw new Error("Invalid devkit state structure");
   return validateState(parsed);
@@ -354,7 +363,7 @@ export function createRuntime({
   const openStateTransaction = (path) => {
     prepareManagedParent(path, createManagedParent);
     const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor);
-    let expectedText = null;
+    let expectedBytes = null;
     let state = null;
     let closed = false;
     const assertExpectedDestination = () => {
@@ -363,9 +372,9 @@ export function createRuntime({
         return;
       }
       if (destination.observation === "closed-existing") {
-        const currentText = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
-          beforeManagedReadOpen, readFileData, openReadDescriptor, destination.identity);
-        if (currentText === null || currentText !== expectedText) {
+        const currentBytes = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
+          beforeManagedReadOpen, readFileData, openReadDescriptor, destination.identity, null);
+        if (currentBytes === null || !Buffer.from(currentBytes).equals(expectedBytes)) {
           throw ownedFileConflict(path, "the validated state bytes changed after publication failed");
         }
         return;
@@ -373,9 +382,9 @@ export function createRuntime({
       if (destination.descriptor === null) throw ownedFileConflict(path, "the validated destination descriptor is unavailable");
       const held = { path, descriptor: destination.descriptor, identity: destination.identity };
       assertOwnedFile(held);
-      const currentText = readDescriptorText(destination.descriptor);
+      const currentBytes = readDescriptorBytes(destination.descriptor);
       assertOwnedFile(held);
-      if (currentText !== expectedText) {
+      if (!currentBytes.equals(expectedBytes)) {
         throw ownedFileConflict(path, "the validated state bytes changed before the next checkpoint");
       }
     };
@@ -383,9 +392,9 @@ export function createRuntime({
       if (destination.descriptor !== null) {
         const held = { path, descriptor: destination.descriptor, identity: destination.identity };
         assertOwnedFile(held);
-        expectedText = readDescriptorText(destination.descriptor);
+        expectedBytes = readDescriptorBytes(destination.descriptor);
         assertOwnedFile(held);
-        state = parseStateText(expectedText);
+        state = parseStateBytes(expectedBytes);
       }
     } catch (error) {
       closeManagedDestination(destination);
@@ -419,7 +428,7 @@ export function createRuntime({
           destination.descriptor = owned.descriptor;
           destination.identity = owned.identity;
           destination.observation = "held";
-          expectedText = data;
+          expectedBytes = Buffer.from(data, "utf8");
           owned = null;
           if (currentPlatform() !== "win32" && previousDescriptor !== null) closeSync(previousDescriptor);
         } catch (error) {
@@ -506,9 +515,10 @@ export function createRuntime({
       return join(base, "hoklims-devkit", `${key}.json`);
     },
     readState: (path) => {
-      const text = readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeManagedReadOpen, readFileData, openReadDescriptor);
-      if (text === null) return null;
-      return parseStateText(text);
+      const bytes = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
+        beforeManagedReadOpen, readFileData, openReadDescriptor, null, null);
+      if (bytes === null) return null;
+      return parseStateBytes(Buffer.from(bytes));
     },
     openStateTransaction,
     writeState: (path, state) => {
