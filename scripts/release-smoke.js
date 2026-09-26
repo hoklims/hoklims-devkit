@@ -145,7 +145,17 @@ for (const host of ["codex", "claude", "all"]) {
     const upgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "upgrade", scenarioRepository, ...selectors.slice(0, -1), "--dry-run", "--json"], consumer, scenarioEnv));
     if (upgrade.ok !== true) throw new Error(`${host} upgrade plan failed: ${JSON.stringify(upgrade)}`);
     assertSnapshotUnchanged(targets, beforeUpgradePlan, `${host} upgrade plan`);
-    process.stdout.write(`PASS ${host} ${expected.join("+")} setup/repeat/doctor/upgrade plan\n`);
+    const appliedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "upgrade", scenarioRepository, ...selectors], consumer, scenarioEnv));
+    if (appliedUpgrade.ok !== true || appliedUpgrade.components.some((item) => item.installed !== "yes" || item.configured !== "yes")) {
+      throw new Error(`${host} upgrade did not configure every component: ${JSON.stringify(appliedUpgrade)}`);
+    }
+    const afterUpgrade = targets.map(snapshot);
+    const diagnosedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
+    if (diagnosedUpgrade.ok !== true || diagnosedUpgrade.components.some((item) => item.installed !== "yes" || item.configured !== "yes")) {
+      throw new Error(`${host} post-upgrade doctor did not confirm installation: ${JSON.stringify(diagnosedUpgrade)}`);
+    }
+    assertSnapshotUnchanged(targets, afterUpgrade, `${host} post-upgrade doctor`);
+    process.stdout.write(`PASS ${host} ${expected.join("+")} setup/repeat/doctor/upgrade\n`);
   }
 }
 
