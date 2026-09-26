@@ -264,6 +264,20 @@ function packageManager(rt, root) {
   return selected;
 }
 
+function inspectAssertProject(rt, root) {
+  let manager;
+  try {
+    manager = packageManager(rt, root);
+  } catch (error) {
+    throw Object.assign(new Error(String(error.message ?? error)), { admissionCode: "PACKAGE_MANAGER_CONFLICT" });
+  }
+  try {
+    return { manager, version: existingAssertVersion(rt, root) };
+  } catch (error) {
+    throw Object.assign(new Error(String(error.message ?? error)), { admissionCode: "PACKAGE_MANIFEST_CONFLICT" });
+  }
+}
+
 function installPackageCommand(manager, version) {
   const spec = `assertledger@${version}`;
   if (manager === "npm") return ["npm", "install", "--save-dev", "--save-exact", "--ignore-scripts", spec];
@@ -632,22 +646,16 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     problem(report, "NODE_VERSION", "AssertLedger needs Node >=22.15", 3);
     return null;
   }
-  let manager;
+  let project;
   try {
-    manager = packageManager(rt, root);
+    project = inspectAssertProject(rt, root);
   } catch (error) {
-    problem(report, "PACKAGE_MANAGER_CONFLICT", String(error.message ?? error));
+    problem(report, error.admissionCode ?? "PACKAGE_MANIFEST_CONFLICT", String(error.message ?? error));
     return null;
   }
+  const { manager, version: current } = project;
   if (!rt.which(manager)) {
     problem(report, "PACKAGE_MANAGER_MISSING", `${manager} is not on PATH`, 3);
-    return null;
-  }
-  let current;
-  try {
-    current = existingAssertVersion(rt, root);
-  } catch (error) {
-    problem(report, "PACKAGE_MANIFEST_CONFLICT", String(error.message ?? error));
     return null;
   }
   let localEntry;
@@ -869,6 +877,10 @@ async function diagnoseSemctx(rt, root, hosts, version) {
 }
 
 async function diagnoseAssert(rt, root, hosts, version) {
+  const project = inspectAssertProject(rt, root);
+  if (project.version !== version) {
+    return { name: "assertledger", version, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
+  }
   const entry = localAssertEntry(rt, root);
   if (entry?.version !== version) {
     return { name: "assertledger", version, installed: "no", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
@@ -1091,6 +1103,8 @@ export async function execute(options, rt = createRuntime()) {
   }
   const nextState = state ? structuredClone(state) : { schemaVersion: 1, projectRoot: root, components: {} };
   let persistedState = state ? structuredClone(state) : null;
+  let persistedStateObserved = false;
+  const recoveryState = () => persistedStateObserved ? persistedState : state;
   let refreshSavePending = options.refreshPending;
   let refreshPhaseInvalidated = false;
   let releaseLock;
@@ -1109,6 +1123,7 @@ export async function execute(options, rt = createRuntime()) {
       // Revalidate under the exclusive lock before applying or recording anything.
       const currentState = validateState(rt.readState(statePath));
       persistedState = currentState ? structuredClone(currentState) : null;
+      persistedStateObserved = true;
       if (JSON.stringify(currentState) !== JSON.stringify(state)) {
         refreshSavePending = false;
         refreshPhaseInvalidated = true;
@@ -1132,6 +1147,7 @@ export async function execute(options, rt = createRuntime()) {
           }
           savedState = next;
           persistedState = structuredClone(nextState);
+          persistedStateObserved = true;
         }
       };
       if (options.command === "upgrade" || state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name]
@@ -1161,8 +1177,8 @@ export async function execute(options, rt = createRuntime()) {
           component.loaded = result.activation;
           report.nextActions.push(...result.next);
           if (result.ready === false) {
-            const retry = recoveryCommandFor(persistedState);
-            const retryAction = retryInstruction(rt, persistedState?.inProgress?.hosts ?? hosts, retry);
+            const retry = recoveryCommandFor(recoveryState());
+            const retryAction = retryInstruction(rt, recoveryState()?.inProgress?.hosts ?? hosts, retry);
             report.nextActions.push(retryAction);
             problem(report, "SEMCTX_NOT_READY", `Semctx installed but its workspace analysis is incomplete. ${retryAction}.`, 3);
             break;
@@ -1172,7 +1188,7 @@ export async function execute(options, rt = createRuntime()) {
           component.state = "partial";
           component.installed = "unknown";
           component.configured = "unknown";
-          problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error: ${recoveryActionFor(persistedState)}.`, 5);
+          problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error: ${recoveryActionFor(recoveryState())}.`, 5);
           break;
         }
       }
@@ -1183,19 +1199,19 @@ export async function execute(options, rt = createRuntime()) {
     }
   } catch (error) {
     stateBoundaryProblem(report, error, statePath, "read or write", {
-      recoveryAction: recoveryActionFor(persistedState, { useRequestedRefresh: refreshSavePending }),
+      recoveryAction: recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
     });
   } finally {
     try {
       releaseLock?.();
     } catch (error) {
       stateBoundaryProblem(report, error, statePath, "lock release", {
-        recoveryAction: recoveryActionFor(persistedState, { useRequestedRefresh: refreshSavePending }),
+        recoveryAction: recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),
       });
     }
   }
   report.ok = report.conflicts.length === 0;
-  return report.ok ? report : finalizeFailure(persistedState ?? state, {
+  return report.ok ? report : finalizeFailure(recoveryState(), {
     useRequestedRefresh: refreshSavePending,
     refreshInvalidated: refreshPhaseInvalidated,
   });

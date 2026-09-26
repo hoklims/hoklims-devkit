@@ -601,6 +601,8 @@ describe("public CLI", () => {
   test("doctor rejects AssertLedger native CONFLICT even when JSON is returned", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } };
     const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
@@ -614,6 +616,8 @@ describe("public CLI", () => {
   test("doctor does not infer AssertLedger configuration from empty artifacts", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } };
     const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
@@ -627,6 +631,44 @@ describe("public CLI", () => {
     expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
   });
 
+  test("doctor applies AssertLedger project admission before native preview", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } };
+    const localFiles = {
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const scenario of ["null", "drift", "unsafe-lock"]) {
+      const files = {
+        ...localFiles,
+        [join("/repo", "package.json")]: scenario === "null" ? "null"
+          : JSON.stringify({ devDependencies: { assertledger: scenario === "drift" ? "9.9.9" : "1.2.0" }, packageManager: "npm@10.9.8" }),
+      };
+      const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+      if (scenario === "unsafe-lock") {
+        const plainFilePresent = rt.plainFilePresent;
+        rt.plainFilePresent = (path) => {
+          if (path === join("/repo", "package-lock.json")) throw Object.assign(new Error("package-lock.json is linked"), { code: "STATE_CONFLICT" });
+          return plainFilePresent(path);
+        };
+      }
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      expect(report.ok).toBe(false);
+      expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+
+    const valid = fakeRuntime({ state, tools: ["node", "npm"], files: {
+      ...localFiles,
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+    } });
+    const admitted = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), valid);
+    expect(admitted.components.find((item) => item.name === "assertledger").configured).toBe("yes");
+    expect(admitted.conflicts.filter((item) => item.detail.startsWith("assertledger:"))).toHaveLength(0);
+    expect(valid.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(true);
+  });
+
   test("doctor preserves unknown for unavailable optional native diagnostics", async () => {
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
@@ -634,6 +676,8 @@ describe("public CLI", () => {
       "latent-compass": { version: "0.3.0", hosts: ["codex"] },
     } };
     const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
       [executable]: "shim",
@@ -2064,6 +2108,26 @@ describe("public CLI", () => {
     expect(guidance).not.toContain("--host codex");
     expect(guidance).not.toContain("--refresh-pending");
     expect(guidance).not.toContain("refreshing releases");
+    expect(rt.writes).toHaveLength(0);
+    expect(released).toBe(true);
+  });
+
+  test("STATE_CHANGED treats a locked absence as authoritative", async () => {
+    const initialState = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ state: initialState, version: "0.3.5", stable: "0.3.5" });
+    let reads = 0;
+    let released = false;
+    rt.readState = () => ++reads === 1 ? structuredClone(initialState) : null;
+    rt.acquireLock = () => () => { released = true; };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex");
+    expect(guidance).not.toContain("hoklims-devkit setup");
+    expect(guidance).not.toContain("--refresh-pending");
     expect(rt.writes).toHaveLength(0);
     expect(released).toBe(true);
   });
