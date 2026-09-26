@@ -378,12 +378,7 @@ function localAssertEntry(rt, root) {
   const distRoot = join(packageRoot, "dist");
   const packagePath = join(packageRoot, "package.json");
   const cliPath = join(packageRoot, "dist", "cli.js");
-  const assertPackageDirectories = () => {
-    if (!rt.directoryPresent(nodeModules) || !rt.directoryPresent(packageRoot) || !rt.directoryPresent(distRoot)) {
-      throw new Error("The project-local AssertLedger package is incomplete");
-    }
-  };
-  const initialDirectoryPresent = (path, ancestors = []) => {
+  const inspectDirectory = (path, ancestors = []) => {
     const recheckAncestors = () => {
       for (const ancestor of ancestors) {
         if (!rt.directoryPresent(ancestor)) throw new Error("The project-local AssertLedger package ancestry changed during admission");
@@ -395,11 +390,18 @@ function localAssertEntry(rt, root) {
       return present;
     } catch (error) {
       recheckAncestors();
+      if (error?.code === "ENOTDIR") throw new Error(`The project-local AssertLedger path has a non-directory component before ${path}`);
       throw error;
     }
   };
-  if (!initialDirectoryPresent(nodeModules)) return null;
-  if (!initialDirectoryPresent(packageRoot, [nodeModules])) return null;
+  const assertPackageDirectories = () => {
+    if (!inspectDirectory(nodeModules) || !inspectDirectory(packageRoot, [nodeModules])
+      || !inspectDirectory(distRoot, [nodeModules, packageRoot])) {
+      throw new Error("The project-local AssertLedger package is incomplete");
+    }
+  };
+  if (!inspectDirectory(nodeModules)) return null;
+  if (!inspectDirectory(packageRoot, [nodeModules])) return null;
   assertPackageDirectories();
   const guardedMetadata = (operation) => {
     assertPackageDirectories();
@@ -1114,7 +1116,14 @@ async function diagnoseCompass(rt, root, hosts, version) {
 
 export async function execute(options, rt = createRuntime()) {
   const report = reportFor(options);
+  const authoredRecoverySegments = new Set();
+  const rememberRecovery = (segment) => {
+    if (segment) authoredRecoverySegments.add(segment);
+    return segment;
+  };
   const recordFailureRecovery = (action, command) => {
+    rememberRecovery(action);
+    rememberRecovery(command);
     if (!report.nextActions.includes(action)) report.nextActions.push(action);
     for (const conflict of report.conflicts) {
       if (!conflict.detail.includes(command)) conflict.detail = `${conflict.detail.replace(/[.\s]+$/u, "")}. ${action}.`;
@@ -1184,10 +1193,10 @@ export async function execute(options, rt = createRuntime()) {
   const recoveryCommandFor = (candidateState, recoveryOptions) => stateRecoveryCommand(options, root, candidateState, requestedRecoveryHosts, recoveryOptions);
   const recoveryActionFor = (candidateState, recoveryOptions) => {
     const plan = stateRecoveryPlan(options, candidateState, requestedRecoveryHosts, recoveryOptions);
-    return retryInstruction(rt, plan.hosts, recoveryCommandFor(candidateState, recoveryOptions), {
+    return rememberRecovery(retryInstruction(rt, plan.hosts, recoveryCommandFor(candidateState, recoveryOptions), {
       components: plan.selected,
       packageManager: recoveryPackageManager,
-    });
+    }));
   };
   const finalizeFailure = (candidateState = state, recoveryOptions) => {
     if (report.conflicts.length === 0) return report;
@@ -1317,10 +1326,8 @@ export async function execute(options, rt = createRuntime()) {
   const invalidateLockedAuthority = () => {
     const previousState = recoveryState();
     const previousOptions = { useRequestedRefresh: refreshSavePending, refreshInvalidated: refreshPhaseInvalidated };
-    const previousGuidance = failureGuidance(rt, options, root, requestedRecoveryHosts, previousState, previousOptions);
-    staleRecoveryFragments.add(previousGuidance.action);
-    staleRecoveryFragments.add(previousGuidance.command);
-    staleRecoveryFragments.add(recoveryActionFor(previousState, previousOptions));
+    staleRecoveryFragments.add(stateRecoveryCommand(options, root, previousState, requestedRecoveryHosts, previousOptions));
+    for (const segment of authoredRecoverySegments) staleRecoveryFragments.add(segment);
     for (const action of report.nextActions) staleRecoveryFragments.add(action);
     lockedStateUnverified = true;
     persistedStateObserved = false;

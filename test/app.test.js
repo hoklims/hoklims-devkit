@@ -1689,23 +1689,25 @@ describe("public CLI", () => {
       expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(false);
       expect(rt.writes).toHaveLength(0);
     }
-    for (const phase of ["before-package-lstat", "after-package-lstat"]) {
+    for (const phase of ["before-package-lstat", "after-package-lstat", "second-package-lstat"]) {
       const rt = fakeRuntime({ tools: ["node", "npm"], files });
       const directoryPresent = rt.directoryPresent;
       const nodeModules = join("/repo", "node_modules");
       const packageRoot = join(nodeModules, "assertledger");
       let nodeModulesUnsafe = false;
+      let packageLookups = 0;
       rt.directoryPresent = (path) => {
         if (path === nodeModules && nodeModulesUnsafe) {
           throw Object.assign(new Error("node_modules changed to a regular file"), { code: "STATE_CONFLICT" });
         }
         if (path === packageRoot) {
-          if (phase === "before-package-lstat") {
+          packageLookups += 1;
+          if (phase === "before-package-lstat" || (phase === "second-package-lstat" && packageLookups === 2)) {
             nodeModulesUnsafe = true;
             throw Object.assign(new Error("package lstat failed with ENOTDIR"), { code: "ENOTDIR" });
           }
           const present = directoryPresent(path);
-          nodeModulesUnsafe = true;
+          if (phase === "after-package-lstat") nodeModulesUnsafe = true;
           return present;
         }
         return directoryPresent(path);
@@ -3033,6 +3035,44 @@ describe("public CLI", () => {
         for (const label of ["Node", "npm", "uv"]) expect(guidance).not.toContain(`Restore ${label}`);
       }
       expect(guidance).not.toContain("before running.");
+    }
+  });
+
+  test("late authority loss removes the exact previously authored prerequisite instruction", async () => {
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ tools: ["node", "npm"], files });
+    const nativeWhich = rt.which;
+    const nativeExec = rt.exec;
+    let nodeMissing = false;
+    let npmMissing = false;
+    rt.which = (name) => nodeMissing && name === "node" || npmMissing && name === "npm" ? null : nativeWhich(name);
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+        nodeMissing = true;
+        return { code: 5, stdout: "", stderr: "native setup failed" };
+      }
+      return result;
+    };
+    rt.openStateTransaction = () => ({
+      state: null,
+      write: () => {},
+      close: () => {
+        npmMissing = true;
+        throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" });
+      },
+    });
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(guidance.toLowerCase()).toContain("restore node, npm on path before running hoklims-devkit setup /repo --host codex --with assertledger");
+    expect(guidance).not.toContain("Restore Node on PATH before running.");
+    for (const detail of report.conflicts.map((item) => item.detail)) {
+      expect(detail).not.toContain("Restore Node on PATH before running.");
     }
   });
 
