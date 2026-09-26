@@ -89,10 +89,14 @@ function assertInspectedIdentity(path, inspectFile, conflict, identity, detail) 
   if (!current || current.dev !== identity.dev || current.ino !== identity.ino) throw conflict(path, detail);
 }
 
-function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync, openReadDescriptor = openVerifiedReadDescriptor) {
+function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync,
+  openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null) {
   const initial = inspectFile(path, { bigint: true });
   if (!initial) return null;
-  const identity = { dev: initial.dev, ino: initial.ino };
+  const identity = expectedIdentity ?? { dev: initial.dev, ino: initial.ino };
+  if (initial.dev !== identity.dev || initial.ino !== identity.ino) {
+    throw conflict(path, "the pathname no longer identifies the validated file");
+  }
   beforeOpen(path);
   let descriptor;
   try {
@@ -360,7 +364,7 @@ export function createRuntime({
       }
       if (destination.observation === "closed-existing") {
         const currentText = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
-          beforeManagedReadOpen, readFileData, openReadDescriptor);
+          beforeManagedReadOpen, readFileData, openReadDescriptor, destination.identity);
         if (currentText === null || currentText !== expectedText) {
           throw ownedFileConflict(path, "the validated state bytes changed after publication failed");
         }

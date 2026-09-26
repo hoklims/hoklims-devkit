@@ -584,18 +584,24 @@ test("runtime preserves a state destination replaced during temporary write", ()
 });
 
 test("runtime revalidates Windows destination bytes after publication fails", () => {
-  for (const changed of [false, true]) {
+  for (const scenario of ["unchanged", "same-inode-changed-bytes", "different-inode-same-bytes"]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-windows-publish-")));
     const statePath = join(root, "repository.json");
+    const foreignPath = join(root, "foreign.json");
     const original = `${JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }, null, 2)}\n`;
     writeFileSync(statePath, original);
+    if (scenario === "different-inode-same-bytes") writeFileSync(foreignPath, original);
     let platformObserved = false;
     const rt = createRuntime({
       currentPlatform: () => { platformObserved = true; return "win32"; },
       randomId: () => "candidate",
       commitOwnedFile: () => { throw Object.assign(new Error("Windows rename failed"), { code: "EIO" }); },
       removeOwnedFile: (path) => {
-        if (changed) writeFileSync(statePath, "FOREIGN STATE\n");
+        if (scenario === "same-inode-changed-bytes") writeFileSync(statePath, "FOREIGN STATE\n");
+        if (scenario === "different-inode-same-bytes") {
+          unlinkSync(statePath);
+          renameSync(foreignPath, statePath);
+        }
         unlinkSync(path);
       },
     });
@@ -608,9 +614,9 @@ test("runtime revalidates Windows destination bytes after publication fails", ()
     }
     expect(platformObserved).toBe(true);
     expect(writeError?.code).toBe("EIO");
-    if (changed) {
-      expect(() => transaction.close()).toThrow(/state bytes changed/u);
-      expect(readFileSync(statePath, "utf8")).toBe("FOREIGN STATE\n");
+    if (scenario !== "unchanged") {
+      expect(() => transaction.close()).toThrow(/validated|state bytes changed/u);
+      expect(readFileSync(statePath, "utf8")).toBe(scenario === "same-inode-changed-bytes" ? "FOREIGN STATE\n" : original);
     } else {
       expect(() => transaction.close()).not.toThrow();
       expect(readFileSync(statePath, "utf8")).toBe(original);
