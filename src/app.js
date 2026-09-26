@@ -589,15 +589,15 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     problem(report, "PACKAGE_MANIFEST_CONFLICT", String(error.message ?? error));
     return null;
   }
-  if (command !== "upgrade" && current && current !== version) {
-    problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger dependency is ${current}, expected ${version}`);
-  }
-  if (previous) {
-    const allowed = new Set([previous.version, ...(command === "upgrade" ? [version, pendingVersion] : [])]);
-    const unexpected = [...new Set([current, localEntry?.version].filter((candidate) => candidate && !allowed.has(candidate)))];
-    if (unexpected.length) {
-      problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger installation differs from recorded ${previous.version}: ${unexpected.join(", ")}`);
-    }
+  let allowedVersions;
+  if (previous) allowedVersions = [previous.version, ...(command === "upgrade" ? [version, pendingVersion] : [])];
+  else if (command === "upgrade") allowedVersions = [current, version, pendingVersion];
+  else allowedVersions = [version];
+  const allowed = new Set(allowedVersions);
+  const unexpected = [...new Set([current, localEntry?.version].filter((candidate) => candidate && !allowed.has(candidate)))];
+  if (unexpected.length) {
+    const baseline = previous ? `recorded ${previous.version}` : `selected ${version}`;
+    problem(report, "INSTALLED_VERSION_DRIFT", `AssertLedger installation differs from ${baseline}: ${unexpected.join(", ")}`);
   }
   const needsInstall = current !== version || localEntry?.version !== version;
   const previews = [];

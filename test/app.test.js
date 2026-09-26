@@ -741,6 +741,54 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("unmanaged AssertLedger setup rejects declaration and executable version mismatch", async () => {
+    for (const [declared, installed] of [["1.2.0", "1.3.0"], ["1.3.0", "1.4.0"]]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: declared }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: installed }),
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("unmanaged AssertLedger upgrade admits its target and pending target", async () => {
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.4.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const state of [
+      null,
+      {
+        schemaVersion: 1,
+        projectRoot: "/repo",
+        components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+        inProgress: {
+          command: "upgrade",
+          selected: ["semctx", "assertledger"],
+          hosts: ["codex"],
+          versions: { semctx: "0.3.4", assertledger: "1.4.0" },
+        },
+      },
+    ]) {
+      const rt = fakeRuntime({ state, version: "0.3.4", tools: ["node", "npm"], files });
+      const fetchJson = rt.fetchJson;
+      rt.fetchJson = async (url) => url.includes("registry.npmjs.org/assertledger")
+        ? { version: "1.4.0" } : fetchJson(url);
+      const report = await execute({ ...parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), dryRun: true }, rt);
+      expect(report.conflicts.map((item) => item.code)).not.toContain("INSTALLED_VERSION_DRIFT");
+      expect(report.components.find((item) => item.name === "assertledger")?.version).toBe("1.4.0");
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
   test("a malformed installed AssertLedger package blocks package mutation", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
       semctx: { version: "0.3.5", hosts: ["codex"] },
