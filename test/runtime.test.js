@@ -243,11 +243,13 @@ test("runtime checks retained paths when descriptor identity inspection fails", 
     import path from "node:path";
     import { syncBuiltinESMExports } from "node:module";
     const mode = process.argv[1];
+    const operation = mode.split("-")[0];
+    const replaceRequired = !mode.endsWith("-unchanged");
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hoklims-devkit-fstat-path-check-")));
     const statePath = path.join(root, "repository.json");
     const originalPath = path.join(root, "original.json");
     const original = JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} });
-    fs.writeFileSync(statePath, original);
+    if (mode !== "owned") fs.writeFileSync(statePath, original);
     const nativeLstat = fs.lstatSync;
     const nativeFstat = fs.fstatSync;
     let armed = false;
@@ -257,7 +259,7 @@ test("runtime checks retained paths when descriptor identity inspection fails", 
       return nativeLstat.call(this, candidate, options);
     };
     fs.fstatSync = function(descriptor, options) {
-      if (armed && ["read", "capture"].includes(mode)) {
+      if (armed && ["read", "capture"].includes(operation)) {
         throw Object.assign(new Error("persistent descriptor EIO"), { code: "EIO" });
       }
       return nativeFstat.call(this, descriptor, options);
@@ -269,10 +271,13 @@ test("runtime checks retained paths when descriptor identity inspection fails", 
       fs.writeFileSync(target, "FOREIGN-BYTES\\n");
       armed = true;
     };
-    const runtime = createRuntime(mode === "read" ? {
-      readFileData: (descriptor) => { replace(statePath); throw Object.assign(new Error("read EIO"), { code: "EIO" }); },
-    } : mode === "capture" ? {
-      beforeManagedReadOpen: () => replace(statePath),
+    const runtime = createRuntime(operation === "read" ? {
+      readFileData: () => {
+        if (replaceRequired) replace(statePath); else armed = true;
+        throw Object.assign(new Error("read EIO"), { code: "EIO" });
+      },
+    } : operation === "capture" ? {
+      beforeManagedReadOpen: () => { if (replaceRequired) replace(statePath); else armed = true; },
     } : {
       randomId: () => "candidate",
       inspectOwnedDescriptor: (descriptor, options) => {
@@ -286,12 +291,12 @@ test("runtime checks retained paths when descriptor identity inspection fails", 
     });
     let error;
     try {
-      if (mode === "read") runtime.readState(statePath);
-      else if (mode === "capture") runtime.openStateTransaction(statePath);
+      if (operation === "read") runtime.readState(statePath);
+      else if (operation === "capture") runtime.openStateTransaction(statePath);
       else runtime.openStateTransaction(statePath)
         .write({ schemaVersion: 1, projectRoot: "/repo", components: {} });
     } catch (caught) { error = caught; }
-    const foreignPath = ["read", "capture"].includes(mode) ? statePath : statePath + ".candidate.tmp";
+    const foreignPath = ["read", "capture"].includes(operation) ? statePath : statePath + ".candidate.tmp";
     const foreignPresent = fs.existsSync(foreignPath);
     process.stdout.write(JSON.stringify({
       mode, code: error?.code ?? null, pathChecksAfterFailure, foreignPresent,
@@ -309,6 +314,17 @@ test("runtime checks retained paths when descriptor identity inspection fails", 
     expect(observed.foreignPresent).toBe(true);
     expect(observed.foreign).toBe("FOREIGN-BYTES\n");
   }
+
+  const control = Bun.spawnSync({
+    cmd: ["node", "--input-type=module", "--eval", script, "read-unchanged"], stdout: "pipe", stderr: "pipe",
+  });
+  expect(control.exitCode, new TextDecoder().decode(control.stderr)).toBe(0);
+  const unchanged = JSON.parse(new TextDecoder().decode(control.stdout));
+  expect(unchanged).toMatchObject({
+    mode: "read-unchanged", code: "EIO", foreignPresent: true,
+    foreign: JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }),
+  });
+  expect(unchanged.pathChecksAfterFailure).toBeGreaterThan(0);
 });
 
 test("runtime descriptor snapshots reject growth, shrink, and same-size mutation after reads", () => {
