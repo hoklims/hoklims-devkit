@@ -1053,20 +1053,16 @@ async function diagnoseSemctx(rt, root, hosts, version) {
   };
 }
 
-async function diagnoseAssert(rt, root, hosts, version) {
+async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [version]) {
   const project = inspectAssertProject(rt, root);
-  if (project.version !== version) {
-    return { name: "assertledger", version, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
-  }
-  let entry;
-  try {
-    entry = localAssertEntry(rt, root);
-  } catch (error) {
-    throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
-  }
-  if (entry?.version !== version) {
+  const admission = assertAssertAdmission(rt, root, project.manager, compatibleVersions, compatibleVersions, true);
+  if (!admission.project.version && !admission.entry) {
     return { name: "assertledger", version, installed: "no", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
   }
+  if (!admission.project.version || !admission.entry || admission.project.version !== admission.entry.version) {
+    throw projectAdmissionError(new Error("The AssertLedger declaration and project-local package are incomplete or inconsistent"), "PACKAGE_MANIFEST_CONFLICT");
+  }
+  version = admission.entry.version;
   const checks = [];
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
@@ -1271,7 +1267,8 @@ export async function execute(options, rt = createRuntime()) {
       }
       try {
         const diagnostic = name === "semctx" ? await diagnoseSemctx(rt, root, hosts, version)
-          : name === "assertledger" ? await diagnoseAssert(rt, root, hosts, version)
+          : name === "assertledger" ? await diagnoseAssert(rt, root, hosts, version,
+            [...new Set([state?.components?.[name]?.version, state?.inProgress?.versions[name]].filter(Boolean))])
             : await diagnoseCompass(rt, root, hosts, version);
         const { ready, evidenceInvalid, ...publicDiagnostic } = diagnostic;
         report.components.push(publicDiagnostic);
@@ -1317,7 +1314,8 @@ export async function execute(options, rt = createRuntime()) {
         } else {
           const optional = selected.filter((item) => item !== "semctx");
           const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
-          const instruction = renderRetryInstruction(previous.hosts, retry, { components: selected, packageManager: recoveryPackageManager });
+          const expandedHosts = HOSTS.filter((host) => hosts.includes(host) || previous.hosts.includes(host));
+          const instruction = renderRetryInstruction(expandedHosts, retry, { components: selected, packageManager: recoveryPackageManager });
           problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; ${instruction} to change its shared version safely`);
           if (!report.nextActions.includes(instruction)) report.nextActions.push(instruction);
         }

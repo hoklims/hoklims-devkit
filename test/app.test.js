@@ -825,6 +825,90 @@ describe("public CLI", () => {
     expect(valid.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(true);
   });
 
+  test("doctor distinguishes an absent AssertLedger install from drift, partial metadata, and I/O failure", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex"] },
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    const manifestPath = join("/repo", "package.json");
+    const localManifest = join("/repo", "node_modules", "assertledger", "package.json");
+    const localCli = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
+    const baseFiles = { [join("/repo", "package-lock.json")]: "{}" };
+    const cases = [
+      {
+        name: "matching", files: {
+          ...baseFiles,
+          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+          [localManifest]: JSON.stringify({ version: "1.2.0" }), [localCli]: "cli",
+        }, installed: "yes", code: null, exitCode: 0, native: true,
+      },
+      {
+        name: "absent", files: {
+          ...baseFiles, [manifestPath]: JSON.stringify({ packageManager: "npm@10.9.8" }),
+        }, installed: "no", code: "DOCTOR_NOT_READY", exitCode: 3, native: false,
+      },
+      {
+        name: "foreign", files: {
+          ...baseFiles,
+          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+          [localManifest]: JSON.stringify({ version: "9.9.9" }), [localCli]: "cli",
+        }, installed: "unknown", code: "INSTALLED_VERSION_DRIFT", exitCode: 4, native: false,
+      },
+      {
+        name: "partial", files: {
+          ...baseFiles, [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        }, installed: "unknown", code: "PACKAGE_MANIFEST_CONFLICT", exitCode: 4, native: false,
+      },
+      {
+        name: "io", files: {
+          ...baseFiles,
+          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+          [localManifest]: JSON.stringify({ version: "1.2.0" }), [localCli]: "cli",
+        }, installed: "unknown", code: "STATE_IO_ERROR", exitCode: 5, native: false,
+      },
+    ];
+    for (const scenario of cases) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files: scenario.files, workspaceReady: true });
+      if (scenario.name === "io") {
+        const readPlainText = rt.readPlainText;
+        rt.readPlainText = (path) => {
+          if (path === localManifest) throw Object.assign(new Error("local manifest read denied"), { code: "EACCES" });
+          return readPlainText(path);
+        };
+      }
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      const diagnostic = report.components.find((item) => item.name === "assertledger");
+      expect(diagnostic.installed, scenario.name).toBe(scenario.installed);
+      if (scenario.code) expect(report.conflicts.map((item) => item.code), scenario.name).toContain(scenario.code);
+      else {
+        expect(diagnostic.configured, scenario.name).toBe("yes");
+        expect(report.conflicts.map((item) => item.code), scenario.name).not.toContain("INSTALLED_VERSION_DRIFT");
+        expect(report.conflicts.map((item) => item.code), scenario.name).not.toContain("PACKAGE_MANIFEST_CONFLICT");
+        expect(report.conflicts.map((item) => item.code), scenario.name).not.toContain("STATE_IO_ERROR");
+      }
+      expect(report.exitCode ?? 0, scenario.name).toBe(scenario.exitCode);
+      expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup")), scenario.name).toBe(scenario.native);
+      expect(rt.writes, scenario.name).toHaveLength(0);
+    }
+
+    const pendingState = structuredClone(state);
+    pendingState.inProgress = {
+      command: "upgrade", selected: ["semctx", "assertledger"], hosts: ["codex"],
+      versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+    };
+    const pendingFiles = {
+      ...baseFiles,
+      [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
+      [localManifest]: JSON.stringify({ version: "1.3.0" }), [localCli]: "cli",
+    };
+    const pending = fakeRuntime({ state: pendingState, tools: ["node", "npm"], files: pendingFiles, workspaceReady: true });
+    const pendingReport = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), pending);
+    expect(pendingReport.components.find((item) => item.name === "assertledger"))
+      .toMatchObject({ version: "1.3.0", installed: "yes", configured: "yes" });
+    expect(pendingReport.conflicts.map((item) => item.code)).not.toContain("INSTALLED_VERSION_DRIFT");
+    expect(pending.writes).toHaveLength(0);
+  });
+
   test("doctor preserves unknown for unavailable optional native diagnostics", async () => {
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
@@ -2598,6 +2682,27 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
     expect(detail).toContain("Restore the claude CLI on PATH before running hoklims-devkit upgrade /repo --host all");
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("expanded shared-host recovery checks every host required by its all-host retry", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["claude"] },
+    } };
+    for (const codexDisappears of [false, true]) {
+      const rt = fakeRuntime({ state: structuredClone(state), version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+      if (codexDisappears) {
+        const which = rt.which;
+        let codexChecks = 0;
+        rt.which = (name) => name === "codex" && ++codexChecks > 1 ? null : which(name);
+      }
+      const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+      expect(guidance).toContain("hoklims-devkit upgrade /repo --host all");
+      if (codexDisappears) expect(guidance).toContain("Restore the codex CLI on PATH before running hoklims-devkit upgrade /repo --host all");
+      else expect(guidance).not.toContain("Restore the codex CLI");
+      expect(rt.writes).toHaveLength(0);
+    }
   });
 
   test("all and auto recoveries restore missing saved-plan hosts before the full retry", async () => {
