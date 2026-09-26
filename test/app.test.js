@@ -2046,6 +2046,27 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("STATE_CHANGED invalidates an admitted refresh in favor of the latest saved plan", async () => {
+    const lockedState = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.5" } },
+    };
+    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    let reads = 0;
+    let released = false;
+    rt.readState = () => ++reads === 1 ? null : structuredClone(lockedState);
+    rt.acquireLock = () => () => { released = true; };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(guidance).toContain("Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude");
+    expect(guidance).not.toContain("hoklims-devkit upgrade");
+    expect(guidance).not.toContain("--host codex");
+    expect(guidance).not.toContain("--refresh-pending");
+    expect(rt.writes).toHaveLength(0);
+    expect(released).toBe(true);
+  });
+
   test("noncanonical persisted plan order is a state conflict", async () => {
     for (const state of [
       {

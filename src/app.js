@@ -1109,6 +1109,7 @@ export async function execute(options, rt = createRuntime()) {
       const currentState = validateState(rt.readState(statePath));
       persistedState = currentState ? structuredClone(currentState) : null;
       if (JSON.stringify(currentState) !== JSON.stringify(state)) {
+        refreshSavePending = false;
         const recoveryAction = recoveryActionFor(currentState);
         if (!report.nextActions.includes(recoveryAction)) report.nextActions.push(recoveryAction);
         problem(report, "STATE_CHANGED", `Installation state changed during preflight. ${recoveryAction} to recompute the plan.`, 4);
