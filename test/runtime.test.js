@@ -136,6 +136,28 @@ test("runtime removes an owned partial temporary state file after a write failur
   expect(existsSync(statePath)).toBe(false);
 });
 
+test("runtime preserves a state destination replaced during temporary write", () => {
+  for (const initiallyPresent of [false, true]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-destination-")));
+    const statePath = join(root, "repository.json");
+    const tempPath = `${statePath}.candidate.tmp`;
+    if (initiallyPresent) writeFileSync(statePath, "original state\n");
+    const rt = createRuntime({
+      randomId: () => "candidate",
+      writeStateData: (fd, data) => {
+        writeFileSync(fd, data);
+        if (existsSync(statePath)) unlinkSync(statePath);
+        writeFileSync(statePath, "foreign replacement\n");
+      },
+    });
+    let error;
+    try { rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} }); } catch (caught) { error = caught; }
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(readFileSync(statePath, "utf8")).toBe("foreign replacement\n");
+    expect(existsSync(tempPath)).toBe(false);
+  }
+});
+
 test("runtime preserves a foreign temporary-file collision", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-collision-")));
   const statePath = join(root, "repository.json");
@@ -295,6 +317,19 @@ test("runtime distinguishes readable regular files from directories", () => {
   expect(rt.isReadableFile(filePath)).toBe(true);
   expect(rt.isReadableFile(directoryPath)).toBe(false);
   expect(rt.isReadableFile(join(root, "missing.js"))).toBe(false);
+
+  const targetPath = join(root, "linked-target.js");
+  const linkPath = join(root, "linked-cli.js");
+  try {
+    symlinkSync(targetPath, linkPath, process.platform === "win32" ? "file" : undefined);
+  } catch (error) {
+    if (error?.code === "EPERM") return;
+    throw error;
+  }
+  expect(rt.pathPresent(linkPath)).toBe(true);
+  expect(rt.isReadableFile(linkPath)).toBe(false);
+  writeFileSync(targetPath, "#!/usr/bin/env node\n");
+  expect(rt.isReadableFile(linkPath)).toBe(true);
 });
 
 test("state validation accepts only canonical component and host order", () => {

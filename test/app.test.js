@@ -125,6 +125,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
       throw new Error(`Unexpected command: ${argv.join(" ")}`);
     },
     exists: (path) => Object.hasOwn(files, path),
+    pathPresent: (path) => Object.hasOwn(files, path),
     isReadableFile: (path) => Object.hasOwn(files, path) && typeof files[path] === "string",
     readText: (path) => files[path],
     join: (...parts) => parts.join("/"),
@@ -785,6 +786,35 @@ describe("public CLI", () => {
     const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
     const isReadableFile = rt.isReadableFile;
     rt.isReadableFile = (path) => path !== cliPath && isReadableFile(path);
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+    expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("a dangling AssertLedger CLI link blocks package mutation", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const cliPath = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const pathPresent = rt.pathPresent;
+    rt.pathPresent = (path) => path === cliPath || pathPresent(path);
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
     expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
     expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);

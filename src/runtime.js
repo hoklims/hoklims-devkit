@@ -42,12 +42,27 @@ function assertSafeManagedParents(path) {
   }
 }
 
-function inspectManagedFile(path) {
+function inspectManagedFile(path, options) {
   assertSafeManagedParents(path);
-  const stat = lstatIfPresent(path);
+  const stat = lstatIfPresent(path, options);
   if (stat?.isSymbolicLink()) throw unsafeManagedPath(path, "is a symbolic link");
   if (stat && !stat.isFile()) throw unsafeManagedPath(path, "is not a regular file");
   return stat;
+}
+
+function managedFileIdentity(stat) {
+  return stat ? { dev: stat.dev, ino: stat.ino } : null;
+}
+
+function assertManagedDestination(path, expectedIdentity) {
+  const stat = inspectManagedFile(path, { bigint: true });
+  if (!expectedIdentity) {
+    if (stat) throw ownedFileConflict(path, "a destination appeared during the write");
+    return;
+  }
+  if (!stat || stat.dev !== expectedIdentity.dev || stat.ino !== expectedIdentity.ino) {
+    throw ownedFileConflict(path, "the destination was replaced during the write");
+  }
 }
 
 function prepareManagedParent(path) {
@@ -209,6 +224,7 @@ export function createRuntime({
       return response.json();
     },
     exists: existsSync,
+    pathPresent: (path) => Boolean(lstatIfPresent(path)),
     isReadableFile: (path) => {
       try {
         if (!statSync(path).isFile()) return false;
@@ -235,7 +251,7 @@ export function createRuntime({
     writeState: (path, state) => {
       validateState(state);
       prepareManagedParent(path);
-      inspectManagedFile(path);
+      const destinationIdentity = managedFileIdentity(inspectManagedFile(path, { bigint: true }));
       const temp = `${path}.${randomId()}.tmp`;
       let owned = null;
       try {
@@ -246,9 +262,9 @@ export function createRuntime({
           closeOwnedFile(owned);
         }
         assertOwnedFile(owned);
-        inspectManagedFile(path);
-        // Node has no portable identity-bound rename/CAS. This final identity check narrows, but cannot
-        // eliminate, a hostile pathname swap between validation and rename by a peer outside this lock.
+        assertManagedDestination(path, destinationIdentity);
+        // Node has no portable identity-bound rename/CAS. This identity check cannot eliminate a hostile
+        // pathname swap between the final validation and rename by a peer outside this lock.
         renameSync(temp, path);
         owned = null;
       } catch (error) {

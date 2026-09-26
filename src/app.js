@@ -213,8 +213,8 @@ function installPackageCommand(manager, version) {
 function localAssertEntry(rt, root) {
   const packagePath = join(root, "node_modules", "assertledger", "package.json");
   const cliPath = join(root, "node_modules", "assertledger", "dist", "cli.js");
-  const packagePresent = rt.exists(packagePath);
-  const cliPresent = rt.exists(cliPath);
+  const packagePresent = rt.pathPresent(packagePath);
+  const cliPresent = rt.pathPresent(cliPath);
   if (!packagePresent && !cliPresent) return null;
   if (!packagePresent || !cliPresent) throw new Error("The project-local AssertLedger package is incomplete");
   if (!rt.isReadableFile(cliPath)) throw new Error("The project-local AssertLedger CLI is not a readable regular file");
