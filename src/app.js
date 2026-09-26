@@ -125,7 +125,7 @@ function failureGuidance(rt, options, root, hosts, candidateState, recoveryOptio
   const missingPrerequisite = recoveryAction.startsWith("Restore ");
   let action;
   if (candidateState?.inProgress) {
-    if (options.refreshPending && !effectiveOptions.useRequestedRefresh) {
+    if (options.refreshPending && !effectiveOptions.useRequestedRefresh && !effectiveOptions.refreshInvalidated) {
       action = missingPrerequisite
         ? `${recoveryAction} to complete the recorded plan before refreshing releases`
         : `Complete the recorded plan with ${command} before refreshing releases`;
@@ -1092,6 +1092,7 @@ export async function execute(options, rt = createRuntime()) {
   const nextState = state ? structuredClone(state) : { schemaVersion: 1, projectRoot: root, components: {} };
   let persistedState = state ? structuredClone(state) : null;
   let refreshSavePending = options.refreshPending;
+  let refreshPhaseInvalidated = false;
   let releaseLock;
   try {
     releaseLock = rt.acquireLock(statePath);
@@ -1110,6 +1111,7 @@ export async function execute(options, rt = createRuntime()) {
       persistedState = currentState ? structuredClone(currentState) : null;
       if (JSON.stringify(currentState) !== JSON.stringify(state)) {
         refreshSavePending = false;
+        refreshPhaseInvalidated = true;
         const recoveryAction = recoveryActionFor(currentState);
         if (!report.nextActions.includes(recoveryAction)) report.nextActions.push(recoveryAction);
         problem(report, "STATE_CHANGED", `Installation state changed during preflight. ${recoveryAction} to recompute the plan.`, 4);
@@ -1193,7 +1195,10 @@ export async function execute(options, rt = createRuntime()) {
     }
   }
   report.ok = report.conflicts.length === 0;
-  return report.ok ? report : finalizeFailure(persistedState ?? state, { useRequestedRefresh: refreshSavePending });
+  return report.ok ? report : finalizeFailure(persistedState ?? state, {
+    useRequestedRefresh: refreshSavePending,
+    refreshInvalidated: refreshPhaseInvalidated,
+  });
 }
 
 function usage() {

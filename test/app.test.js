@@ -2063,6 +2063,7 @@ describe("public CLI", () => {
     expect(guidance).not.toContain("hoklims-devkit upgrade");
     expect(guidance).not.toContain("--host codex");
     expect(guidance).not.toContain("--refresh-pending");
+    expect(guidance).not.toContain("refreshing releases");
     expect(rt.writes).toHaveLength(0);
     expect(released).toBe(true);
   });
