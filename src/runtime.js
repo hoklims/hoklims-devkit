@@ -39,20 +39,21 @@ function unsafeProjectPath(path, detail) {
   return Object.assign(new Error(`Unsafe project package path: ${path} ${detail}. Replace it with a regular local file, then rerun.`), { code: "STATE_CONFLICT" });
 }
 
-function assertManagedParentSnapshot(parents) {
+function assertManagedParentSnapshot(parents, compareMetadata = false) {
   for (const parent of parents) {
     const current = inspectManagedEntry(parent.path, { bigint: true });
     if (parent.identity === null ? current !== null
       : !current || current.isSymbolicLink() || !current.isDirectory()
-        || current.dev !== parent.identity.dev || current.ino !== parent.identity.ino) {
+        || current.dev !== parent.identity.dev || current.ino !== parent.identity.ino
+        || (compareMetadata && current.ctimeNs !== parent.identity.ctimeNs)) {
       throw unsafeManagedPath(parent.path, "changed during managed parent inspection");
     }
   }
 }
 
-function assertSafeManagedParents(path, expectedParents = null) {
+function assertSafeManagedParents(path, expectedParents = null, compareMetadata = false) {
   if (expectedParents) {
-    assertManagedParentSnapshot(expectedParents);
+    assertManagedParentSnapshot(expectedParents, compareMetadata);
     return expectedParents;
   }
   const parents = [];
@@ -69,27 +70,27 @@ function assertSafeManagedParents(path, expectedParents = null) {
     try {
       stat = inspectManagedEntry(candidate, { bigint: true });
     } catch (error) {
-      assertManagedParentSnapshot(observed);
+      assertManagedParentSnapshot(observed, true);
       throw error;
     }
     if (stat?.isSymbolicLink()) throw unsafeManagedPath(candidate, "is a symbolic link");
     if (stat && !stat.isDirectory()) throw unsafeManagedPath(candidate, "is not a directory");
-    observed.push({ path: candidate, identity: stat ? { dev: stat.dev, ino: stat.ino } : null });
-    assertManagedParentSnapshot(observed);
+    observed.push({ path: candidate, identity: stat ? { dev: stat.dev, ino: stat.ino, ctimeNs: stat.ctimeNs } : null });
+    assertManagedParentSnapshot(observed, true);
   }
   return observed;
 }
 
-function inspectManagedFile(path, options, expectedParents = null) {
-  const parents = assertSafeManagedParents(path, expectedParents);
+function inspectManagedFile(path, options, expectedParents = null, compareParentMetadata = expectedParents === null) {
+  const parents = assertSafeManagedParents(path, expectedParents, compareParentMetadata);
   let stat;
   try {
     stat = inspectManagedEntry(path, options);
   } catch (error) {
-    assertSafeManagedParents(path, parents);
+    assertSafeManagedParents(path, parents, compareParentMetadata);
     throw error;
   }
-  assertSafeManagedParents(path, parents);
+  assertSafeManagedParents(path, parents, compareParentMetadata);
   if (stat?.isSymbolicLink()) throw unsafeManagedPath(path, "is a symbolic link");
   if (stat && !stat.isFile()) throw unsafeManagedPath(path, "is not a regular file");
   return stat;
@@ -125,8 +126,8 @@ function openVerifiedReadDescriptor(path) {
   return openSync(path, flags);
 }
 
-function assertInspectedIdentity(path, inspectFile, conflict, identity, detail, parents = null) {
-  const current = inspectFile(path, { bigint: true }, parents);
+function assertInspectedIdentity(path, inspectFile, conflict, identity, detail, parents = null, compareParentMetadata = false) {
+  const current = inspectFile(path, { bigint: true }, parents, compareParentMetadata);
   if (!current || current.dev !== identity.dev || current.ino !== identity.ino) throw conflict(path, detail);
 }
 
@@ -166,7 +167,7 @@ function readDescriptorSnapshot(descriptor, { readWhole, readChunk = readSync, p
 function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync,
   openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null, encoding = "utf8", readDescriptorData = readSync) {
   const parents = inspectFile === inspectManagedFile ? assertSafeManagedParents(path) : null;
-  const initial = inspectFile(path, { bigint: true }, parents);
+  const initial = inspectFile(path, { bigint: true }, parents, true);
   if (!initial) return null;
   const identity = expectedIdentity ?? { dev: initial.dev, ino: initial.ino };
   if (initial.dev !== identity.dev || initial.ino !== identity.ino) {
@@ -178,7 +179,8 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
     try {
       descriptor = openReadDescriptor(path);
     } catch (error) {
-      assertInspectedIdentity(path, inspectFile, conflict, identity, "the pathname changed before it could be opened for reading", parents);
+      assertInspectedIdentity(path, inspectFile, conflict, identity,
+        "the pathname changed before it could be opened for reading", parents, true);
       throw error;
     }
     const assertReadIdentity = () => {
@@ -186,7 +188,7 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
       if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
         throw conflict(path, "the file changed while it was opened for reading");
       }
-      const current = inspectFile(path, { bigint: true }, parents);
+      const current = inspectFile(path, { bigint: true }, parents, true);
       if (!current || current.dev !== identity.dev || current.ino !== identity.ino) {
         throw conflict(path, "the pathname changed while it was opened for reading");
       }
@@ -219,7 +221,7 @@ function assertManagedDestination(path, expectedIdentity, parents = null) {
 
 function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
   const parents = assertSafeManagedParents(path);
-  const initial = inspectManagedFile(path, { bigint: true }, parents);
+  const initial = inspectManagedFile(path, { bigint: true }, parents, true);
   if (!initial) return { descriptor: null, identity: null, observation: "absent", parents };
   const identity = { dev: initial.dev, ino: initial.ino };
   let descriptor;
@@ -229,7 +231,7 @@ function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
       descriptor = openReadDescriptor(path);
     } catch (error) {
       assertInspectedIdentity(path, inspectManagedFile, ownedFileConflict, identity,
-        "the destination changed before its identity could be captured", parents);
+        "the destination changed before its identity could be captured", parents, true);
       throw error;
     }
     const opened = fstatSync(descriptor, { bigint: true });

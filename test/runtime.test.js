@@ -424,11 +424,15 @@ test("runtime classifies a parent replaced during root-down inspection as a conf
       if (mode === "eio" && candidate === managed) {
         throw Object.assign(new Error("simulated managed parent I/O"), { code: "EIO" });
       }
-      const result = nativeLstat.call(this, candidate, options);
-      if (["race", "directory-race"].includes(mode) && candidate === parent && !replaced) {
+      if (mode === "directory-race" && candidate === statePath && !replaced) {
         fs.rmdirSync(parent);
-        if (mode === "race") fs.writeFileSync(parent, foreign);
-        else fs.mkdirSync(parent);
+        fs.mkdirSync(parent);
+        replaced = true;
+      }
+      const result = nativeLstat.call(this, candidate, options);
+      if (mode === "race" && candidate === parent && !replaced) {
+        fs.rmdirSync(parent);
+        fs.writeFileSync(parent, foreign);
         replaced = true;
       }
       return result;
@@ -613,7 +617,7 @@ test("runtime revalidates lock ownership when descriptor reads fail", () => {
     const readError = Object.assign(new Error("simulated lock read EIO"), { code: "EIO" });
     let readExecuted = false;
     const rt = createRuntime({
-      readDescriptorData: () => {
+      readFileData: () => {
         readExecuted = true;
         if (replace) {
           renameSync(lockPath, originalPath);
