@@ -590,7 +590,13 @@ describe("public CLI", () => {
   });
 
   test("malformed packageManager declarations block before state writes", async () => {
-    for (const packageManager of [7, null, false, { name: "npm" }, "npm@", "npm@latest", "npm@^10", "npm@10.9", "npm@https://example.com/npm.zip"]) {
+    for (const packageManager of [
+      7, null, false, { name: "npm" },
+      "npm@", "npm@latest", "npm@^10", "npm@10.9",
+      "npm@01.2.3", "npm@1.2.3-..", "npm@1.2.3+sha512.a",
+      "npm@https://example.com/npm.zip",
+      "npm@https://example.com/npm.tgz#sha512.a",
+    ]) {
       const rt = fakeRuntime({
         tools: ["node", "npm"],
         files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager }) },
@@ -606,9 +612,10 @@ describe("public CLI", () => {
   test("valid packageManager declarations retain supported manager selection", async () => {
     for (const packageManager of [
       "npm@10.9.8",
-      "npm@10.9.8+sha512.aabbcc",
+      `npm@10.9.8+sha512.${"ab".repeat(64)}`,
+      "npm@10.9.8-rc.1",
       "pnpm@10.0.0",
-      "pnpm@https://registry.npmjs.org/pnpm/-/pnpm-10.0.0.tgz#sha224.aabbcc",
+      `pnpm@https://registry.npmjs.org/pnpm/-/pnpm-10.0.0.tgz#sha224.${"ab".repeat(28)}`,
       "bun@1.4.2",
     ]) {
       const manager = packageManager.split("@")[0];

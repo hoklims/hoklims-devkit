@@ -257,6 +257,29 @@ test("runtime propagates an owned lock unlink failure", () => {
   expect(existsSync(lockPath)).toBe(true);
 });
 
+test("runtime distinguishes malformed lock records from contention", () => {
+  for (const content of ["not-json", JSON.stringify({ token: "", pid: 0 }), JSON.stringify({ token: "foreign" })]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-malformed-lock-")));
+    const statePath = join(root, "repository.json");
+    const lockPath = `${statePath}.lock`;
+    writeFileSync(lockPath, content);
+    let error;
+    try { createRuntime().acquireLock(statePath); } catch (caught) { error = caught; }
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(readFileSync(lockPath, "utf8")).toBe(content);
+  }
+
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-valid-lock-")));
+  const statePath = join(root, "repository.json");
+  const lockPath = `${statePath}.lock`;
+  const valid = JSON.stringify({ token: "foreign", pid: 42 });
+  writeFileSync(lockPath, valid);
+  let contention;
+  try { createRuntime().acquireLock(statePath); } catch (caught) { contention = caught; }
+  expect(contention?.code).toBe("RUN_LOCKED");
+  expect(readFileSync(lockPath, "utf8")).toBe(valid);
+});
+
 test("state validation accepts only canonical component and host order", () => {
   const canonical = {
     schemaVersion: 1,

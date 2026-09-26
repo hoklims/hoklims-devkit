@@ -96,6 +96,22 @@ function cleanupOwnedFile(owned, removeOwnedFile) {
   if (closeError) throw closeError;
 }
 
+function readLockRecord(path) {
+  let record;
+  try {
+    record = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
+  }
+  if (!record || Array.isArray(record) || typeof record !== "object"
+    || typeof record.token !== "string" || record.token.length === 0
+    || !Number.isInteger(record.pid) || record.pid <= 0) {
+    throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
+  }
+  return record;
+}
+
 export class RunLockedError extends Error {
   constructor(message) {
     super(message);
@@ -236,7 +252,10 @@ export function createRuntime({
       inspectManagedFile(statePath);
       const lockPath = `${statePath}.lock`;
       const existingLock = inspectManagedFile(lockPath);
-      if (existingLock) throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
+      if (existingLock) {
+        readLockRecord(lockPath);
+        throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
+      }
       const token = randomId();
       let owned = null;
       try {
@@ -259,6 +278,7 @@ export function createRuntime({
         if (error?.code === "EEXIST") {
           const racedLock = inspectManagedFile(lockPath);
           if (racedLock) {
+            readLockRecord(lockPath);
             throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
           }
           throw unsafeManagedPath(lockPath, "changed during exclusive lock creation");
@@ -267,13 +287,7 @@ export function createRuntime({
       }
       return () => {
         assertOwnedFile(owned);
-        let current;
-        try {
-          current = JSON.parse(readFileSync(lockPath, "utf8"));
-        } catch (error) {
-          if (error instanceof SyntaxError) throw ownedFileConflict(lockPath, "the lock content is no longer valid JSON");
-          throw error;
-        }
+        const current = readLockRecord(lockPath);
         if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
         removeOwnedFile(lockPath);
       };

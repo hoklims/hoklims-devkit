@@ -148,6 +148,21 @@ function existingAssertVersion(rt, root) {
   return declarations[0].version;
 }
 
+function validIntegrityHash(value) {
+  const match = value.match(/^(sha224|sha256|sha384|sha512)\.([0-9A-Fa-f]+)$/u);
+  if (!match) return false;
+  const lengths = { sha224: 56, sha256: 64, sha384: 96, sha512: 128 };
+  return match[2].length === lengths[match[1]];
+}
+
+function validExactPackageManagerVersion(value) {
+  const integrity = value.match(/\+(sha(?:224|256|384|512)\.[0-9A-Fa-f]+)$/u);
+  const version = integrity ? value.slice(0, -integrity[0].length) : value;
+  if (value.includes("+") && !integrity) return false;
+  const semver = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/u;
+  return semver.test(version) && (!integrity || validIntegrityHash(integrity[1]));
+}
+
 function packageManager(rt, root) {
   const manifestPath = join(root, "package.json");
   if (!rt.exists(manifestPath)) throw new Error("AssertLedger setup needs an existing package.json");
@@ -160,12 +175,12 @@ function packageManager(rt, root) {
   if (hasDeclaration) {
     const match = manifest.packageManager.match(/^([A-Za-z][A-Za-z0-9._-]*)@(.+)$/u);
     const specifier = match?.[2] ?? "";
-    const exactVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+sha(?:224|256|384|512)\.[0-9A-Fa-f]+)?$/u.test(specifier);
+    const exactVersion = validExactPackageManagerVersion(specifier);
     let exactUrl = false;
     try {
       const url = new URL(specifier);
       exactUrl = url.protocol === "https:" && /\.(?:js|tgz)$/u.test(url.pathname)
-        && (!url.hash || /^#sha(?:224|256|384|512)\.[0-9A-Fa-f]+$/u.test(url.hash));
+        && (!url.hash || validIntegrityHash(url.hash.slice(1)));
     } catch { /* A registry version is handled by exactVersion. */ }
     if (!match || (!exactVersion && !exactUrl)) {
       throw new Error(`packageManager must be a string in manager@version form; found ${String(manifest.packageManager)}`);
