@@ -1066,7 +1066,9 @@ test("runtime preserves a state destination replaced during temporary write", ()
     const statePath = join(root, "repository.json");
     const tempPath = `${statePath}.candidate.tmp`;
     const foreignPath = join(root, "foreign-replacement.json");
-    if (scenario !== "appeared") writeFileSync(statePath, "original state\n");
+    if (scenario !== "appeared") {
+      writeFileSync(statePath, `${JSON.stringify({ schemaVersion: 1, projectRoot: "/original", components: {} }, null, 2)}\n`);
+    }
     if (scenario === "distinct-replacement") writeFileSync(foreignPath, "foreign replacement\n");
     const rt = createRuntime({
       randomId: () => "candidate",
@@ -1082,6 +1084,48 @@ test("runtime preserves a state destination replaced during temporary write", ()
     expect(error?.code).toBe("STATE_CONFLICT");
     expect(readFileSync(statePath, "utf8")).toBe("foreign replacement\n");
     expect(existsSync(tempPath)).toBe(false);
+  }
+});
+
+test("runtime writeState preserves a same-inode destination changed during staging", () => {
+  for (const scenario of ["unchanged", "changed"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-same-inode-")));
+    const statePath = join(root, "repository.json");
+    const original = `${JSON.stringify({ schemaVersion: 1, projectRoot: "/original", components: {} }, null, 2)}\n`;
+    const foreign = "FOREIGN STATE BYTES\n";
+    const next = { schemaVersion: 1, projectRoot: "/repo", components: {} };
+    writeFileSync(statePath, original);
+    const initial = lstatSync(statePath, { bigint: true });
+    let mutationExecuted = false;
+    let commits = 0;
+    const rt = createRuntime({
+      randomId: () => "candidate",
+      writeStateData: (descriptor, data) => {
+        writeFileSync(descriptor, data);
+        if (scenario === "changed") {
+          writeFileSync(statePath, foreign);
+          mutationExecuted = true;
+          const changed = lstatSync(statePath, { bigint: true });
+          expect(changed.dev).toBe(initial.dev);
+          expect(changed.ino).toBe(initial.ino);
+        }
+      },
+      commitOwnedFile: (from, to) => { commits += 1; renameSync(from, to); },
+    });
+    let error;
+    try { rt.writeState(statePath, next); } catch (caught) { error = caught; }
+    if (scenario === "changed") {
+      expect(mutationExecuted).toBe(true);
+      expect(error?.code).toBe("STATE_CONFLICT");
+      expect(commits).toBe(0);
+      expect(readFileSync(statePath, "utf8")).toBe(foreign);
+      expect(existsSync(`${statePath}.candidate.tmp`)).toBe(false);
+    } else {
+      expect(mutationExecuted).toBe(false);
+      expect(error).toBeUndefined();
+      expect(commits).toBe(1);
+      expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual(next);
+    }
   }
 });
 

@@ -738,49 +738,17 @@ export function createRuntime({
     openStateTransaction,
     writeState: (path, state) => {
       validateState(state);
-      prepareManagedParent(path, createManagedParent);
-      const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor,
-        inspectReadDescriptor, closeDescriptor);
-      const temp = `${path}.${randomId()}.tmp`;
-      let owned = null;
+      const transaction = openStateTransaction(path);
       let operationError = null;
       try {
-        owned = openOwnedManagedFile(temp, createOwnedFile, "wx", inspectOwnedDescriptor, closeDescriptor);
-        writeStateData(owned.descriptor, `${JSON.stringify(state, null, 2)}\n`);
-        assertOwnedFile(owned);
-        assertManagedDestination(path, destination.identity, destination.parents);
-        // Node has no portable identity-bound rename/CAS. This identity check cannot eliminate a hostile
-        // pathname swap between the final validation and rename by a peer outside this lock.
-        commitOwnedFile(temp, path);
-        const committed = owned;
-        owned = null;
-        closeOwnedFile(committed);
+        transaction.write(state);
       } catch (error) {
-        try {
-          if (owned) {
-            try {
-              cleanupOwnedFile(owned, removeOwnedFile);
-            } catch (cleanupError) {
-              throw preferredBoundaryError(error, cleanupError);
-            }
-          }
-          if (error?.code === "EEXIST") {
-            const collision = inspectManagedFile(temp);
-            if (collision) throw ownedFileConflict(temp, "a foreign temporary file already exists");
-            throw unsafeManagedPath(temp, "changed during exclusive temporary-file creation");
-          }
-          throw error;
-        } catch (finalError) {
-          operationError = finalError;
-          throw finalError;
-        }
-      } finally {
-        try {
-          closeManagedDestination(destination);
-        } catch (closeError) {
-          throw operationError ? preferredBoundaryError(operationError, closeError) : closeError;
-        }
+        operationError = error;
       }
+      try { transaction.close(); } catch (closeError) {
+        operationError = operationError ? preferredBoundaryError(operationError, closeError) : closeError;
+      }
+      if (operationError) throw operationError;
     },
     acquireLock: (statePath) => {
       prepareManagedParent(statePath, createManagedParent);
