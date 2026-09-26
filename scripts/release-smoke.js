@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
+import { validComponentReport } from "./release-report.js";
 
 const consumer = process.argv[2];
 if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "bin", "hoklims-devkit.js"))) {
@@ -82,9 +83,7 @@ for (const host of ["codex", "claude", "all"]) {
     const output = run(["bunx", "--no-install", "hoklims-devkit", "setup", repository, "--host", host, ...withTools, "--dry-run", "--json"]);
     const report = JSON.parse(output);
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
-    if (report.ok !== true || report.projectRoot !== resolve(repository)
-      || JSON.stringify(report.components.map((item) => item.name)) !== JSON.stringify(expected)
-      || report.components.some((item) => item.state !== "planned")) {
+    if (!validComponentReport(report, resolve(repository), expected, { expectedState: "planned" })) {
       throw new Error(`Unexpected ${host} preflight: ${output}`);
     }
     if (run(["git", "-C", repository, "status", "--porcelain"]).trim()) {
@@ -124,38 +123,48 @@ for (const host of ["codex", "claude", "all"]) {
     const selectors = ["--host", host, ...withTools, "--json"];
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
     const installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (installed.ok !== true || JSON.stringify(installed.components.map((item) => item.name)) !== JSON.stringify(expected)
-      || installed.components.some((item) => item.state !== "configured" || item.installed !== "yes" || item.configured !== "yes")) {
+    if (!validComponentReport(installed, resolve(scenarioRepository), expected, {
+      expectedState: "configured",
+      requireInstalledAndConfigured: true,
+    })) {
       throw new Error(`Unexpected ${host} installation: ${JSON.stringify(installed)}`);
     }
     run(["git", "-C", scenarioRepository, "status", "--porcelain"], consumer, scenarioEnv);
     const targets = [scenarioRepository, ...scenarioProtectedPaths];
     const installedSnapshot = targets.map(snapshot);
     const repeated = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (repeated.ok !== true) throw new Error(`${host} repeated setup failed: ${JSON.stringify(repeated)}`);
+    if (!validComponentReport(repeated, resolve(scenarioRepository), expected, {
+      expectedState: "configured",
+      requireInstalledAndConfigured: true,
+    })) throw new Error(`${host} repeated setup failed: ${JSON.stringify(repeated)}`);
     assertSnapshotUnchanged(targets, installedSnapshot, `${host} repeated setup`);
 
     const beforeDoctor = targets.map(snapshot);
     const diagnosed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (diagnosed.ok !== true || diagnosed.components.some((item) => item.installed !== "yes" || item.configured !== "yes")) {
+    if (!validComponentReport(diagnosed, resolve(scenarioRepository), expected, {
+      requireInstalledAndConfigured: true,
+    })) {
       throw new Error(`${host} doctor did not confirm installation: ${JSON.stringify(diagnosed)}`);
     }
     assertSnapshotUnchanged(targets, beforeDoctor, `${host} doctor`);
     const beforeUpgradePlan = targets.map(snapshot);
     const upgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "upgrade", scenarioRepository, ...selectors.slice(0, -1), "--dry-run", "--json"], consumer, scenarioEnv));
-    if (upgrade.ok !== true) throw new Error(`${host} upgrade plan failed: ${JSON.stringify(upgrade)}`);
+    if (!validComponentReport(upgrade, resolve(scenarioRepository), expected, { expectedState: "planned" })) {
+      throw new Error(`${host} upgrade plan failed: ${JSON.stringify(upgrade)}`);
+    }
     assertSnapshotUnchanged(targets, beforeUpgradePlan, `${host} upgrade plan`);
     const appliedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "upgrade", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (appliedUpgrade.ok !== true
-      || JSON.stringify(appliedUpgrade.components.map((item) => item.name)) !== JSON.stringify(expected)
-      || appliedUpgrade.components.some((item) => item.installed !== "yes" || item.configured !== "yes")) {
+    if (!validComponentReport(appliedUpgrade, resolve(scenarioRepository), expected, {
+      expectedState: "configured",
+      requireInstalledAndConfigured: true,
+    })) {
       throw new Error(`${host} upgrade did not configure every component: ${JSON.stringify(appliedUpgrade)}`);
     }
     const afterUpgrade = targets.map(snapshot);
     const diagnosedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (diagnosedUpgrade.ok !== true
-      || JSON.stringify(diagnosedUpgrade.components.map((item) => item.name)) !== JSON.stringify(expected)
-      || diagnosedUpgrade.components.some((item) => item.installed !== "yes" || item.configured !== "yes")) {
+    if (!validComponentReport(diagnosedUpgrade, resolve(scenarioRepository), expected, {
+      requireInstalledAndConfigured: true,
+    })) {
       throw new Error(`${host} post-upgrade doctor did not confirm installation: ${JSON.stringify(diagnosedUpgrade)}`);
     }
     assertSnapshotUnchanged(targets, afterUpgrade, `${host} post-upgrade doctor`);
