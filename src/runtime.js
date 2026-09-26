@@ -22,6 +22,15 @@ function unsafeManagedPath(path, detail) {
   return Object.assign(new Error(`Unsafe managed state path: ${path} ${detail}. Replace linked state paths with real local directories or files, then rerun.`), { code: "STATE_CONFLICT" });
 }
 
+function inspectManagedEntry(path, options) {
+  try {
+    return lstatIfPresent(path, options);
+  } catch (error) {
+    if (error?.code === "ENOTDIR") throw unsafeManagedPath(path, "has a non-directory ancestor");
+    throw error;
+  }
+}
+
 function ownedFileConflict(path, detail) {
   return Object.assign(new Error(`Managed state file ownership changed at ${path}: ${detail}. Preserve the foreign path, inspect it, then rerun.`), { code: "STATE_CONFLICT" });
 }
@@ -39,16 +48,41 @@ function assertSafeManagedParents(path) {
     if (parent === current) break;
     current = parent;
   }
+  const observed = [];
+  const recheckObserved = () => {
+    for (const parent of observed) {
+      const current = inspectManagedEntry(parent.path, { bigint: true });
+      if (!current || current.isSymbolicLink() || !current.isDirectory()
+        || current.dev !== parent.dev || current.ino !== parent.ino) {
+        throw unsafeManagedPath(parent.path, "changed during managed parent inspection");
+      }
+    }
+  };
   for (const candidate of parents.reverse()) {
-    const stat = lstatIfPresent(candidate);
+    let stat;
+    try {
+      stat = inspectManagedEntry(candidate, { bigint: true });
+    } catch (error) {
+      recheckObserved();
+      throw error;
+    }
     if (stat?.isSymbolicLink()) throw unsafeManagedPath(candidate, "is a symbolic link");
     if (stat && !stat.isDirectory()) throw unsafeManagedPath(candidate, "is not a directory");
+    if (stat) observed.push({ path: candidate, dev: stat.dev, ino: stat.ino });
+    recheckObserved();
   }
 }
 
 function inspectManagedFile(path, options) {
   assertSafeManagedParents(path);
-  const stat = lstatIfPresent(path, options);
+  let stat;
+  try {
+    stat = inspectManagedEntry(path, options);
+  } catch (error) {
+    assertSafeManagedParents(path);
+    throw error;
+  }
+  assertSafeManagedParents(path);
   if (stat?.isSymbolicLink()) throw unsafeManagedPath(path, "is a symbolic link");
   if (stat && !stat.isFile()) throw unsafeManagedPath(path, "is not a regular file");
   return stat;
@@ -263,7 +297,14 @@ function assertOwnedFile(owned) {
     throw ownedFileConflict(owned.path, "the opened file identity changed");
   }
   assertSafeManagedParents(owned.path);
-  const stat = lstatIfPresent(owned.path, { bigint: true });
+  let stat;
+  try {
+    stat = inspectManagedEntry(owned.path, { bigint: true });
+  } catch (error) {
+    assertSafeManagedParents(owned.path);
+    throw error;
+  }
+  assertSafeManagedParents(owned.path);
   if (!stat) throw ownedFileConflict(owned.path, "the owned path was removed");
   if (stat.isSymbolicLink() || !stat.isFile()
     || stat.dev !== owned.identity.dev || stat.ino !== owned.identity.ino) {

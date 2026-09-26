@@ -404,6 +404,55 @@ test("runtime refuses dangling state-directory links and linked profile roots", 
   }
 });
 
+test("runtime classifies a parent replaced during root-down inspection as a conflict", () => {
+  const runtimeUrl = new URL("../src/runtime.js", import.meta.url).href;
+  const script = `
+    import fs from "node:fs";
+    import os from "node:os";
+    import path from "node:path";
+    import { syncBuiltinESMExports } from "node:module";
+    const mode = process.argv[1];
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hoklims-devkit-root-walk-")));
+    const parent = path.join(root, "profile");
+    const managed = path.join(parent, "hoklims-devkit");
+    const statePath = path.join(managed, "repository.json");
+    const foreign = "FOREIGN-PARENT\\n";
+    fs.mkdirSync(parent);
+    const nativeLstat = fs.lstatSync;
+    let replaced = false;
+    fs.lstatSync = function(candidate, options) {
+      if (mode === "eio" && candidate === managed) {
+        throw Object.assign(new Error("simulated managed parent I/O"), { code: "EIO" });
+      }
+      const result = nativeLstat.call(this, candidate, options);
+      if (mode === "race" && candidate === parent && !replaced) {
+        fs.rmdirSync(parent);
+        fs.writeFileSync(parent, foreign);
+        replaced = true;
+      }
+      return result;
+    };
+    syncBuiltinESMExports();
+    const { createRuntime } = await import(${JSON.stringify(runtimeUrl)});
+    let value;
+    let code = null;
+    try { value = createRuntime().readState(statePath); } catch (error) { code = error?.code ?? null; }
+    const foreignBytes = replaced ? fs.readFileSync(parent, "utf8") : null;
+    fs.rmSync(root, { recursive: true, force: true });
+    process.stdout.write(JSON.stringify({ mode, code, replaced, value: value ?? null, foreignBytes }));
+  `;
+  const run = (mode) => {
+    const child = Bun.spawnSync({ cmd: ["node", "--input-type=module", "--eval", script, mode], stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode, new TextDecoder().decode(child.stderr)).toBe(0);
+    return JSON.parse(new TextDecoder().decode(child.stdout));
+  };
+  expect(run("race")).toEqual({
+    mode: "race", code: "STATE_CONFLICT", replaced: true, value: null, foreignBytes: "FOREIGN-PARENT\n",
+  });
+  expect(run("absent")).toEqual({ mode: "absent", code: null, replaced: false, value: null, foreignBytes: null });
+  expect(run("eio")).toEqual({ mode: "eio", code: "EIO", replaced: false, value: null, foreignBytes: null });
+});
+
 test("runtime classifies a regular ancestor raced during parent creation as a conflict", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-parent-race-")));
   const foreignAncestor = join(root, "profile");
