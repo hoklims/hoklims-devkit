@@ -3194,6 +3194,32 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("lock release ownership conflict makes recorded-plan recovery conditional", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+    };
+    const rt = fakeRuntime({ state });
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+        return { code: 5, stdout: "", stderr: "native setup failed" };
+      }
+      return result;
+    };
+    rt.acquireLock = () => () => {
+      throw Object.assign(new Error("lock ownership changed during failed read"), { code: "STATE_CONFLICT" });
+    };
+    const report = await execute(parseArgs(["setup", "/repo", "--host", "codex"]), rt);
+    const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit setup /repo --host codex");
+    expect(guidance).not.toContain("complete the recorded plan with hoklims-devkit setup /repo --host codex");
+  });
+
   test("late authority loss retains missing-host repair before its conditional retry", async () => {
     const root = "/repo  with 'quote";
     for (const closeConflict of [false, true]) {

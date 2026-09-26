@@ -40,12 +40,13 @@ function unsafeProjectPath(path, detail) {
 }
 
 function assertManagedParentSnapshot(parents, compareMetadata = false) {
+  const metadataParent = compareMetadata ? [...parents].reverse().find((parent) => parent.identity !== null) : null;
   for (const parent of parents) {
     const current = inspectManagedEntry(parent.path, { bigint: true });
     if (parent.identity === null ? current !== null
       : !current || current.isSymbolicLink() || !current.isDirectory()
         || current.dev !== parent.identity.dev || current.ino !== parent.identity.ino
-        || (compareMetadata && current.ctimeNs !== parent.identity.ctimeNs)) {
+        || (parent === metadataParent && current.ctimeNs !== parent.identity.ctimeNs)) {
       throw unsafeManagedPath(parent.path, "changed during managed parent inspection");
     }
   }
@@ -165,9 +166,10 @@ function readDescriptorSnapshot(descriptor, { readWhole, readChunk = readSync, p
 }
 
 function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync,
-  openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null, encoding = "utf8", readDescriptorData = readSync) {
-  const parents = inspectFile === inspectManagedFile ? assertSafeManagedParents(path) : null;
-  const initial = inspectFile(path, { bigint: true }, parents, true);
+  openReadDescriptor = openVerifiedReadDescriptor, expectedIdentity = null, encoding = "utf8", readDescriptorData = readSync,
+  expectedParents = null, compareParentMetadata = true) {
+  const parents = inspectFile === inspectManagedFile ? expectedParents ?? assertSafeManagedParents(path) : null;
+  const initial = inspectFile(path, { bigint: true }, parents, compareParentMetadata);
   if (!initial) return null;
   const identity = expectedIdentity ?? { dev: initial.dev, ino: initial.ino };
   if (initial.dev !== identity.dev || initial.ino !== identity.ino) {
@@ -180,7 +182,7 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
       descriptor = openReadDescriptor(path);
     } catch (error) {
       assertInspectedIdentity(path, inspectFile, conflict, identity,
-        "the pathname changed before it could be opened for reading", parents, true);
+        "the pathname changed before it could be opened for reading", parents, compareParentMetadata);
       throw error;
     }
     const assertReadIdentity = () => {
@@ -188,7 +190,7 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
       if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
         throw conflict(path, "the file changed while it was opened for reading");
       }
-      const current = inspectFile(path, { bigint: true }, parents, true);
+      const current = inspectFile(path, { bigint: true }, parents, compareParentMetadata);
       if (!current || current.dev !== identity.dev || current.ino !== identity.ino) {
         throw conflict(path, "the pathname changed while it was opened for reading");
       }
@@ -295,6 +297,7 @@ function openOwnedManagedFile(path, createOwnedFile, flags = "wx") {
     const stat = fstatSync(descriptor, { bigint: true });
     const owned = { path, descriptor, identity: { dev: stat.dev, ino: stat.ino }, parents };
     assertOwnedFile(owned);
+    owned.parents = assertSafeManagedParents(path);
     return owned;
   } catch (error) {
     try { closeSync(descriptor); } catch { /* Preserve the identity error. */ }
@@ -361,10 +364,11 @@ function cleanupOwnedFile(owned, removeOwnedFile) {
   if (operationError) throw operationError;
 }
 
-function readLockRecord(path, beforeOpen, readFileData, openReadDescriptor) {
+function readLockRecord(path, beforeOpen, readFileData, openReadDescriptor, owned = null) {
   let record;
   try {
-    record = JSON.parse(readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeOpen, readFileData, openReadDescriptor));
+    record = JSON.parse(readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeOpen, readFileData,
+      openReadDescriptor, owned?.identity ?? null, "utf8", readSync, owned?.parents ?? null, owned === null));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
@@ -438,6 +442,7 @@ export function validateState(state) {
 export function createRuntime({
   beforeLockOpen = () => {},
   beforeManagedReadOpen = () => {},
+  beforeOwnedLockRead = () => {},
   commitOwnedFile = renameSync,
   createManagedParent = mkdirSync,
   createOwnedFile = openSync,
@@ -686,12 +691,17 @@ export function createRuntime({
       return () => {
         try {
           assertOwnedFile(owned);
-          const current = readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor);
+          beforeOwnedLockRead(lockPath);
+          const current = readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor, owned);
           if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
           cleanupOwnedFile(owned, removeOwnedFile);
         } catch (error) {
+          let releaseError = error;
+          if (owned.descriptor !== null) {
+            try { assertOwnedFile(owned); } catch (ownershipError) { releaseError = ownershipError; }
+          }
           try { closeOwnedFile(owned); } catch { /* Preserve the release error. */ }
-          throw error;
+          throw releaseError;
         }
       };
     },
