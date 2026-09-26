@@ -253,8 +253,9 @@ function localAssertEntry(rt, root) {
   if (!rt.isReadableFile(cliPath)) throw new Error("The project-local AssertLedger CLI is not a readable regular file");
   let version;
   try {
-    version = JSON.parse(rt.readText(packagePath))?.version;
-  } catch {
+    version = JSON.parse(rt.readPlainText(packagePath))?.version;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
     throw new Error("The project-local AssertLedger package manifest is invalid JSON");
   }
   if (!isStableVersion(version)) throw new Error(`The project-local AssertLedger package has an invalid version: ${String(version)}`);
@@ -888,15 +889,33 @@ async function diagnoseCompass(rt, root, hosts, version) {
 
 export async function execute(options, rt = createRuntime()) {
   const report = reportFor(options);
-  if (!rt.which("bun") || !rt.which("bunx")) return problem(report, "BUN_REQUIRED", "Bun >=1.4 is required", 3);
+  const recordFailureRecovery = (action, command) => {
+    if (!report.nextActions.includes(action)) report.nextActions.push(action);
+    for (const conflict of report.conflicts) {
+      if (!conflict.detail.includes(command)) conflict.detail = `${conflict.detail.replace(/[.\s]+$/u, "")}. ${action}.`;
+    }
+    report.ok = false;
+    return report;
+  };
+  const requestedCommand = `hoklims-devkit ${options.command} ${quoteShellToken(options.project)} --host ${options.host}`
+    + `${options.with.length ? ` --with ${options.with.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
+  const earlyFailure = (code, detail, repair, exitCode = 3) => {
+    problem(report, code, detail, exitCode);
+    return recordFailureRecovery(`${repair}, then run ${requestedCommand}`, requestedCommand);
+  };
+  if (!rt.which("bun") || !rt.which("bunx")) {
+    return earlyFailure("BUN_REQUIRED", "Bun >=1.4 is required", "Install Bun >=1.4 and ensure bun and bunx are on PATH");
+  }
   const bun = await rt.exec(["bun", "--version"], ".");
   const bunVersion = bun.stdout.trim().match(/^(\d+)\.(\d+)\./u);
   if (!bunVersion || Number(bunVersion[1]) < 1 || (Number(bunVersion[1]) === 1 && Number(bunVersion[2]) < 4)) {
-    return problem(report, "BUN_VERSION", "Bun >=1.4 is required", 3);
+    return earlyFailure("BUN_VERSION", "Bun >=1.4 is required", "Upgrade Bun to 1.4 or newer");
   }
   const project = rt.resolve(options.project);
   const rootResult = await rt.exec(["git", "-C", project, "rev-parse", "--show-toplevel"], project);
-  if (rootResult.code !== 0) return problem(report, "GIT_REPOSITORY_REQUIRED", "Open a Git repository and retry", 3);
+  if (rootResult.code !== 0) {
+    return earlyFailure("GIT_REPOSITORY_REQUIRED", "Open a Git repository and retry", "Open the requested path inside a Git repository");
+  }
   const root = rt.realpath(rootResult.stdout.trim());
   report.projectRoot = root;
   const hosts = options.host === "auto" ? HOSTS.filter((host) => rt.which(host))
@@ -911,29 +930,44 @@ export async function execute(options, rt = createRuntime()) {
       ? candidateState.inProgress.hosts : requestedRecoveryHosts;
     return retryInstruction(rt, recoveryHosts, recoveryCommandFor(candidateState, recoveryOptions));
   };
-  const addSavedPlanRecovery = () => {
-    if (!state?.inProgress) return;
-    const command = recoveryCommandFor(state);
-    const recoveryAction = recoveryActionFor(state);
+  const failureGuidanceFor = (candidateState, recoveryOptions) => {
+    const effectiveOptions = recoveryOptions ?? (!candidateState?.inProgress && options.refreshPending
+      ? { useRequestedRefresh: true } : undefined);
+    const command = recoveryCommandFor(candidateState, effectiveOptions);
+    const recoveryAction = recoveryActionFor(candidateState, effectiveOptions);
     const missingPrerequisite = recoveryAction.startsWith("Restore ");
     const continuedAction = `${recoveryAction[0].toLowerCase()}${recoveryAction.slice(1)}`;
-    const action = options.refreshPending
-      ? missingPrerequisite
-        ? `${recoveryAction} to complete the recorded plan before refreshing releases`
-        : `Complete the recorded plan with ${command} before refreshing releases`
-      : missingPrerequisite
-        ? `Resolve the reported native conflict, then ${continuedAction}`
-        : `Resolve the reported native conflict, then complete the recorded plan with ${command}`;
-    if (!report.nextActions.includes(action)) report.nextActions.push(action);
+    let action;
+    if (candidateState?.inProgress) {
+      if (options.refreshPending && !effectiveOptions?.useRequestedRefresh) {
+        action = missingPrerequisite
+          ? `${recoveryAction} to complete the recorded plan before refreshing releases`
+          : `Complete the recorded plan with ${command} before refreshing releases`;
+      } else {
+        action = missingPrerequisite
+          ? `Resolve the reported native conflict, then ${continuedAction}`
+          : `Resolve the reported native conflict, then complete the recorded plan with ${command}`;
+      }
+    } else {
+      action = missingPrerequisite ? recoveryAction : `Resolve the reported conflict, then ${continuedAction}`;
+    }
+    return { action, command };
+  };
+  const finalizeFailure = (candidateState = state, recoveryOptions) => {
+    if (report.conflicts.length === 0) return report;
+    const { action, command } = failureGuidanceFor(candidateState, recoveryOptions);
+    return recordFailureRecovery(action, command);
   };
   try {
     state = validateState(rt.readState(statePath));
     if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
   } catch (error) {
-    return stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: recoveryActionFor(null) });
+    stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: recoveryActionFor(null) });
+    return finalizeFailure(null);
   }
   if (hosts.length === 0 || hosts.some((host) => !rt.which(host))) {
-    return problem(report, "HOST_UNAVAILABLE", `Requested host is not on PATH: ${options.host}. ${recoveryActionFor(state)}`, 3);
+    problem(report, "HOST_UNAVAILABLE", `Requested host is not on PATH: ${options.host}. ${recoveryActionFor(state)}`, 3);
+    return finalizeFailure(state);
   }
   if (options.command === "doctor") {
     const names = new Set(["semctx", ...options.with, ...Object.keys(state?.components ?? {}), ...(state?.inProgress?.selected ?? [])]);
@@ -960,7 +994,7 @@ export async function execute(options, rt = createRuntime()) {
       problem(report, "INCOMPLETE_OPERATION", `Run ${recoveryCommandFor(state)} to complete the recorded plan`, 3);
     }
     report.ok = report.conflicts.length === 0;
-    return report;
+    return report.ok ? report : finalizeFailure(state);
   }
   const selected = selectedComponents(options, state);
   const refreshExpandsHosts = options.refreshPending && state?.inProgress
@@ -968,12 +1002,12 @@ export async function execute(options, rt = createRuntime()) {
   if (state?.inProgress && ((state.inProgress.command !== options.command && !options.refreshPending)
     || (JSON.stringify(state.inProgress.hosts) !== JSON.stringify(hosts) && !refreshExpandsHosts)
     || JSON.stringify(state.inProgress.selected) !== JSON.stringify(selected))) {
-    return problem(report, "PENDING_PLAN_CONFLICT", `The saved plan must be completed before changing selectors. ${recoveryActionFor(state)}`, 4);
+    problem(report, "PENDING_PLAN_CONFLICT", `The saved plan must be completed before changing selectors. ${recoveryActionFor(state)}`, 4);
+    return finalizeFailure(state);
   }
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) {
-    addSavedPlanRecovery();
-    return report;
+    return finalizeFailure(state);
   }
   if (options.command === "upgrade") {
     for (const name of selected) {
@@ -983,6 +1017,7 @@ export async function execute(options, rt = createRuntime()) {
         const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
         const instruction = retryInstruction(rt, previous.hosts, retry);
         problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; ${instruction} to change its shared version safely`);
+        if (!report.nextActions.includes(instruction)) report.nextActions.push(instruction);
       }
     }
     if (report.conflicts.length) return report;
@@ -999,7 +1034,7 @@ export async function execute(options, rt = createRuntime()) {
     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
   if (report.conflicts.length || options.dryRun) {
-    if (report.conflicts.length) addSavedPlanRecovery();
+    if (report.conflicts.length) finalizeFailure(state);
     if (state?.inProgress && !options.refreshPending
       && report.conflicts.some((item) => item.code === "RELEASE_SKEW_OR_UNAVAILABLE")) {
       const optional = selected.filter((name) => name !== "semctx");
@@ -1021,8 +1056,7 @@ export async function execute(options, rt = createRuntime()) {
       allowRunLocked: true,
       recoveryAction: recoveryActionFor(state, { useRequestedRefresh: refreshSavePending }),
     });
-    report.ok = false;
-    return report;
+    return finalizeFailure(state, { useRequestedRefresh: refreshSavePending });
   }
   try {
     // Preflights can take time. Another setup may have committed while they ran.
@@ -1031,7 +1065,8 @@ export async function execute(options, rt = createRuntime()) {
     if (JSON.stringify(currentState) !== JSON.stringify(state)) {
       const recoveryAction = recoveryActionFor(currentState);
       if (!report.nextActions.includes(recoveryAction)) report.nextActions.push(recoveryAction);
-      return problem(report, "STATE_CHANGED", `Installation state changed during preflight. ${recoveryAction} to recompute the plan.`, 4);
+      problem(report, "STATE_CHANGED", `Installation state changed during preflight. ${recoveryAction} to recompute the plan.`, 4);
+      return finalizeFailure(currentState);
     }
     let savedState = JSON.stringify(currentState);
     persistedState = currentState ? structuredClone(currentState) : null;
@@ -1111,7 +1146,7 @@ export async function execute(options, rt = createRuntime()) {
     }
   }
   report.ok = report.conflicts.length === 0;
-  return report;
+  return report.ok ? report : finalizeFailure(persistedState ?? state, { useRequestedRefresh: refreshSavePending });
 }
 
 function usage() {

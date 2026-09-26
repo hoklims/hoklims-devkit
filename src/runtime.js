@@ -349,7 +349,6 @@ export function createRuntime({
         return false;
       }
     },
-    readText: (path) => readFileSync(path, "utf8"),
     readPlainText: (path) => readVerifiedFile(path, inspectPlainProjectFile, unsafeProjectPath, undefined, readFileData),
     realpath: realpathSync,
     statePath: (root) => {

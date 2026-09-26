@@ -155,6 +155,39 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("fresh registry and preflight failures include the complete admitted retry", async () => {
+    const missingBun = fakeRuntime();
+    missingBun.which = () => null;
+    const failedRuntime = await execute(setupOptions(), missingBun);
+    expect(failedRuntime.nextActions.join("\n")).toContain("hoklims-devkit setup /repo --host codex");
+    expect(failedRuntime.conflicts.map((item) => item.detail).join("\n")).toContain("Install Bun >=1.4");
+
+    const root = process.platform === "win32" ? "C:\\repo with 'quote" : "/tmp/repo with 'quote";
+    const registry = fakeRuntime({ tools: ["node", "npm"] });
+    registry.resolve = () => root;
+    registry.realpath = (path) => path;
+    registry.statePath = () => join(root, ".state.json");
+    const registryExec = registry.exec;
+    registry.exec = async (argv, cwd) => argv[0] === "git"
+      ? { code: 0, stdout: `${root}\n`, stderr: "" } : registryExec(argv, cwd);
+    registry.fetchJson = async () => { throw new Error("registry offline"); };
+    const options = parseArgs(["upgrade", root, "--host", "codex", "--with", "assertledger", "--refresh-pending"]);
+    const failedRegistry = await execute(options, registry);
+    const registryRetry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host codex --with assertledger --refresh-pending`;
+    expect(failedRegistry.ok).toBe(false);
+    expect(failedRegistry.nextActions.join("\n")).toContain(registryRetry);
+    expect(failedRegistry.conflicts.map((item) => item.detail).join("\n")).toContain(registryRetry);
+    expect(registry.writes).toHaveLength(0);
+
+    const preflight = fakeRuntime({ semctxStatusCode: 5 });
+    const failedPreflight = await execute(setupOptions(), preflight);
+    const preflightRetry = "hoklims-devkit setup /repo --host codex";
+    expect(failedPreflight.ok).toBe(false);
+    expect(failedPreflight.nextActions.join("\n")).toContain(preflightRetry);
+    expect(failedPreflight.conflicts.map((item) => item.detail).join("\n")).toContain(preflightRetry);
+    expect(preflight.writes).toHaveLength(0);
+  });
+
   test("dry-run performs every preflight without installation or state writes", async () => {
     const rt = fakeRuntime();
     const report = await execute({ ...setupOptions(), dryRun: true }, rt);
@@ -929,10 +962,17 @@ describe("public CLI", () => {
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const rt = fakeRuntime({ tools: ["node", "npm", "pnpm"], files });
+    let legacyReaderUsed = false;
+    const verifiedReads = [];
+    const verifiedRead = rt.readPlainText;
+    rt.readText = () => { legacyReaderUsed = true; throw new Error("blocking path reader used"); };
+    rt.readPlainText = (path) => { verifiedReads.push(path); return verifiedRead(path); };
     const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
     expect(report.ok).toBe(true);
     expect(report.plannedChanges.find((item) => item.component === "assertledger")?.installPackage).toBe(false);
     expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(true);
+    expect(legacyReaderUsed).toBe(false);
+    expect(verifiedReads).toContain(join("/repo", "node_modules", "assertledger", "package.json"));
     expect(rt.writes).toHaveLength(0);
   });
 

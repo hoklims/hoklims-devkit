@@ -196,6 +196,40 @@ test("runtime refuses a substituted POSIX FIFO without blocking", async () => {
   expect(result.isFile).toBe(false);
 });
 
+test("runtime refuses a present POSIX FIFO project manifest without blocking", async () => {
+  if (process.platform === "win32") return;
+  const runtimeUrl = new URL("../src/runtime.js", import.meta.url).href;
+  const script = `
+    import { lstatSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+    import { spawnSync } from "node:child_process";
+    import { tmpdir } from "node:os";
+    import { join } from "node:path";
+    import { createRuntime } from ${JSON.stringify(runtimeUrl)};
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-package-fifo-")));
+    const manifestPath = join(root, "package.json");
+    const made = spawnSync("mkfifo", [manifestPath], { encoding: "utf8" });
+    let error;
+    try { createRuntime().readPlainText(manifestPath); } catch (caught) { error = caught; }
+    process.stdout.write(JSON.stringify({
+      code: error?.code ?? null,
+      fifo: lstatSync(manifestPath).isFIFO(),
+      mkfifoStatus: made.status,
+    }));
+    rmSync(root, { recursive: true, force: true });
+  `;
+  const child = Bun.spawn({ cmd: [process.execPath, "--eval", script], stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 2_000);
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  clearTimeout(timer);
+  expect(timedOut).toBe(false);
+  expect(exitCode).toBe(0);
+  expect(stderr).toBe("");
+  expect(JSON.parse(stdout)).toEqual({ code: "STATE_CONFLICT", fifo: true, mkfifoStatus: 0 });
+});
+
 test("runtime project-file inspection rejects linked and non-file entries", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-project-files-")));
   const regular = join(root, "package.json");
@@ -233,6 +267,7 @@ test("runtime distinguishes absent, linked, and unsafe package directories", () 
   const rt = createRuntime();
   expect(rt.directoryPresent(packagePath)).toBe(false);
   mkdirSync(storePackage, { recursive: true });
+  writeFileSync(join(storePackage, "package.json"), "{\"version\":\"1.2.0\"}\n");
   try {
     symlinkSync(storePackage, packagePath, process.platform === "win32" ? "junction" : undefined);
   } catch (error) {
@@ -240,6 +275,7 @@ test("runtime distinguishes absent, linked, and unsafe package directories", () 
     throw error;
   }
   expect(rt.directoryPresent(packagePath)).toBe(true);
+  expect(rt.readPlainText(join(packagePath, "package.json"))).toBe("{\"version\":\"1.2.0\"}\n");
   unlinkSync(packagePath);
   symlinkSync(join(root, "missing-store"), packagePath, process.platform === "win32" ? "junction" : undefined);
   let dangling;
