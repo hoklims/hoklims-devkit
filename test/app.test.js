@@ -188,6 +188,48 @@ describe("public CLI", () => {
     expect(preflight.writes).toHaveLength(0);
   });
 
+  test("early Bun and Git failures recover the validated saved plan", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {},
+      inProgress: {
+        command: "setup",
+        selected: ["semctx"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4" },
+      },
+    };
+    for (const failure of ["bun", "git"]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["claude"] });
+      let reads = 0;
+      const readState = rt.readState;
+      rt.readState = (path) => { reads += 1; return readState(path); };
+      if (failure === "bun") {
+        const which = rt.which;
+        rt.which = (name) => ["bun", "bunx"].includes(name) ? null : which(name);
+      } else {
+        const exec = rt.exec;
+        rt.exec = async (argv, cwd) => {
+          if (argv[0] !== "git") return exec(argv, cwd);
+          rt.calls.push(argv);
+          return { code: 2, stdout: "", stderr: "not a repository" };
+        };
+      }
+      const report = await execute(parseArgs([
+        "upgrade", "/repo", "--host", "all", "--refresh-pending",
+      ]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.ok).toBe(false);
+      expect(reads).toBe(1);
+      expect(guidance).toContain("hoklims-devkit setup /repo --host codex");
+      expect(guidance).not.toContain("hoklims-devkit upgrade");
+      expect(guidance).not.toContain("--refresh-pending");
+      expect(rt.calls.some((argv) => argv[0] === "git")).toBe(failure === "git");
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
   test("dry-run performs every preflight without installation or state writes", async () => {
     const rt = fakeRuntime();
     const report = await execute({ ...setupOptions(), dryRun: true }, rt);

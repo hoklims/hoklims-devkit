@@ -109,6 +109,37 @@ function stateRecoveryCommand(options, root, state, hosts, { useRequestedRefresh
   return `hoklims-devkit ${command} ${quoteShellToken(root)} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}${useRequestedRefresh ? " --refresh-pending" : ""}`;
 }
 
+function failureGuidance(rt, options, root, hosts, candidateState, recoveryOptions = {}) {
+  const effectiveOptions = { ...recoveryOptions };
+  if (!candidateState?.inProgress && options.refreshPending && effectiveOptions.useRequestedRefresh === undefined) {
+    effectiveOptions.useRequestedRefresh = true;
+  }
+  const command = stateRecoveryCommand(options, root, candidateState, hosts, effectiveOptions);
+  const recoveryHosts = candidateState?.inProgress && !effectiveOptions.useRequestedRefresh
+    ? candidateState.inProgress.hosts : hosts;
+  const recoveryAction = retryInstruction(rt, recoveryHosts, command);
+  const continuedAction = `${recoveryAction[0].toLowerCase()}${recoveryAction.slice(1)}`;
+  if (effectiveOptions.repair) {
+    return { action: `${effectiveOptions.repair}, then ${continuedAction}`, command };
+  }
+  const missingPrerequisite = recoveryAction.startsWith("Restore ");
+  let action;
+  if (candidateState?.inProgress) {
+    if (options.refreshPending && !effectiveOptions.useRequestedRefresh) {
+      action = missingPrerequisite
+        ? `${recoveryAction} to complete the recorded plan before refreshing releases`
+        : `Complete the recorded plan with ${command} before refreshing releases`;
+    } else {
+      action = missingPrerequisite
+        ? `Resolve the reported native conflict, then ${continuedAction}`
+        : `Resolve the reported native conflict, then complete the recorded plan with ${command}`;
+    }
+  } else {
+    action = missingPrerequisite ? recoveryAction : `Resolve the reported conflict, then ${continuedAction}`;
+  }
+  return { action, command };
+}
+
 function nativeResult(result, name, report) {
   const json = parseJsonOutput(result);
   if (!json) {
@@ -897,11 +928,30 @@ export async function execute(options, rt = createRuntime()) {
     report.ok = false;
     return report;
   };
-  const requestedCommand = `hoklims-devkit ${options.command} ${quoteShellToken(options.project)} --host ${options.host}`
-    + `${options.with.length ? ` --with ${options.with.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
-  const earlyFailure = (code, detail, repair, exitCode = 3) => {
+  const earlyState = (projectPath) => {
+    try {
+      const candidateRoot = rt.realpath(projectPath);
+      const candidateState = validateState(rt.readState(rt.statePath(candidateRoot)));
+      if (candidateState && candidateState.projectRoot !== candidateRoot) throw new Error("State belongs to another repository");
+      return { root: candidateRoot, state: candidateState, verified: true };
+    } catch {
+      return { root: options.project, state: null, verified: false };
+    }
+  };
+  const earlyFailure = (code, detail, repair, exitCode = 3, resolvedProject) => {
+    let projectPath = resolvedProject;
+    if (!projectPath) {
+      try { projectPath = rt.resolve(options.project); } catch { projectPath = options.project; }
+    }
+    const candidate = earlyState(projectPath);
+    const earlyHosts = options.host === "auto" ? HOSTS.filter((host) => rt.which(host))
+      : options.host === "all" ? HOSTS : [options.host];
+    const recoveryHosts = earlyHosts.length ? earlyHosts : HOSTS;
+    const boundedRepair = candidate.verified
+      ? repair : `${repair} and inspect the saved Devkit state for the requested path`;
+    const { action, command } = failureGuidance(rt, options, candidate.root, recoveryHosts, candidate.state, { repair: boundedRepair });
     problem(report, code, detail, exitCode);
-    return recordFailureRecovery(`${repair}, then run ${requestedCommand}`, requestedCommand);
+    return recordFailureRecovery(action, command);
   };
   if (!rt.which("bun") || !rt.which("bunx")) {
     return earlyFailure("BUN_REQUIRED", "Bun >=1.4 is required", "Install Bun >=1.4 and ensure bun and bunx are on PATH");
@@ -914,7 +964,7 @@ export async function execute(options, rt = createRuntime()) {
   const project = rt.resolve(options.project);
   const rootResult = await rt.exec(["git", "-C", project, "rev-parse", "--show-toplevel"], project);
   if (rootResult.code !== 0) {
-    return earlyFailure("GIT_REPOSITORY_REQUIRED", "Open a Git repository and retry", "Open the requested path inside a Git repository");
+    return earlyFailure("GIT_REPOSITORY_REQUIRED", "Open a Git repository and retry", "Open the requested path inside a Git repository", 3, project);
   }
   const root = rt.realpath(rootResult.stdout.trim());
   report.projectRoot = root;
@@ -930,32 +980,9 @@ export async function execute(options, rt = createRuntime()) {
       ? candidateState.inProgress.hosts : requestedRecoveryHosts;
     return retryInstruction(rt, recoveryHosts, recoveryCommandFor(candidateState, recoveryOptions));
   };
-  const failureGuidanceFor = (candidateState, recoveryOptions) => {
-    const effectiveOptions = recoveryOptions ?? (!candidateState?.inProgress && options.refreshPending
-      ? { useRequestedRefresh: true } : undefined);
-    const command = recoveryCommandFor(candidateState, effectiveOptions);
-    const recoveryAction = recoveryActionFor(candidateState, effectiveOptions);
-    const missingPrerequisite = recoveryAction.startsWith("Restore ");
-    const continuedAction = `${recoveryAction[0].toLowerCase()}${recoveryAction.slice(1)}`;
-    let action;
-    if (candidateState?.inProgress) {
-      if (options.refreshPending && !effectiveOptions?.useRequestedRefresh) {
-        action = missingPrerequisite
-          ? `${recoveryAction} to complete the recorded plan before refreshing releases`
-          : `Complete the recorded plan with ${command} before refreshing releases`;
-      } else {
-        action = missingPrerequisite
-          ? `Resolve the reported native conflict, then ${continuedAction}`
-          : `Resolve the reported native conflict, then complete the recorded plan with ${command}`;
-      }
-    } else {
-      action = missingPrerequisite ? recoveryAction : `Resolve the reported conflict, then ${continuedAction}`;
-    }
-    return { action, command };
-  };
   const finalizeFailure = (candidateState = state, recoveryOptions) => {
     if (report.conflicts.length === 0) return report;
-    const { action, command } = failureGuidanceFor(candidateState, recoveryOptions);
+    const { action, command } = failureGuidance(rt, options, root, requestedRecoveryHosts, candidateState, recoveryOptions);
     return recordFailureRecovery(action, command);
   };
   try {
