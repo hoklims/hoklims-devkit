@@ -180,25 +180,32 @@ test("the packed npm artifact exposes and executes the same release smoke module
   const root = mkdtempSync(join(tmpdir(), "hoklims-devkit-packed-smoke-test-"));
   const packageOutput = join(root, "package");
   const consumer = join(root, "consumer");
+  const npmCache = join(root, "npm-cache");
   const smokeRoot = join(root, "fixture");
   mkdirSync(packageOutput);
   mkdirSync(smokeRoot);
   const repository = fileURLToPath(new URL("..", import.meta.url));
   const packed = Bun.spawnSync({
-    cmd: ["npm", "pack", "--silent", "--pack-destination", packageOutput],
+    cmd: ["npm", "pack", "--silent", "--ignore-scripts", "--pack-destination", packageOutput],
     cwd: repository,
     stdout: "pipe",
     stderr: "pipe",
+    timeout: 15_000,
   });
-  expect(packed.exitCode).toBe(0);
+  expect(packed.exitCode, packed.stderr.toString()).toBe(0);
   const tarball = join(packageOutput, packed.stdout.toString().trim());
   const installed = Bun.spawnSync({
-    cmd: ["npm", "install", "--prefix", consumer, "--ignore-scripts", tarball],
+    cmd: [
+      "npm", "install", "--prefix", consumer, "--ignore-scripts",
+      "--no-audit", "--no-fund", "--offline", tarball,
+    ],
     cwd: root,
+    env: { ...process.env, npm_config_cache: npmCache },
     stdout: "pipe",
     stderr: "pipe",
+    timeout: 30_000,
   });
-  expect(installed.exitCode).toBe(0);
+  expect(installed.exitCode, installed.stderr.toString()).toBe(0);
   const packagedModule = await import(pathToFileURL(join(
     consumer, "node_modules", "hoklims-devkit", "scripts", "release-smoke.js",
   )).href);
@@ -212,4 +219,4 @@ test("the packed npm artifact exposes and executes the same release smoke module
   expect(packagedModule.RELEASE_SMOKE_STAGES).toEqual(RELEASE_SMOKE_STAGES);
   expect(result.scenarios).toHaveLength(6);
   expect(packagedModule.assertReleaseSmokeStages(result.scenarios)).toBe(true);
-});
+}, 45_000);
