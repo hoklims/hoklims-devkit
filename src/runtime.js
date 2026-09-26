@@ -177,8 +177,14 @@ function prepareManagedParent(path, createManagedParent) {
   assertSafeManagedParents(path);
 }
 
-function openOwnedManagedFile(path) {
-  const descriptor = openSync(path, "wx", 0o600);
+function openOwnedManagedFile(path, createOwnedFile) {
+  let descriptor;
+  try {
+    descriptor = createOwnedFile(path, "wx", 0o600);
+  } catch (error) {
+    assertSafeManagedParents(path);
+    throw error;
+  }
   try {
     const stat = fstatSync(descriptor, { bigint: true });
     return { path, descriptor, identity: { dev: stat.dev, ino: stat.ino } };
@@ -306,6 +312,7 @@ export function createRuntime({
   beforeManagedReadOpen = () => {},
   commitOwnedFile = renameSync,
   createManagedParent = mkdirSync,
+  createOwnedFile = openSync,
   openReadDescriptor = openVerifiedReadDescriptor,
   randomId = randomUUID,
   readFileData = readFileSync,
@@ -377,7 +384,7 @@ export function createRuntime({
       const temp = `${path}.${randomId()}.tmp`;
       let owned = null;
       try {
-        owned = openOwnedManagedFile(temp);
+        owned = openOwnedManagedFile(temp, createOwnedFile);
         writeStateData(owned.descriptor, `${JSON.stringify(state, null, 2)}\n`);
         assertOwnedFile(owned);
         assertManagedDestination(path, destination.identity);
@@ -418,7 +425,7 @@ export function createRuntime({
       let owned = null;
       try {
         beforeLockOpen(lockPath);
-        owned = openOwnedManagedFile(lockPath);
+        owned = openOwnedManagedFile(lockPath, createOwnedFile);
         writeLockData(owned.descriptor, JSON.stringify({ token, pid: process.pid }));
         assertOwnedFile(owned);
       } catch (error) {

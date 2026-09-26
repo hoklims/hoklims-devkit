@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntime, validateState } from "../src/runtime.js";
@@ -393,6 +393,49 @@ test("runtime classifies a regular ancestor raced during parent creation as a co
   } catch (caught) { deniedError = caught; }
   expect(deniedError).toBe(io);
   expect(deniedError?.code).toBe("EACCES");
+});
+
+test("runtime rechecks parents after every exclusive owned-file open failure", () => {
+  for (const kind of ["temporary", "lock"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-${kind}-exclusive-parent-`)));
+    const parent = join(root, "profile");
+    const statePath = join(parent, "repository.json");
+    const outside = join(root, "outside.txt");
+    const foreign = `FOREIGN-${kind.toUpperCase()}-PARENT\n`;
+    mkdirSync(parent);
+    writeFileSync(outside, "OUTSIDE-UNCHANGED\n");
+    let hookExecuted = false;
+    const replaceParent = () => {
+      hookExecuted = true;
+      rmdirSync(parent);
+      writeFileSync(parent, foreign);
+    };
+    const rt = createRuntime(kind === "temporary"
+      ? { randomId: () => { replaceParent(); return "candidate"; } }
+      : { beforeLockOpen: replaceParent });
+    let error;
+    try {
+      if (kind === "temporary") {
+        rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} });
+      } else rt.acquireLock(statePath);
+    } catch (caught) { error = caught; }
+    expect(hookExecuted).toBe(true);
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(readFileSync(parent, "utf8")).toBe(foreign);
+    expect(readFileSync(outside, "utf8")).toBe("OUTSIDE-UNCHANGED\n");
+    expect(readdirSync(root).sort()).toEqual(["outside.txt", "profile"]);
+  }
+
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-exclusive-open-io-")));
+  const statePath = join(root, "repository.json");
+  const denied = Object.assign(new Error("exclusive open denied"), { code: "EACCES" });
+  let ioError;
+  try {
+    createRuntime({ createOwnedFile: () => { throw denied; } })
+      .writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} });
+  } catch (caught) { ioError = caught; }
+  expect(ioError).toBe(denied);
+  expect(existsSync(statePath)).toBe(false);
 });
 
 test("runtime preserves a lock replaced by a third-party link during release", () => {
