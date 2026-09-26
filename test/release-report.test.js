@@ -3,6 +3,9 @@ import { validComponentReport } from "../scripts/release-report.js";
 
 const projectRoot = "/fixture/repository";
 const expectedNames = ["semctx", "assertledger", "latent-compass"];
+const configuredFlags = { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" };
+const plannedFlags = { installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" };
+const configuredOptions = { expectedState: "configured", expectedFlags: configuredFlags };
 
 function report(components, overrides = {}) {
   return { ok: true, projectRoot, components, ...overrides };
@@ -27,31 +30,29 @@ describe("validComponentReport", () => {
     }));
     expect(validComponentReport(report(planned), projectRoot, expectedNames, {
       expectedState: "planned",
-      expectedFlags: { installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" },
+      expectedFlags: plannedFlags,
     })).toBe(true);
-    expect(validComponentReport(report(components()), projectRoot, expectedNames, {
-      expectedState: "configured",
-      expectedFlags: { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" },
-    })).toBe(true);
+    expect(validComponentReport(report(components()), projectRoot, expectedNames, configuredOptions)).toBe(true);
     expect(validComponentReport(report(components().map(({ state: _state, ...component }) => component)), projectRoot, expectedNames, {
       expectedState: null,
-      expectedFlags: { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" },
+      expectedFlags: configuredFlags,
     })).toBe(true);
   });
 
   test("rejects planned reports without five flags and doctor reports with a plan state", () => {
     expect(validComponentReport(report([{ name: "semctx", state: "planned" }]), projectRoot, ["semctx"], {
       expectedState: "planned",
-      expectedFlags: { installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" },
+      expectedFlags: plannedFlags,
     })).toBe(false);
     expect(validComponentReport(report([{ ...components()[0], state: "planned" }]), projectRoot, ["semctx"], {
       expectedState: null,
-      expectedFlags: { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" },
+      expectedFlags: configuredFlags,
     })).toBe(false);
   });
 
   test("rejects empty, subset, superset, wrong, reordered, and duplicate component lists", () => {
     const exact = components();
+    expect(validComponentReport(report(exact), projectRoot, expectedNames, configuredOptions)).toBe(true);
     const cases = [
       [],
       exact.slice(0, -1),
@@ -61,29 +62,23 @@ describe("validComponentReport", () => {
       [exact[0], exact[1], { ...exact[2], name: "assertledger" }],
     ];
     for (const candidate of cases) {
-      expect(validComponentReport(report(candidate), projectRoot, expectedNames, {
-        expectedState: "configured",
-        requireInstalledAndConfigured: true,
-      })).toBe(false);
+      expect(validComponentReport(report(candidate), projectRoot, expectedNames, configuredOptions)).toBe(false);
     }
   });
 
   test("rejects false readiness flags, wrong state, and wrong project root", () => {
     const exact = components();
-    expect(validComponentReport(report([{ ...exact[0], installed: "no" }, ...exact.slice(1)]), projectRoot, expectedNames, {
-      requireInstalledAndConfigured: true,
-    })).toBe(false);
-    expect(validComponentReport(report([{ ...exact[0], configured: "unknown" }, ...exact.slice(1)]), projectRoot, expectedNames, {
-      requireInstalledAndConfigured: true,
-    })).toBe(false);
-    expect(validComponentReport(report(exact), projectRoot, expectedNames, { expectedState: "planned" })).toBe(false);
-    expect(validComponentReport(report(exact, { projectRoot: "/wrong" }), projectRoot, expectedNames)).toBe(false);
-    expect(validComponentReport(report(exact, { projectRoot: undefined }), projectRoot, expectedNames)).toBe(false);
-    expect(validComponentReport(report(exact, { projectRoot: null }), projectRoot, expectedNames)).toBe(false);
-    expect(validComponentReport(report(exact, { projectRoot: "" }), projectRoot, expectedNames)).toBe(false);
-    expect(validComponentReport(report(exact), undefined, expectedNames)).toBe(false);
-    expect(validComponentReport(report(exact), null, expectedNames)).toBe(false);
-    expect(validComponentReport(report(exact), "", expectedNames)).toBe(false);
+    expect(validComponentReport(report(exact), projectRoot, expectedNames, configuredOptions)).toBe(true);
+    expect(validComponentReport(report([{ ...exact[0], installed: "no" }, ...exact.slice(1)]), projectRoot, expectedNames, configuredOptions)).toBe(false);
+    expect(validComponentReport(report([{ ...exact[0], configured: "unknown" }, ...exact.slice(1)]), projectRoot, expectedNames, configuredOptions)).toBe(false);
+    expect(validComponentReport(report(exact), projectRoot, expectedNames, { expectedState: "planned", expectedFlags: configuredFlags })).toBe(false);
+    expect(validComponentReport(report(exact, { projectRoot: "/wrong" }), projectRoot, expectedNames, configuredOptions)).toBe(false);
+    expect(validComponentReport(report(exact, { projectRoot: undefined }), projectRoot, expectedNames, configuredOptions)).toBe(false);
+    expect(validComponentReport(report(exact, { projectRoot: null }), projectRoot, expectedNames, configuredOptions)).toBe(false);
+    expect(validComponentReport(report(exact, { projectRoot: "" }), projectRoot, expectedNames, configuredOptions)).toBe(false);
+    expect(validComponentReport(report(exact), undefined, expectedNames, configuredOptions)).toBe(false);
+    expect(validComponentReport(report(exact), null, expectedNames, configuredOptions)).toBe(false);
+    expect(validComponentReport(report(exact), "", expectedNames, configuredOptions)).toBe(false);
   });
 
   test("rejects malformed reports, expectations, and options", () => {
@@ -96,14 +91,16 @@ describe("validComponentReport", () => {
       report(null),
       report([null, ...exact.slice(1)]),
     ];
+    expect(validComponentReport(report(exact), projectRoot, expectedNames, configuredOptions)).toBe(true);
     for (const candidate of malformed) {
-      expect(validComponentReport(candidate, projectRoot, expectedNames)).toBe(false);
+      expect(validComponentReport(candidate, projectRoot, expectedNames, configuredOptions)).toBe(false);
     }
-    expect(validComponentReport(report(exact), projectRoot, [])).toBe(false);
-    expect(validComponentReport(report(exact), projectRoot, ["semctx", "semctx"])).toBe(false);
-    expect(validComponentReport(report(exact), projectRoot, expectedNames, { expectedState: "partial" })).toBe(false);
+    expect(validComponentReport(report(exact), projectRoot, [], configuredOptions)).toBe(false);
+    expect(validComponentReport(report(exact), projectRoot, ["semctx", "semctx"], configuredOptions)).toBe(false);
+    expect(validComponentReport(report(exact), projectRoot, expectedNames, { expectedState: "partial", expectedFlags: configuredFlags })).toBe(false);
     expect(validComponentReport(report(exact), projectRoot, expectedNames, {
-      requireInstalledAndConfigured: "yes",
+      expectedState: "configured",
+      expectedFlags: "yes",
     })).toBe(false);
     for (const options of [null, [], "planned", new Date(0), Object.create(null)]) {
       expect(validComponentReport(report(exact), projectRoot, expectedNames, options)).toBe(false);
@@ -114,8 +111,9 @@ describe("validComponentReport", () => {
     const exact = components();
     const sparseComponents = [exact[0], , exact[2]];
     const sparseNames = [expectedNames[0], , expectedNames[2]];
-    expect(validComponentReport(report(sparseComponents), projectRoot, expectedNames)).toBe(false);
-    expect(validComponentReport(report(sparseComponents), projectRoot, sparseNames)).toBe(false);
+    expect(validComponentReport(report(exact), projectRoot, expectedNames, configuredOptions)).toBe(true);
+    expect(validComponentReport(report(sparseComponents), projectRoot, expectedNames, configuredOptions)).toBe(false);
+    expect(validComponentReport(report(sparseComponents), projectRoot, sparseNames, configuredOptions)).toBe(false);
   });
 
   test("rejects throwing option accessors without propagating the exception", () => {

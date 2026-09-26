@@ -105,7 +105,9 @@ function readLockRecord(path) {
     throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
   }
   if (!record || Array.isArray(record) || typeof record !== "object"
-    || typeof record.token !== "string" || record.token.length === 0
+    || Object.keys(record).length !== 2 || !Object.hasOwn(record, "token") || !Object.hasOwn(record, "pid")
+    || typeof record.token !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(record.token)
     || !Number.isInteger(record.pid) || record.pid <= 0) {
     throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
   }

@@ -258,7 +258,12 @@ test("runtime propagates an owned lock unlink failure", () => {
 });
 
 test("runtime distinguishes malformed lock records from contention", () => {
-  for (const content of ["not-json", JSON.stringify({ token: "", pid: 0 }), JSON.stringify({ token: "foreign" })]) {
+  for (const content of [
+    "not-json",
+    JSON.stringify({ token: "", pid: 0 }),
+    JSON.stringify({ token: "foreign" }),
+    JSON.stringify({ token: "foreign", pid: 42 }),
+  ]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-malformed-lock-")));
     const statePath = join(root, "repository.json");
     const lockPath = `${statePath}.lock`;
@@ -272,7 +277,7 @@ test("runtime distinguishes malformed lock records from contention", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-valid-lock-")));
   const statePath = join(root, "repository.json");
   const lockPath = `${statePath}.lock`;
-  const valid = JSON.stringify({ token: "foreign", pid: 42 });
+  const valid = JSON.stringify({ token: "00000000-0000-4000-8000-000000000000", pid: 42 });
   writeFileSync(lockPath, valid);
   let contention;
   try { createRuntime().acquireLock(statePath); } catch (caught) { contention = caught; }
