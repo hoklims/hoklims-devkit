@@ -582,8 +582,14 @@ async function resolveComponents(rt, options, state, root, report) {
         versions[name] = state.inProgress.versions[name];
       } else if (options.command !== "upgrade" && state?.components?.[name]?.version) {
         versions[name] = state.components[name].version;
-      } else if (name === "assertledger" && options.command === "setup" && existingAssertVersion(rt, root)) {
-        versions[name] = existingAssertVersion(rt, root);
+      } else if (name === "assertledger" && options.command === "setup") {
+        let existing;
+        try {
+          existing = existingAssertVersion(rt, root);
+        } catch (error) {
+          throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
+        }
+        versions[name] = existing ?? await resolveVersion(rt, name);
       } else if (name === "latent-compass" && options.command === "setup" && rt.which("uv")) {
         const listed = await rt.exec(["uv", "tool", "list"], root);
         if (listed.code !== 0) throw new Error(`uv tool list: ${shortError(listed)}`);
@@ -597,7 +603,8 @@ async function resolveComponents(rt, options, state, root, report) {
         throw new Error("Semctx before 0.3.4 has no safe workspace preflight");
       }
     } catch (error) {
-      problem(report, name === "semctx" ? "RELEASE_SKEW_OR_UNAVAILABLE" : "VERSION_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
+      if (error?.admissionCode) recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
+      else problem(report, name === "semctx" ? "RELEASE_SKEW_OR_UNAVAILABLE" : "VERSION_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
     }
   }
   return versions;
@@ -1172,7 +1179,7 @@ export async function execute(options, rt = createRuntime()) {
   let lockedStateUnverified = false;
   const lockedUnknownGuidance = () => {
     const current = stateRecoveryCommand(options, root, null, requestedRecoveryHosts, { useRequestedRefresh: false });
-    return unverifiedStateGuidance("Resolve the locked state read conflict", current);
+    return unverifiedStateGuidance("Resolve the locked state conflict", current);
   };
   let releaseLock;
   let stateTransaction;
@@ -1273,7 +1280,14 @@ export async function execute(options, rt = createRuntime()) {
       }
     }
   } catch (error) {
-    if (lockedRereadStarted && !persistedStateObserved) lockedStateUnverified = true;
+    if ((lockedRereadStarted && !persistedStateObserved)
+      || (stateTransaction && error?.code === "STATE_CONFLICT")) {
+      lockedStateUnverified = true;
+      persistedStateObserved = false;
+      persistedState = null;
+      refreshSavePending = false;
+      refreshPhaseInvalidated = true;
+    }
     stateBoundaryProblem(report, error, statePath, "read or write", {
       recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
         : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),

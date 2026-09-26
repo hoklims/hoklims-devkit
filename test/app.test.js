@@ -1089,6 +1089,23 @@ describe("public CLI", () => {
     expect(invalid.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_CONFLICT");
     expect(invalid.exitCode).toBe(4);
     expect(invalidJson.writes).toHaveLength(0);
+
+    const freshFiles = {
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+    };
+    const fresh = fakeRuntime({ tools: ["node", "npm"], files: freshFiles });
+    fresh.readPlainText = () => { throw Object.assign(new Error("fresh manifest I/O failure"), { code: "EIO" }); };
+    const freshReport = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, fresh);
+    expect(freshReport.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(freshReport.conflicts.map((item) => item.code)).not.toContain("VERSION_UNAVAILABLE");
+    expect(freshReport.exitCode).toBe(5);
+    expect(fresh.writes).toHaveLength(0);
+
+    const readable = fakeRuntime({ tools: ["node", "npm"], files: freshFiles });
+    const readableReport = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, readable);
+    expect(readableReport.ok).toBe(true);
+    expect(readable.writes).toHaveLength(0);
   });
 
   test("valid packageManager declarations retain supported manager selection", async () => {
@@ -1451,7 +1468,7 @@ describe("public CLI", () => {
     });
     const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
     expect(report.ok).toBe(false);
-    expect(report.conflicts.map((item) => item.code)).toContain("VERSION_UNAVAILABLE");
+    expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
     expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/Conflicting AssertLedger dependency declarations/u);
     expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
     expect(rt.writes).toHaveLength(0);
@@ -1465,7 +1482,7 @@ describe("public CLI", () => {
     });
     const rejectedConstraint = await execute({ ...setupOptions(), with: ["assertledger"] }, constraintMismatch);
     expect(rejectedConstraint.ok).toBe(false);
-    expect(rejectedConstraint.conflicts.map((item) => item.code)).toContain("VERSION_UNAVAILABLE");
+    expect(rejectedConstraint.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
     expect(rejectedConstraint.conflicts.map((item) => item.detail).join("\n")).toMatch(/must be pinned exactly/u);
     expect(constraintMismatch.writes).toHaveLength(0);
   });
@@ -1543,7 +1560,7 @@ describe("public CLI", () => {
     });
     const rejected = await execute({ ...setupOptions(), with: ["assertledger"] }, conflicting);
     expect(rejected.ok).toBe(false);
-    expect(rejected.conflicts.map((item) => item.code)).toContain("VERSION_UNAVAILABLE");
+    expect(rejected.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
     expect(conflicting.writes).toHaveLength(0);
   });
 
@@ -2286,6 +2303,9 @@ describe("public CLI", () => {
         expect(raced.distinctIdentity).toBe(true);
         expect(raced.report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
         expect(raced.report.components[0]).toMatchObject({ installed: "unknown", configured: "unknown" });
+        const guidance = [raced.report.conflicts.map((item) => item.detail).join("\n"), raced.report.nextActions.join("\n")].join("\n");
+        expect(guidance).toContain("inspect and validate the saved Devkit state");
+        expect(guidance).not.toContain("complete the recorded plan");
         expect(raced.commits).toBe(1);
         const bytes = readFileSync(raced.statePath);
         if (replacement === "foreign") expect(bytes.toString("utf8")).toBe("FOREIGN NON-JSON BYTES");
