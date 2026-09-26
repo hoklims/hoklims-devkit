@@ -83,7 +83,17 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("--version")) return { code: 0, stdout: "latent-compass 0.3.0\n", stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo", hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
       if (argv[0] === "npm" && argv.includes("exec")) return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
-      if (argv[0] === "npm" && argv.includes("install")) return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
+      const assertSpec = argv.find((arg) => /^assertledger@/u.test(arg));
+      if (assertSpec && ((argv[0] === "npm" && argv.includes("install"))
+        || (argv[0] === "pnpm" && argv.includes("add")) || (argv[0] === "bun" && argv.includes("add")))) {
+        if (!failAssertInstall) {
+          const manifestPath = join("/repo", "package.json");
+          const manifest = JSON.parse(files[manifestPath]);
+          manifest.devDependencies = { ...(manifest.devDependencies ?? {}), assertledger: assertSpec.slice("assertledger@".length) };
+          files[manifestPath] = JSON.stringify(manifest);
+        }
+        return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
+      }
       if (argv.includes("plugin-status")) {
         return {
           code: semctxInstalledVersion && semctxStatusCode === 3 ? 0 : semctxStatusCode,
@@ -1192,6 +1202,55 @@ describe("public CLI", () => {
       expect(report.exitCode).toBe(failure === "io" ? 5 : 4);
       expect(rt.writes.at(-1).inProgress.selected).toEqual(["semctx", "assertledger"]);
     }
+  });
+
+  test("AssertLedger apply revalidates project admission before native writes", async () => {
+    const baseFiles = () => ({
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    });
+    const cases = [
+      { name: "malformed", code: "PACKAGE_MANIFEST_CONFLICT" },
+      { name: "io", code: "STATE_IO_ERROR" },
+      { name: "foreign-version", code: "INSTALLED_VERSION_DRIFT" },
+      { name: "manager-lock", code: "PACKAGE_MANAGER_CONFLICT" },
+    ];
+    for (const scenario of cases) {
+      const files = baseFiles();
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const nativeExec = rt.exec;
+      const read = rt.readPlainText;
+      let projectReadDenied = false;
+      rt.readPlainText = (path) => {
+        if (projectReadDenied && path === join("/repo", "package.json")) {
+          throw Object.assign(new Error("project manifest changed to EIO"), { code: "EIO" });
+        }
+        return read(path);
+      };
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+          if (scenario.name === "malformed") files[join("/repo", "package.json")] = "{";
+          else if (scenario.name === "io") projectReadDenied = true;
+          else if (scenario.name === "foreign-version") {
+            files[join("/repo", "package.json")] = JSON.stringify({ dependencies: { assertledger: "9.9.9" }, packageManager: "npm@10.9.8" });
+          } else files[join("/repo", "pnpm-lock.yaml")] = "lockfileVersion: 9";
+        }
+        return result;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain(scenario.code);
+      expect(rt.calls.filter((argv) => argv[0] === "node" && argv.includes("setup") && argv.includes("--write"))).toHaveLength(0);
+      expect(rt.writes.at(-1).inProgress.selected).toEqual(["semctx", "assertledger"]);
+    }
+
+    const valid = fakeRuntime({ tools: ["node", "npm"], files: baseFiles() });
+    const accepted = await execute({ ...setupOptions(), with: ["assertledger"] }, valid);
+    expect(accepted.ok).toBe(true);
+    expect(valid.calls.filter((argv) => argv[0] === "node" && argv.includes("setup") && argv.includes("--write"))).toHaveLength(1);
+    expect(valid.writes.at(-1).inProgress).toBeUndefined();
   });
 
   test("valid packageManager declarations retain supported manager selection", async () => {
@@ -2539,6 +2598,32 @@ describe("public CLI", () => {
     expect(released).toBe(true);
   });
 
+  test("late authority loss replaces every earlier recovery instruction", async () => {
+    const lockedState = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.4" } },
+    };
+    const rt = fakeRuntime({ tools: ["claude"] });
+    rt.openStateTransaction = () => ({
+      state: structuredClone(lockedState),
+      close: () => { throw Object.assign(new Error("state replaced before close"), { code: "STATE_CONFLICT" }); },
+    });
+    const report = await execute(setupOptions(), rt);
+    const details = report.conflicts.map((item) => item.detail);
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(report.nextActions).toHaveLength(1);
+    expect(report.nextActions[0]).toContain("inspect and validate the saved Devkit state");
+    expect(report.nextActions[0]).toContain("Only if no saved plan exists, run hoklims-devkit setup /repo --host codex");
+    expect(report.nextActions.join("\n")).not.toContain("--host claude");
+    for (const detail of details) {
+      expect(detail).toContain("inspect and validate the saved Devkit state");
+      expect(detail).not.toContain("--host claude");
+      expect(detail).not.toContain("complete the recorded plan");
+    }
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("STATE_CHANGED treats a locked absence as authoritative", async () => {
     const initialState = {
       schemaVersion: 1, projectRoot: "/repo", components: {},
@@ -2918,6 +3003,10 @@ describe("public CLI", () => {
     expect(interrupted.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
     expect(guidance).toContain("inspect and validate the saved Devkit state");
     expect(guidance).not.toContain("complete the recorded plan");
+    for (const detail of interrupted.conflicts.map((item) => item.detail)) {
+      expect(detail).toContain("inspect and validate the saved Devkit state");
+      expect(detail).not.toContain("complete the recorded plan");
+    }
   });
 
   test("genuine lock contention remains RUN_LOCKED", async () => {

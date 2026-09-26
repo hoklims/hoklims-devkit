@@ -307,6 +307,17 @@ function inspectAssertProject(rt, root) {
   }
 }
 
+function assertProjectAdmission(rt, root, manager, allowedVersions) {
+  const project = inspectAssertProject(rt, root);
+  if (project.manager !== manager) {
+    throw projectAdmissionError(new Error(`AssertLedger package manager changed from ${manager} to ${project.manager}`), "PACKAGE_MANAGER_CONFLICT");
+  }
+  if (!allowedVersions.includes(project.version)) {
+    throw projectAdmissionError(new Error(`AssertLedger declaration changed outside the admitted versions: ${String(project.version)}`), "INSTALLED_VERSION_DRIFT");
+  }
+  return project;
+}
+
 function installPackageCommand(manager, version) {
   const spec = `assertledger@${version}`;
   if (manager === "npm") return ["npm", "install", "--save-dev", "--save-exact", "--ignore-scripts", spec];
@@ -843,10 +854,12 @@ async function applySemctx(rt, root, hosts, version, preflight) {
 }
 
 async function applyAssert(rt, root, hosts, version, preflight) {
+  assertProjectAdmission(rt, root, preflight.manager, [preflight.current, version]);
   if (preflight.needsInstall) {
     const install = await rt.exec(installPackageCommand(preflight.manager, version), root, 300_000);
     if (install.code !== 0) throw new Error(`AssertLedger package install: ${shortError(install)}`);
   }
+  assertProjectAdmission(rt, root, preflight.manager, [version]);
   let entry;
   try {
     entry = localAssertEntry(rt, root);
@@ -856,22 +869,26 @@ async function applyAssert(rt, root, hosts, version, preflight) {
   if (entry?.version !== version) throw new Error(`AssertLedger project executable is not the requested ${version}`);
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
+    assertProjectAdmission(rt, root, preflight.manager, [version]);
     const preview = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const previewReport = parseJsonOutput(preview);
     if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
       throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
     }
+    assertProjectAdmission(rt, root, preflight.manager, [version]);
     const result = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--write", "--json"]), root);
     const parsed = parseJsonOutput(result);
     if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"])) {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
     }
+    assertProjectAdmission(rt, root, preflight.manager, [version]);
     const verify = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const verified = parseJsonOutput(verify);
     if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"])) {
       throw new Error(`AssertLedger post-install verification (${client}): ${shortError(verify)}`);
     }
   }
+  assertProjectAdmission(rt, root, preflight.manager, [version]);
   return { activation: "unknown", next: ["Approve or trust the project integration in the selected client, then restart it"] };
 }
 
@@ -1190,7 +1207,15 @@ export async function execute(options, rt = createRuntime()) {
   let refreshPhaseInvalidated = false;
   let lockedRereadStarted = false;
   let lockedStateUnverified = false;
+  const staleRecoveryFragments = new Set();
   const invalidateLockedAuthority = () => {
+    const previousState = recoveryState();
+    const previousOptions = { useRequestedRefresh: refreshSavePending, refreshInvalidated: refreshPhaseInvalidated };
+    const previousGuidance = failureGuidance(rt, options, root, requestedRecoveryHosts, previousState, previousOptions);
+    staleRecoveryFragments.add(previousGuidance.action);
+    staleRecoveryFragments.add(previousGuidance.command);
+    staleRecoveryFragments.add(recoveryActionFor(previousState, previousOptions));
+    for (const action of report.nextActions) staleRecoveryFragments.add(action);
     lockedStateUnverified = true;
     persistedStateObserved = false;
     persistedState = null;
@@ -1200,6 +1225,25 @@ export async function execute(options, rt = createRuntime()) {
   const lockedUnknownGuidance = () => {
     const current = stateRecoveryCommand(options, root, null, requestedRecoveryHosts, { useRequestedRefresh: false });
     return unverifiedStateGuidance("Resolve the locked state conflict", current);
+  };
+  const replaceFailureRecovery = (guidance) => {
+    const stale = [...staleRecoveryFragments].filter(Boolean).sort((left, right) => right.length - left.length);
+    report.nextActions = report.nextActions.filter((item) => !stale.some((fragment) => item.includes(fragment))
+      && !/hoklims-devkit|saved Devkit state|recorded plan/u.test(item));
+    if (!report.nextActions.includes(guidance.action)) report.nextActions.push(guidance.action);
+    for (const conflict of report.conflicts) {
+      let detail = conflict.detail;
+      for (const fragment of stale) detail = detail.replaceAll(fragment, "");
+      detail = detail
+        .replace(/\s+to recompute the plan\./gu, ".")
+        .replace(/After resolving (?:the error|the state conflict):\s*\./gu, "")
+        .replace(/\s+/gu, " ")
+        .trim()
+        .replace(/[.\s]+$/u, "");
+      conflict.detail = detail.includes(guidance.action) ? `${detail}.` : `${detail}. ${guidance.action}.`;
+    }
+    report.ok = false;
+    return report;
   };
   let releaseLock;
   let stateTransaction;
@@ -1332,7 +1376,7 @@ export async function execute(options, rt = createRuntime()) {
   report.ok = report.conflicts.length === 0;
   if (!report.ok && lockedStateUnverified) {
     const guidance = lockedUnknownGuidance();
-    return recordFailureRecovery(guidance.action, guidance.command);
+    return replaceFailureRecovery(guidance);
   }
   return report.ok ? report : finalizeFailure(recoveryState(), {
     useRequestedRefresh: refreshSavePending,
