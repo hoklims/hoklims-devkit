@@ -590,7 +590,7 @@ describe("public CLI", () => {
   });
 
   test("malformed packageManager declarations block before state writes", async () => {
-    for (const packageManager of [7, null, false, { name: "npm" }]) {
+    for (const packageManager of [7, null, false, { name: "npm" }, "npm@", "npm@latest", "npm@^10", "npm@10.9", "npm@https://example.com/npm.zip"]) {
       const rt = fakeRuntime({
         tools: ["node", "npm"],
         files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager }) },
@@ -604,7 +604,13 @@ describe("public CLI", () => {
   });
 
   test("valid packageManager declarations retain supported manager selection", async () => {
-    for (const packageManager of ["npm@10.9.8", "pnpm@10.0.0", "bun@1.4.2"]) {
+    for (const packageManager of [
+      "npm@10.9.8",
+      "npm@10.9.8+sha512.aabbcc",
+      "pnpm@10.0.0",
+      "pnpm@https://registry.npmjs.org/pnpm/-/pnpm-10.0.0.tgz#sha224.aabbcc",
+      "bun@1.4.2",
+    ]) {
       const manager = packageManager.split("@")[0];
       const rt = fakeRuntime({
         tools: ["node", "npm", manager],
@@ -1318,6 +1324,42 @@ describe("public CLI", () => {
       expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
       expect(report.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
       expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("every accepted pending upgrade host scope has an admitted retry", async () => {
+    const cases = [
+      { existing: ["codex"], pending: ["codex"], from: "0.3.4", to: "0.3.5", valid: true },
+      { existing: ["claude"], pending: ["claude"], from: "0.3.4", to: "0.3.5", valid: true },
+      { existing: ["codex", "claude"], pending: ["codex", "claude"], from: "0.3.4", to: "0.3.5", valid: true },
+      { existing: ["codex", "claude"], pending: ["codex"], from: "0.3.4", to: "0.3.5", valid: false },
+      { existing: ["codex", "claude"], pending: ["claude"], from: "0.3.4", to: "0.3.5", valid: false },
+      { existing: ["codex", "claude"], pending: ["codex"], from: "0.3.4", to: "0.3.4", valid: true },
+      { existing: ["codex", "claude"], pending: ["claude"], from: "0.3.4", to: "0.3.4", valid: true },
+    ];
+    for (const scenario of cases) {
+      const state = {
+        schemaVersion: 1,
+        projectRoot: "/repo",
+        components: { semctx: { version: scenario.from, hosts: scenario.existing } },
+        inProgress: {
+          command: "upgrade",
+          selected: ["semctx"],
+          hosts: scenario.pending,
+          versions: { semctx: scenario.to },
+        },
+      };
+      const host = scenario.pending.length === 2 ? "all" : scenario.pending[0];
+      const rt = fakeRuntime({ state, version: scenario.to, stable: scenario.to, tools: ["claude"] });
+      const report = await execute(parseArgs(["upgrade", "/repo", "--host", host]), rt);
+      if (scenario.valid) {
+        expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_CONFLICT");
+        expect(report.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+        expect(report.conflicts.map((item) => item.code)).not.toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+      } else {
+        expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+        expect(rt.writes).toHaveLength(0);
+      }
     }
   });
 

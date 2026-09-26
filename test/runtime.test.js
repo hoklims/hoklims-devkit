@@ -300,6 +300,19 @@ test("state validation accepts only canonical component and host order", () => {
   missingManagedComponent.inProgress.selected = ["semctx"];
   missingManagedComponent.inProgress.versions = { semctx: "0.3.5" };
   expect(() => validateState(missingManagedComponent)).toThrow(/Invalid in-progress installation plan/u);
+
+  const narrowedVersionChange = {
+    schemaVersion: 1,
+    projectRoot: "/repo",
+    components: { semctx: { version: "0.3.4", hosts: ["codex", "claude"] } },
+    inProgress: {
+      command: "upgrade",
+      selected: ["semctx"],
+      hosts: ["codex"],
+      versions: { semctx: "0.3.5" },
+    },
+  };
+  expect(() => validateState(narrowedVersionChange)).toThrow(/Invalid in-progress installation plan/u);
 });
 
 test("runtime classifies a regular-file ancestor as a state conflict", () => {

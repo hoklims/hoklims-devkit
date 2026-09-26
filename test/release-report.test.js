@@ -22,16 +22,32 @@ function components(state = "configured") {
 
 describe("validComponentReport", () => {
   test("accepts exact planned, configured, and doctor reports", () => {
-    expect(validComponentReport(report(components("planned")), projectRoot, expectedNames, {
+    const planned = components("planned").map((component) => ({
+      ...component, installed: "unknown", configured: "unknown",
+    }));
+    expect(validComponentReport(report(planned), projectRoot, expectedNames, {
       expectedState: "planned",
+      expectedFlags: { installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" },
     })).toBe(true);
     expect(validComponentReport(report(components()), projectRoot, expectedNames, {
       expectedState: "configured",
-      requireInstalledAndConfigured: true,
+      expectedFlags: { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" },
     })).toBe(true);
     expect(validComponentReport(report(components().map(({ state: _state, ...component }) => component)), projectRoot, expectedNames, {
-      requireInstalledAndConfigured: true,
+      expectedState: null,
+      expectedFlags: { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" },
     })).toBe(true);
+  });
+
+  test("rejects planned reports without five flags and doctor reports with a plan state", () => {
+    expect(validComponentReport(report([{ name: "semctx", state: "planned" }]), projectRoot, ["semctx"], {
+      expectedState: "planned",
+      expectedFlags: { installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" },
+    })).toBe(false);
+    expect(validComponentReport(report([{ ...components()[0], state: "planned" }]), projectRoot, ["semctx"], {
+      expectedState: null,
+      expectedFlags: { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" },
+    })).toBe(false);
   });
 
   test("rejects empty, subset, superset, wrong, reordered, and duplicate component lists", () => {

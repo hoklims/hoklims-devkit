@@ -4,6 +4,9 @@ import { join, resolve } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
 import { validComponentReport } from "./release-report.js";
 
+const PLANNED_FLAGS = { installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" };
+const CONFIGURED_FLAGS = { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" };
+
 const consumer = process.argv[2];
 if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "bin", "hoklims-devkit.js"))) {
   throw new Error("Pass a fresh consumer prefix containing the installed hoklims-devkit package");
@@ -83,7 +86,7 @@ for (const host of ["codex", "claude", "all"]) {
     const output = run(["bunx", "--no-install", "hoklims-devkit", "setup", repository, "--host", host, ...withTools, "--dry-run", "--json"]);
     const report = JSON.parse(output);
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
-    if (!validComponentReport(report, resolve(repository), expected, { expectedState: "planned" })) {
+    if (!validComponentReport(report, resolve(repository), expected, { expectedState: "planned", expectedFlags: PLANNED_FLAGS })) {
       throw new Error(`Unexpected ${host} preflight: ${output}`);
     }
     if (run(["git", "-C", repository, "status", "--porcelain"]).trim()) {
@@ -125,7 +128,7 @@ for (const host of ["codex", "claude", "all"]) {
     const installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
     if (!validComponentReport(installed, resolve(scenarioRepository), expected, {
       expectedState: "configured",
-      requireInstalledAndConfigured: true,
+      expectedFlags: CONFIGURED_FLAGS,
     })) {
       throw new Error(`Unexpected ${host} installation: ${JSON.stringify(installed)}`);
     }
@@ -135,35 +138,37 @@ for (const host of ["codex", "claude", "all"]) {
     const repeated = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
     if (!validComponentReport(repeated, resolve(scenarioRepository), expected, {
       expectedState: "configured",
-      requireInstalledAndConfigured: true,
+      expectedFlags: CONFIGURED_FLAGS,
     })) throw new Error(`${host} repeated setup failed: ${JSON.stringify(repeated)}`);
     assertSnapshotUnchanged(targets, installedSnapshot, `${host} repeated setup`);
 
     const beforeDoctor = targets.map(snapshot);
     const diagnosed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
     if (!validComponentReport(diagnosed, resolve(scenarioRepository), expected, {
-      requireInstalledAndConfigured: true,
+      expectedState: null,
+      expectedFlags: CONFIGURED_FLAGS,
     })) {
       throw new Error(`${host} doctor did not confirm installation: ${JSON.stringify(diagnosed)}`);
     }
     assertSnapshotUnchanged(targets, beforeDoctor, `${host} doctor`);
     const beforeUpgradePlan = targets.map(snapshot);
     const upgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "upgrade", scenarioRepository, ...selectors.slice(0, -1), "--dry-run", "--json"], consumer, scenarioEnv));
-    if (!validComponentReport(upgrade, resolve(scenarioRepository), expected, { expectedState: "planned" })) {
+    if (!validComponentReport(upgrade, resolve(scenarioRepository), expected, { expectedState: "planned", expectedFlags: PLANNED_FLAGS })) {
       throw new Error(`${host} upgrade plan failed: ${JSON.stringify(upgrade)}`);
     }
     assertSnapshotUnchanged(targets, beforeUpgradePlan, `${host} upgrade plan`);
     const appliedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "upgrade", scenarioRepository, ...selectors], consumer, scenarioEnv));
     if (!validComponentReport(appliedUpgrade, resolve(scenarioRepository), expected, {
       expectedState: "configured",
-      requireInstalledAndConfigured: true,
+      expectedFlags: CONFIGURED_FLAGS,
     })) {
       throw new Error(`${host} upgrade did not configure every component: ${JSON.stringify(appliedUpgrade)}`);
     }
     const afterUpgrade = targets.map(snapshot);
     const diagnosedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
     if (!validComponentReport(diagnosedUpgrade, resolve(scenarioRepository), expected, {
-      requireInstalledAndConfigured: true,
+      expectedState: null,
+      expectedFlags: CONFIGURED_FLAGS,
     })) {
       throw new Error(`${host} post-upgrade doctor did not confirm installation: ${JSON.stringify(diagnosedUpgrade)}`);
     }

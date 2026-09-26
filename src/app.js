@@ -153,10 +153,25 @@ function packageManager(rt, root) {
   if (!rt.exists(manifestPath)) throw new Error("AssertLedger setup needs an existing package.json");
   const manifest = JSON.parse(rt.readText(manifestPath));
   const hasDeclaration = Object.hasOwn(manifest, "packageManager");
-  if (hasDeclaration && (typeof manifest.packageManager !== "string" || manifest.packageManager.length === 0)) {
-    throw new Error(`packageManager must be a string and non-empty when present; found ${String(manifest.packageManager)}`);
+  if (hasDeclaration && typeof manifest.packageManager !== "string") {
+    throw new Error(`packageManager must be a string in manager@version form; found ${String(manifest.packageManager)}`);
   }
-  const declared = hasDeclaration ? manifest.packageManager.split("@")[0] : null;
+  let declared = null;
+  if (hasDeclaration) {
+    const match = manifest.packageManager.match(/^([A-Za-z][A-Za-z0-9._-]*)@(.+)$/u);
+    const specifier = match?.[2] ?? "";
+    const exactVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+sha(?:224|256|384|512)\.[0-9A-Fa-f]+)?$/u.test(specifier);
+    let exactUrl = false;
+    try {
+      const url = new URL(specifier);
+      exactUrl = url.protocol === "https:" && /\.(?:js|tgz)$/u.test(url.pathname)
+        && (!url.hash || /^#sha(?:224|256|384|512)\.[0-9A-Fa-f]+$/u.test(url.hash));
+    } catch { /* A registry version is handled by exactVersion. */ }
+    if (!match || (!exactVersion && !exactUrl)) {
+      throw new Error(`packageManager must be a string in manager@version form; found ${String(manifest.packageManager)}`);
+    }
+    declared = match[1];
+  }
   const locks = [
     ["npm", ["package-lock.json", "npm-shrinkwrap.json"]],
     ["pnpm", ["pnpm-lock.yaml"]],

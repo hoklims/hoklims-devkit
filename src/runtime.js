@@ -137,7 +137,12 @@ export function validateState(state) {
       || !plan.versions || Array.isArray(plan.versions) || typeof plan.versions !== "object"
       || Object.keys(plan.versions).length !== plan.selected.length
       || plan.selected.some((name) => typeof plan.versions[name] !== "string"
-        || !/^\d+\.\d+\.\d+$/u.test(plan.versions[name]))) {
+        || !/^\d+\.\d+\.\d+$/u.test(plan.versions[name]))
+      || (plan.command === "upgrade" && plan.selected.some((name) => {
+        const existing = state.components[name];
+        return existing && existing.version !== plan.versions[name]
+          && existing.hosts.some((host) => !plan.hosts.includes(host));
+      }))) {
       throw new Error("Invalid in-progress installation plan");
     }
   }

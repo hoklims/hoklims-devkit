@@ -14,18 +14,21 @@ export function validComponentReport(report, projectRoot, expectedNames, options
     if (!options || typeof options !== "object" || Array.isArray(options)
       || Object.getPrototypeOf(options) !== Object.prototype) return false;
 
-    const { expectedState, requireInstalledAndConfigured = false } = options;
-    if (expectedState !== undefined && expectedState !== "planned" && expectedState !== "configured") return false;
-    if (typeof requireInstalledAndConfigured !== "boolean") return false;
+    const { expectedState, expectedFlags } = options;
+    if (expectedState !== null && expectedState !== "planned" && expectedState !== "configured") return false;
+    if (!expectedFlags || typeof expectedFlags !== "object" || Array.isArray(expectedFlags)
+      || Object.getPrototypeOf(expectedFlags) !== Object.prototype) return false;
+    const flagNames = ["installed", "configured", "loaded", "approved", "observed"];
+    if (Object.keys(expectedFlags).length !== flagNames.length
+      || flagNames.some((name) => !["yes", "no", "unknown"].includes(expectedFlags[name]))) return false;
 
     for (let index = 0; index < report.components.length; index += 1) {
       if (!Object.hasOwn(report.components, index)) return false;
       const component = report.components[index];
       if (!component || typeof component !== "object" || Array.isArray(component)) return false;
       if (component.name !== expectedNames[index]) return false;
-      if (expectedState !== undefined && component.state !== expectedState) return false;
-      if (requireInstalledAndConfigured
-        && (component.installed !== "yes" || component.configured !== "yes")) return false;
+      if (expectedState === null ? Object.hasOwn(component, "state") : component.state !== expectedState) return false;
+      if (flagNames.some((name) => component[name] !== expectedFlags[name])) return false;
     }
     return true;
   } catch {
