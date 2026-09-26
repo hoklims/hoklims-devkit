@@ -405,11 +405,20 @@ function optionalNativeRootMatches(rt, parsed, root) {
   }
 }
 
-function validSemctxHostPlan(rt, parsed, root, hosts, version, selection) {
-  return optionalNativeRootMatches(rt, parsed, root)
-    && parsed?.ok === true && parsed.version === version && parsed.dryRun === true
-    && parsed.selection === selection && hosts.every((host) => parsed.hosts?.[host]?.requested === true
-      && parsed.hosts[host].detected === true && parsed.hosts[host].status === "planned");
+function validSemctxInstallReport(rt, parsed, root, hosts, version, selection, dryRun) {
+  let workspaceRootMatches = false;
+  try {
+    workspaceRootMatches = parsed?.workspace?.status === "skipped"
+      && typeof parsed.workspace.root === "string" && rt.realpath(parsed.workspace.root) === root;
+  } catch {
+    workspaceRootMatches = false;
+  }
+  const statuses = dryRun ? ["planned"] : ["installed", "updated", "migrated"];
+  return optionalNativeRootMatches(rt, parsed, root) && workspaceRootMatches
+    && parsed?.ok === true && parsed.version === version && parsed.dryRun === dryRun
+    && parsed.selection === selection
+    && HOSTS.every((host) => parsed.hosts?.[host]?.requested === hosts.includes(host))
+    && hosts.every((host) => parsed.hosts[host].detected === true && statuses.includes(parsed.hosts[host].status));
 }
 
 function fileBelongsToRoot(rt, path, relativePath, root) {
@@ -634,7 +643,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     const host = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", "--dry-run", ...args], root);
     hostJson = nativeResult(host, "semctx install --dry-run", report);
     if (!hostJson) return null;
-    if (host.code !== 0 || !validSemctxHostPlan(rt, hostJson, root, hosts, version, hostMode)) {
+    if (host.code !== 0 || !validSemctxInstallReport(rt, hostJson, root, hosts, version, hostMode, true)) {
       problem(report, "SEMCTX_HOST_CONFLICT", JSON.stringify(hostJson).slice(0, 600));
     }
   }
@@ -773,7 +782,9 @@ async function applySemctx(rt, root, hosts, version, preflight) {
   if (preflight.hostInstallNeeded) {
     const install = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", ...args], root);
     const parsed = parseJsonOutput(install);
-    if (install.code !== 0 || parsed?.ok !== true || parsed?.dryRun !== false) throw new Error(`Semctx host install: ${shortError(install)}`);
+    if (install.code !== 0 || !validSemctxInstallReport(rt, parsed, root, hosts, version, hostMode, false)) {
+      throw new Error(`Semctx host install: ${shortError(install)}`);
+    }
   }
   let ready = true;
   if (!preflight.skipSetup) {

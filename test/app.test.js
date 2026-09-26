@@ -113,12 +113,15 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
         : { code: 2, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "absent" }, freshness: { canRunHighRiskControl: false }, coverage: { status: "partial" } }), stderr: "" };
       if (argv.includes("install")) {
         if (!argv.includes("--dry-run")) semctxInstalledVersion = version;
+        const dryRun = argv.includes("--dry-run");
+        const selection = argv[argv.indexOf("--host") + 1];
         return { code: 0, stdout: JSON.stringify({
-          ok: true, version, dryRun: argv.includes("--dry-run"), selection: argv[argv.indexOf("--host") + 1],
+          ok: true, version, dryRun, selection,
           hosts: {
-            codex: { requested: true, detected: true, status: "planned" },
-            claude: { requested: true, detected: true, status: "planned" },
+            codex: { requested: ["codex", "all"].includes(selection), detected: true, status: dryRun ? "planned" : "installed" },
+            claude: { requested: ["claude", "all"].includes(selection), detected: true, status: dryRun ? "planned" : "installed" },
           },
+          workspace: { status: "skipped", root: "/repo" },
         }), stderr: "" };
       }
       if (argv.includes("setup")) return { code: setupReady ? 0 : 1, stdout: JSON.stringify({
@@ -366,6 +369,39 @@ describe("public CLI", () => {
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_HOST_CONFLICT");
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("applied Semctx host reports retain exact install identity", async () => {
+    const mutations = [
+      (report) => { delete report.version; },
+      (report) => { report.workspace.root = "/other"; },
+      (report) => { report.version = "9.9.9"; },
+      (report) => { report.selection = "claude"; },
+    ];
+    const setupWrites = (rt) => rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run")).length;
+    for (const mutate of mutations) {
+      const rt = fakeRuntime();
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (!argv.includes("install") || argv.includes("--dry-run")) return result;
+        const native = JSON.parse(result.stdout);
+        mutate(native);
+        return { ...result, stdout: JSON.stringify(native) };
+      };
+      const report = await execute(setupOptions(), rt);
+      expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+      expect(report.components[0]).toMatchObject({ state: "partial", installed: "unknown", configured: "unknown" });
+      expect(setupWrites(rt)).toBe(0);
+      expect(rt.writes).toHaveLength(1);
+      expect(rt.writes[0].inProgress).toEqual({ command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } });
+    }
+
+    const valid = fakeRuntime();
+    const accepted = await execute(setupOptions(), valid);
+    expect(accepted.ok).toBe(true);
+    expect(setupWrites(valid)).toBe(1);
+    expect(valid.writes.at(-1).inProgress).toBeUndefined();
   });
 
   test("Semctx plugin status naming another repository blocks all writes", async () => {
