@@ -50,10 +50,6 @@ function inspectManagedFile(path, options) {
   return stat;
 }
 
-function managedFileIdentity(stat) {
-  return stat ? { dev: stat.dev, ino: stat.ino } : null;
-}
-
 function assertManagedDestination(path, expectedIdentity) {
   const stat = inspectManagedFile(path, { bigint: true });
   if (!expectedIdentity) {
@@ -63,6 +59,34 @@ function assertManagedDestination(path, expectedIdentity) {
   if (!stat || stat.dev !== expectedIdentity.dev || stat.ino !== expectedIdentity.ino) {
     throw ownedFileConflict(path, "the destination was replaced during the write");
   }
+}
+
+function captureManagedDestination(path) {
+  const initial = inspectManagedFile(path, { bigint: true });
+  if (!initial) return { descriptor: null, identity: null };
+  const identity = { dev: initial.dev, ino: initial.ino };
+  let descriptor;
+  try {
+    descriptor = openSync(path, "r");
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
+      throw ownedFileConflict(path, "the destination changed while its identity was captured");
+    }
+    assertManagedDestination(path, identity);
+    return { descriptor, identity };
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor); } catch { /* Preserve the capture error. */ }
+    }
+    throw error;
+  }
+}
+
+function closeManagedDestination(destination) {
+  if (destination.descriptor === null) return;
+  const descriptor = destination.descriptor;
+  destination.descriptor = null;
+  closeSync(descriptor);
 }
 
 function prepareManagedParent(path) {
@@ -251,7 +275,7 @@ export function createRuntime({
     writeState: (path, state) => {
       validateState(state);
       prepareManagedParent(path);
-      const destinationIdentity = managedFileIdentity(inspectManagedFile(path, { bigint: true }));
+      const destination = captureManagedDestination(path);
       const temp = `${path}.${randomId()}.tmp`;
       let owned = null;
       try {
@@ -262,7 +286,7 @@ export function createRuntime({
           closeOwnedFile(owned);
         }
         assertOwnedFile(owned);
-        assertManagedDestination(path, destinationIdentity);
+        assertManagedDestination(path, destination.identity);
         // Node has no portable identity-bound rename/CAS. This identity check cannot eliminate a hostile
         // pathname swap between the final validation and rename by a peer outside this lock.
         renameSync(temp, path);
@@ -276,6 +300,8 @@ export function createRuntime({
           }
         }
         throw error;
+      } finally {
+        closeManagedDestination(destination);
       }
     },
     acquireLock: (statePath) => {

@@ -137,19 +137,20 @@ test("runtime removes an owned partial temporary state file after a write failur
 });
 
 test("runtime preserves a state destination replaced during temporary write", () => {
-  for (const initiallyPresent of [false, true]) {
+  for (const scenario of ["appeared", "recreated", "distinct-replacement"]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-destination-")));
     const statePath = join(root, "repository.json");
     const tempPath = `${statePath}.candidate.tmp`;
     const foreignPath = join(root, "foreign-replacement.json");
-    if (initiallyPresent) writeFileSync(statePath, "original state\n");
-    writeFileSync(foreignPath, "foreign replacement\n");
+    if (scenario !== "appeared") writeFileSync(statePath, "original state\n");
+    if (scenario === "distinct-replacement") writeFileSync(foreignPath, "foreign replacement\n");
     const rt = createRuntime({
       randomId: () => "candidate",
       writeStateData: (fd, data) => {
         writeFileSync(fd, data);
         if (existsSync(statePath)) unlinkSync(statePath);
-        renameSync(foreignPath, statePath);
+        if (scenario === "distinct-replacement") renameSync(foreignPath, statePath);
+        else writeFileSync(statePath, "foreign replacement\n");
       },
     });
     let error;
