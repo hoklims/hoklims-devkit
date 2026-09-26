@@ -62,14 +62,26 @@ function problem(report, code, detail, exitCode = 4) {
   return report;
 }
 
+function assertLedgerTools(packageManager) {
+  return [...new Set(["node", "npm", packageManager].filter(Boolean))];
+}
+
+function missingAssertLedgerTools(rt, packageManager) {
+  return assertLedgerTools(packageManager).filter((name) => !rt.which(name));
+}
+
+function requireAssertLedgerTools(rt, packageManager) {
+  const missing = missingAssertLedgerTools(rt, packageManager);
+  if (missing.length) throw new Error(`AssertLedger prerequisite disappeared from PATH: ${missing.join(", ")}`);
+}
+
 function retryGuidance(rt, hosts, command, { components = [], packageManager } = {}) {
   const missing = [];
   const add = (label) => { if (!missing.includes(label)) missing.push(label); };
   if (!rt.which("bun") || !rt.which("bunx")) add("Bun");
   for (const host of hosts) if (!rt.which(host)) add(`${host} CLI`);
   if (components.includes("assertledger")) {
-    if (!rt.which("node")) add("Node");
-    if (packageManager && !rt.which(packageManager)) add(packageManager);
+    for (const name of missingAssertLedgerTools(rt, packageManager)) add(name === "node" ? "Node" : name);
   }
   if (components.includes("latent-compass") && !rt.which("uv")) add("uv");
   const prerequisites = [];
@@ -791,7 +803,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
 }
 
 async function preflightAssert(rt, root, hosts, version, previous, command, report, pendingVersion) {
-  if (!rt.which("node") || !rt.which("npm")) {
+  if (missingAssertLedgerTools(rt).length) {
     problem(report, "NODE_REQUIRED", "AssertLedger needs Node >=22.15 and npm", 3);
     return null;
   }
@@ -809,7 +821,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     return null;
   }
   const { manager, version: current } = project;
-  if (!rt.which(manager)) {
+  if (missingAssertLedgerTools(rt, manager).includes(manager)) {
     problem(report, "PACKAGE_MANAGER_MISSING", `${manager} is not on PATH`, 3);
     return null;
   }
@@ -962,26 +974,31 @@ async function applySemctx(rt, root, hosts, version, preflight) {
 
 async function applyAssert(rt, root, hosts, version, preflight) {
   const beforeVersions = preflight.needsInstall ? preflight.admittedVersions : [version];
+  requireAssertLedgerTools(rt, preflight.manager);
   assertAssertAdmission(rt, root, preflight.manager, beforeVersions, beforeVersions, preflight.needsInstall);
   if (preflight.needsInstall) {
+    requireAssertLedgerTools(rt, preflight.manager);
     const install = await rt.exec(installPackageCommand(preflight.manager, version), root, 300_000);
     if (install.code !== 0) throw new Error(`AssertLedger package install: ${shortError(install)}`);
   }
   let admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
+    requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
     const preview = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const previewReport = parseJsonOutput(preview);
     if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
       throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
     }
+    requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
     const result = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--write", "--json"]), root);
     const parsed = parseJsonOutput(result);
     if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"])) {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
     }
+    requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
     const verify = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const verified = parseJsonOutput(verify);
@@ -989,6 +1006,7 @@ async function applyAssert(rt, root, hosts, version, preflight) {
       throw new Error(`AssertLedger post-install verification (${client}): ${shortError(verify)}`);
     }
   }
+  requireAssertLedgerTools(rt, preflight.manager);
   assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
   return { activation: "unknown", next: ["Approve or trust the project integration in the selected client, then restart it"] };
 }

@@ -1525,6 +1525,28 @@ describe("public CLI", () => {
     }
   });
 
+  test("AssertLedger recovery includes its npm bootstrap alongside the selected package manager", async () => {
+    const cases = [
+      { manager: "pnpm", tools: ["node", "pnpm"], lock: "pnpm-lock.yaml" },
+      { manager: "bun", tools: ["node", "bun"], lock: "bun.lock" },
+      { manager: "npm", tools: ["node"], lock: "package-lock.json" },
+    ];
+    for (const scenario of cases) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: `${scenario.manager}@10.0.0` }),
+        [join("/repo", scenario.lock)]: "lock",
+      };
+      const rt = fakeRuntime({ tools: scenario.tools, files });
+      const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      expect(report.conflicts.map((item) => item.code), scenario.manager).toContain("NODE_REQUIRED");
+      expect(guidance, scenario.manager).toContain("Restore npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger");
+      expect(guidance, scenario.manager).not.toContain("npm, npm");
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec")), scenario.manager).toBe(false);
+      expect(rt.writes, scenario.manager).toHaveLength(0);
+    }
+  });
+
   test("AssertLedger preview cannot plan artifacts for another repository or client", async () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],
@@ -2722,7 +2744,7 @@ describe("public CLI", () => {
       const report = await execute(parseArgs(["setup", "/repo", "--host", host, "--with", "assertledger"]), rt);
       const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
       expect(report.ok).toBe(false);
-      expect(guidance.toLowerCase()).toContain("restore claude cli, node on path");
+      expect(guidance.toLowerCase()).toContain("restore claude cli, node, npm on path");
       expect(guidance).toContain("Inspect the declared AssertLedger package manager and restore it on PATH if missing before running hoklims-devkit setup /repo --host all --with assertledger");
       expect(rt.writes).toHaveLength(0);
     }
@@ -3233,6 +3255,52 @@ describe("public CLI", () => {
     }
     expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("native setup failed");
     expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("lock release EIO");
+  });
+
+  test("late npm bootstrap loss is retained for saved and unverified pnpm recovery", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const closeConflict of [false, true]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm", "pnpm"], files: { ...files } });
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      let npmMissing = false;
+      rt.which = (name) => npmMissing && name === "npm" ? null : nativeWhich(name);
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+          npmMissing = true;
+          return { code: 5, stdout: "", stderr: "native setup failed" };
+        }
+        return result;
+      };
+      rt.openStateTransaction = () => ({
+        state: structuredClone(state), write: () => {},
+        close: () => {
+          if (closeConflict) throw Object.assign(new Error("state changed before close"), { code: "STATE_CONFLICT" });
+        },
+      });
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      const command = "hoklims-devkit setup /repo --host codex --with assertledger";
+      const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+      expect(npmMissing).toBe(true);
+      expect(guidance.toLowerCase()).toContain(`restore npm on path before running ${command}`.toLowerCase());
+      expect(guidance).not.toContain("Restore pnpm");
+      expect(guidance).not.toContain(`Run ${command}`);
+      if (closeConflict) expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+      else expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    }
   });
 
   test("recovery prerequisites follow the same admitted saved plan as the retry command", async () => {
