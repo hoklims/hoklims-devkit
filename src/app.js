@@ -6,6 +6,7 @@ import { createRuntime, parseJsonOutput, preferredBoundaryError, RunLockedError,
 const COMPONENTS = ["semctx", "assertledger", "latent-compass"];
 const HOSTS = ["codex", "claude"];
 const VERSION = packageJson.version;
+const MIN_SAFE_SEMCTX_VERSION = "0.3.6";
 
 export function parseArgs(argv) {
   if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) return { help: true };
@@ -274,6 +275,10 @@ function compareVersions(left, right) {
     if (a[i] !== b[i]) return a[i] - b[i];
   }
   return 0;
+}
+
+function safeSemctxVersion(version) {
+  return isStableVersion(version) && compareVersions(version, MIN_SAFE_SEMCTX_VERSION) >= 0;
 }
 
 const DEPENDENCY_GROUPS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
@@ -792,13 +797,14 @@ async function resolveComponents(rt, options, state, root, report) {
         versions[name] = await resolveVersion(rt, name);
       }
       if (!isStableVersion(versions[name])) throw new Error(`Invalid ${name} version`);
-      // 0.3.3 accepts `setup --dry-run` but writes workspace files. Never invoke it as a preflight.
-      if (name === "semctx" && compareVersions(versions[name], "0.3.4") < 0) {
-        throw new Error("Semctx before 0.3.4 has no safe workspace preflight");
+      if (name === "semctx" && !safeSemctxVersion(versions[name])) {
+        const error = new Error(`Semctx ${versions[name]} predates the safe host-diagnostic floor ${MIN_SAFE_SEMCTX_VERSION}`);
+        error.problemCode = "SEMCTX_VERSION_UNSAFE";
+        throw error;
       }
     } catch (error) {
       if (error?.admissionCode) recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
-      else problem(report, name === "semctx" ? "RELEASE_SKEW_OR_UNAVAILABLE" : "VERSION_UNAVAILABLE", `${name}: ${String(error.message ?? error)}`, 3);
+      else problem(report, error?.problemCode ?? (name === "semctx" ? "RELEASE_SKEW_OR_UNAVAILABLE" : "VERSION_UNAVAILABLE"), `${name}: ${String(error.message ?? error)}`, 3);
     }
   }
   return versions;
@@ -1334,6 +1340,33 @@ export async function execute(options, rt = createRuntime()) {
     });
     return recordFailureRecovery(action, command);
   };
+  const unsafeSemctxGuidance = (unsafeVersion, candidateState = state) => {
+    const pending = candidateState?.inProgress;
+    const recoveryOptions = candidateState ? {
+      ...options,
+      command: "upgrade",
+      with: [],
+      refreshPending: Boolean(pending),
+    } : options;
+    const baseHosts = pending?.hosts ?? requestedRecoveryHosts;
+    const requiredHosts = HOSTS.filter((host) => baseHosts.includes(host)
+      || candidateState?.components?.semctx?.hosts?.includes(host));
+    const phase = { useRequestedRefresh: Boolean(pending) };
+    const plan = stateRecoveryPlan(recoveryOptions, candidateState, requiredHosts, phase);
+    const command = stateRecoveryCommand(recoveryOptions, root, candidateState, requiredHosts, phase);
+    const retry = renderRetryInstruction(plan.hosts, command, {
+      components: plan.selected,
+      packageManager: recoveryPackageManager,
+    });
+    const repair = candidateState
+      ? `Resolve Semctx ${unsafeVersion} to stable ${MIN_SAFE_SEMCTX_VERSION} or newer`
+      : `Wait for Semctx ${MIN_SAFE_SEMCTX_VERSION} or newer on the stable public channel`;
+    return { command, action: `${repair}, then ${retry[0].toLowerCase()}${retry.slice(1)}` };
+  };
+  const recordUnsafeSemctxFailure = (unsafeVersion, candidateState = state) => {
+    const guidance = unsafeSemctxGuidance(unsafeVersion, candidateState);
+    return recordFailureRecovery(guidance.action, guidance.command);
+  };
   try {
     state = validateBoundState(rt.readState(statePath), root);
   } catch (error) {
@@ -1346,6 +1379,21 @@ export async function execute(options, rt = createRuntime()) {
   if (options.with.includes("assertledger") || state?.components?.assertledger
     || state?.inProgress?.selected.includes("assertledger")) {
     try { recoveryPackageManager = inspectAssertProject(rt, root).manager; } catch { /* The owning command reports the concrete admission error. */ }
+  }
+  const knownSemctxVersion = options.command === "doctor"
+    ? state?.inProgress?.versions.semctx ?? state?.components?.semctx?.version
+    : !options.refreshPending ? state?.inProgress?.versions.semctx
+      ?? (options.command === "setup" ? state?.components?.semctx?.version : null) : null;
+  if (knownSemctxVersion && !safeSemctxVersion(knownSemctxVersion)) {
+    if (options.command === "doctor") {
+      report.components.push({
+        name: "semctx", version: knownSemctxVersion, installed: "unknown", configured: "unknown",
+        loaded: "unknown", approved: "unknown", observed: "unknown",
+      });
+    }
+    problem(report, "SEMCTX_VERSION_UNSAFE",
+      `Semctx ${knownSemctxVersion} predates the safe host-diagnostic floor ${MIN_SAFE_SEMCTX_VERSION}`, 3);
+    return recordUnsafeSemctxFailure(knownSemctxVersion, state);
   }
   if (hosts.length === 0 || hosts.some((host) => !rt.which(host))) {
     problem(report, "HOST_UNAVAILABLE", `Requested host is not on PATH: ${options.host}. ${recoveryActionFor(state)}`, 3);
@@ -1397,6 +1445,9 @@ export async function execute(options, rt = createRuntime()) {
   }
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) {
+    if (report.conflicts.some((item) => item.code === "SEMCTX_VERSION_UNSAFE")) {
+      return recordUnsafeSemctxFailure(versions.semctx, state);
+    }
     return finalizeFailure(state);
   }
   if (options.command === "upgrade") {

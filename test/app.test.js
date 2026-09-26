@@ -46,7 +46,7 @@ function assertSetupReport(argv, status, mode) {
   };
 }
 
-function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupPlan(), setupReady = true, workspaceReady = false, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false, semctxMissing = false, semctxContentDrift = false, semctxMarketplaceMatch = true, installedSemctxVersion } = {}) {
+function fakeRuntime({ version = "0.3.6", stable = version, setup = semctxSetupPlan(), setupReady = true, workspaceReady = false, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false, semctxMissing = false, semctxContentDrift = false, semctxMarketplaceMatch = true, installedSemctxVersion } = {}) {
   const calls = [];
   const writes = [];
   let semctxInstalledVersion = semctxMissing ? null : installedSemctxVersion ?? state?.components?.semctx?.version ?? null;
@@ -201,13 +201,109 @@ describe("public CLI", () => {
     expect(() => parseArgs(["setup", ".", "--refresh-pending"])).toThrow();
   });
 
-  test("blocks published Semctx 0.3.3 before invoking its unsafe dry-run", async () => {
-    const rt = fakeRuntime({ version: "0.3.3" });
-    const report = await execute(setupOptions(), rt);
-    expect(report.ok).toBe(false);
-    expect(report.conflicts[0].code).toBe("RELEASE_SKEW_OR_UNAVAILABLE");
-    expect(rt.calls).toHaveLength(2);
-    expect(rt.writes).toHaveLength(0);
+  test("blocks every Semctx version below 0.3.6 before native host queries", async () => {
+    for (const version of ["0.3.3", "0.3.4", "0.3.5"]) {
+      const rt = fakeRuntime({ version });
+      const report = await execute(setupOptions(), rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts[0].code).toBe("SEMCTX_VERSION_UNSAFE");
+      expect(rt.calls).toHaveLength(2);
+      expect(rt.calls.flat().some((argument) => String(argument).includes(`semctx@${version}`))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+      expect(report.nextActions.join("\n")).toContain("Semctx 0.3.6 or newer");
+      expect(report.nextActions.join("\n")).toContain("hoklims-devkit setup /repo --host codex");
+    }
+  });
+
+  test("unsafe recorded and pending Semctx plans recover through admitted safe upgrades", async () => {
+    const unsafeVersions = ["semctx@0.3.3", "semctx@0.3.4", "semctx@0.3.5"];
+    const assertFiles = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const recordedState = {
+      schemaVersion: 1, projectRoot: "/repo", components: {
+        semctx: { version: "0.3.5", hosts: ["codex", "claude"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+    };
+    const recorded = fakeRuntime({ state: structuredClone(recordedState), tools: ["node", "npm"], files: { ...assertFiles } });
+    const recordedReport = await execute(setupOptions(), recorded);
+    const recordedGuidance = recordedReport.nextActions.join("\n");
+    expect(recordedReport.conflicts.map((item) => item.code)).toContain("SEMCTX_VERSION_UNSAFE");
+    expect(recordedGuidance).toContain("restore the claude CLI on PATH before running hoklims-devkit upgrade /repo --host all --with assertledger");
+    expect(recordedGuidance).not.toContain("--refresh-pending");
+    expect(recordedGuidance).not.toContain("hoklims-devkit setup");
+    expect(recorded.calls.flat().some((argument) => unsafeVersions.includes(String(argument)))).toBe(false);
+    expect(recorded.writes).toHaveLength(0);
+
+    const admittedRecorded = fakeRuntime({ state: structuredClone(recordedState), version: "0.3.7", stable: "0.3.7", tools: ["node", "npm", "claude"], files: { ...assertFiles } });
+    const admittedRecordedReport = await execute({
+      ...parseArgs(["upgrade", "/repo", "--host", "all", "--with", "assertledger"]), dryRun: true,
+    }, admittedRecorded);
+    expect(admittedRecordedReport.ok).toBe(true);
+    expect(admittedRecorded.calls.some((argv) => argv.includes("semctx@0.3.7"))).toBe(true);
+    expect(admittedRecorded.calls.flat().some((argument) => unsafeVersions.includes(String(argument)))).toBe(false);
+
+    const pendingState = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.5", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.5" } },
+    };
+    const pending = fakeRuntime({ state: structuredClone(pendingState), version: "0.3.7", stable: "0.3.7", tools: ["claude"] });
+    const pendingReport = await execute(parseArgs(["setup", "/repo", "--host", "claude"]), pending);
+    const pendingGuidance = pendingReport.nextActions.join("\n");
+    expect(pendingReport.conflicts.map((item) => item.code)).toContain("SEMCTX_VERSION_UNSAFE");
+    expect(pendingGuidance).toContain("hoklims-devkit upgrade /repo --host all --refresh-pending");
+    expect(pendingGuidance).not.toContain("hoklims-devkit setup");
+    expect(pending.calls.flat().some((argument) => unsafeVersions.includes(String(argument)))).toBe(false);
+    expect(pending.writes).toHaveLength(0);
+
+    const admittedPending = fakeRuntime({ state: structuredClone(pendingState), version: "0.3.7", stable: "0.3.7", tools: ["claude"] });
+    const admittedPendingReport = await execute({
+      ...parseArgs(["upgrade", "/repo", "--host", "all", "--refresh-pending"]), dryRun: true,
+    }, admittedPending);
+    expect(admittedPendingReport.ok).toBe(true);
+
+    const doctor = fakeRuntime({ state: { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.5", hosts: ["codex"] },
+    } } });
+    const doctorReport = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), doctor);
+    expect(doctorReport.conflicts.map((item) => item.code)).toContain("SEMCTX_VERSION_UNSAFE");
+    expect(doctorReport.components[0]).toEqual({
+      name: "semctx", version: "0.3.5", installed: "unknown", configured: "unknown",
+      loaded: "unknown", approved: "unknown", observed: "unknown",
+    });
+    expect(doctorReport.nextActions.join("\n")).toContain("hoklims-devkit upgrade /repo --host codex");
+    expect(doctor.calls.flat().some((argument) => unsafeVersions.includes(String(argument)))).toBe(false);
+
+    const mixedDoctor = fakeRuntime({ state: {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.7", hosts: ["codex"] } },
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+    }, version: "0.3.7", stable: "0.3.7" });
+    const mixedDoctorReport = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), mixedDoctor);
+    expect(mixedDoctorReport.conflicts.map((item) => item.code)).toContain("SEMCTX_VERSION_UNSAFE");
+    expect(mixedDoctorReport.components[0]).toEqual({
+      name: "semctx", version: "0.3.5", installed: "unknown", configured: "unknown",
+      loaded: "unknown", approved: "unknown", observed: "unknown",
+    });
+    expect(mixedDoctorReport.nextActions.join("\n")).toContain("hoklims-devkit upgrade /repo --host codex --refresh-pending");
+    expect(mixedDoctorReport.nextActions.join("\n")).not.toContain("hoklims-devkit setup");
+    expect(mixedDoctor.calls.flat().some((argument) => unsafeVersions.includes(String(argument)))).toBe(false);
+    expect(mixedDoctor.writes).toHaveLength(0);
+  });
+
+  test("Semctx 0.3.6 reaches safe preflight for Codex Claude and all hosts", async () => {
+    for (const host of ["codex", "claude", "all"]) {
+      const rt = fakeRuntime({ version: "0.3.6", stable: "0.3.6", tools: ["claude"] });
+      const report = await execute({ ...parseArgs(["setup", "/repo", "--host", host]), dryRun: true }, rt);
+      expect(report.ok, host).toBe(true);
+      expect(rt.calls.some((argv) => argv.includes("semctx@0.3.6") && argv.includes("plugin-status"))).toBe(true);
+      expect(rt.writes).toHaveLength(0);
+    }
   });
 
   test("fresh registry and preflight failures include the complete admitted retry", async () => {
@@ -257,7 +353,7 @@ describe("public CLI", () => {
   test("native stream failures retain the validated report and saved retry", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo", components: {},
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" } },
     };
     const streamError = Object.assign(new Error("simulated stdout read failure"), { code: "EIO" });
     const native = createRuntime({
@@ -295,7 +391,7 @@ describe("public CLI", () => {
         command: "setup",
         selected: ["semctx"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.4" },
+        versions: { semctx: "0.3.6" },
       },
     };
     for (const failure of ["bun", "git"]) {
@@ -401,7 +497,7 @@ describe("public CLI", () => {
   });
 
   test("a malformed Semctx installed version blocks before any write", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd) => {
@@ -440,7 +536,7 @@ describe("public CLI", () => {
     const rt = fakeRuntime();
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd) => argv.includes("install") && argv.includes("--dry-run")
-      ? { code: 0, stdout: JSON.stringify({ ok: true, version: "0.3.4", dryRun: true, selection: "codex", hosts: {} }), stderr: "" }
+      ? { code: 0, stdout: JSON.stringify({ ok: true, version: "0.3.6", dryRun: true, selection: "codex", hosts: {} }), stderr: "" }
       : nativeExec(argv, cwd);
     const report = await execute(setupOptions(), rt);
     expect(report.ok).toBe(false);
@@ -485,7 +581,7 @@ describe("public CLI", () => {
       expect(report.components[0]).toMatchObject({ state: "partial", installed: "unknown", configured: "unknown" });
       expect(setupWrites(rt)).toBe(0);
       expect(rt.writes).toHaveLength(1);
-      expect(rt.writes[0].inProgress).toEqual({ command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } });
+      expect(rt.writes[0].inProgress).toEqual({ command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" } });
     }
 
     const valid = fakeRuntime();
@@ -496,7 +592,7 @@ describe("public CLI", () => {
   });
 
   test("Semctx plugin status naming another repository blocks all writes", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd) => {
@@ -516,8 +612,8 @@ describe("public CLI", () => {
     expect(report.ok).toBe(true);
     expect(report.components[0].state).toBe("configured");
     expect(rt.writes).toHaveLength(3);
-    expect(rt.writes[0].inProgress.versions.semctx).toBe("0.3.4");
-    expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.4", hosts: ["codex"] });
+    expect(rt.writes[0].inProgress.versions.semctx).toBe("0.3.6");
+    expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.6", hosts: ["codex"] });
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
     expect(report.components[0].loaded).toBe("unknown");
   });
@@ -553,25 +649,25 @@ describe("public CLI", () => {
   });
 
   test("setup keeps the recorded version; only upgrade resolves latest", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
-    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5", state });
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ version: "0.3.7", stable: "0.3.7", state });
     const report = await execute({ ...setupOptions(), dryRun: true }, rt);
     expect(report.ok).toBe(true);
-    expect(report.components[0].version).toBe("0.3.4");
+    expect(report.components[0].version).toBe("0.3.6");
     expect(rt.writes).toHaveLength(0);
     expect(rt.calls.some((args) => args.includes("install"))).toBe(false);
     const upgrade = await execute({ ...setupOptions(), command: "upgrade", dryRun: true }, rt);
-    expect(upgrade.components[0].version).toBe("0.3.5");
+    expect(upgrade.components[0].version).toBe("0.3.7");
   });
 
   test("a pending setup cannot change an already recorded component version", async () => {
     const state = {
       schemaVersion: 1,
       projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.7" } },
     };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7" });
     const report = await execute(setupOptions(), rt);
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
     expect(rt.calls).toHaveLength(2);
@@ -580,7 +676,7 @@ describe("public CLI", () => {
 
   test("narrow setup checkpoints preserve managed components outside its scope", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex"] },
+      semctx: { version: "0.3.6", hosts: ["codex"] },
       assertledger: { version: "1.2.0", hosts: ["codex"] },
     } };
     const rt = fakeRuntime({ state, tools: ["claude"] });
@@ -595,7 +691,7 @@ describe("public CLI", () => {
     const interrupted = await execute(options, rt);
     expect(interrupted.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
     expect(rt.writes[0].inProgress).toEqual({
-      command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.4" },
+      command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.6" },
     });
     expect(rt.writes[0].components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
     interrupt = false;
@@ -608,7 +704,7 @@ describe("public CLI", () => {
 
   test("explicit upgrade scope preserves and resumes components outside its scope", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex"] },
+      semctx: { version: "0.3.6", hosts: ["codex"] },
       assertledger: { version: "1.2.0", hosts: ["codex"] },
       "latent-compass": { version: "0.3.0", hosts: ["codex"] },
     } };
@@ -618,7 +714,7 @@ describe("public CLI", () => {
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm"], files });
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7", tools: ["node", "npm"], files });
     const writeState = rt.writeState;
     rt.writeState = (path, value) => writeState(path, validateState(value));
     const nativeExec = rt.exec;
@@ -639,8 +735,8 @@ describe("public CLI", () => {
   });
 
   test("adding a host cannot silently move an older Semctx install to current stable", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
-    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5", state, tools: ["claude"] });
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ version: "0.3.7", stable: "0.3.7", state, tools: ["claude"] });
     const report = await execute(parseArgs(["setup", "/repo", "--host", "all"]), rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
@@ -652,7 +748,7 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1,
       projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["claude"] } },
+      components: { semctx: { version: "0.3.6", hosts: ["claude"] } },
     };
     const rt = fakeRuntime({ state });
     const report = await execute(setupOptions(), rt);
@@ -661,7 +757,7 @@ describe("public CLI", () => {
   });
 
   test("doctor keeps unobserved session and approval unknown", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
@@ -670,12 +766,12 @@ describe("public CLI", () => {
   });
 
   test("doctor keeps Semctx installation unknown without positive content attestation", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd) => argv.includes("plugin-status")
       ? { code: 3, stdout: JSON.stringify({ schemaVersion: 2, kind: "plugin_delivery_status", hosts: {
-        codex: { requested: true, installed: { version: "0.3.4", contentMatchesSnapshot: null }, marketplace: { matchesSemctx: true } },
+        codex: { requested: true, installed: { version: "0.3.6", contentMatchesSnapshot: null }, marketplace: { matchesSemctx: true } },
       } }), stderr: "" }
       : nativeExec(argv, cwd);
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
@@ -684,7 +780,7 @@ describe("public CLI", () => {
   });
 
   test("doctor refuses zero-exit Semctx diagnostics with missing readiness fields", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd) => argv.includes("doctor") || argv.includes("index-health")
@@ -697,8 +793,8 @@ describe("public CLI", () => {
   test("doctor rejects malformed check entries while preserving the saved retry", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" } },
     };
     for (const malformed of [false, true]) {
       const rt = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
@@ -722,7 +818,7 @@ describe("public CLI", () => {
   });
 
   test("doctor rejects a Semctx diagnostic naming another repository", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state, workspaceReady: true });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd) => {
@@ -736,7 +832,7 @@ describe("public CLI", () => {
   });
 
   test("doctor preserves unknown configuration when native diagnostics are unavailable", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd) => argv.includes("doctor") || argv.includes("index-health")
@@ -774,7 +870,7 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
       components: { assertledger: { version: "1.2.0", hosts: ["codex"] } },
-      inProgress: { command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"], versions: { semctx: "0.3.4", assertledger: "1.2.0" } },
+      inProgress: { command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"], versions: { semctx: "0.3.6", assertledger: "1.2.0" } },
     };
     const files = {
       [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
@@ -883,7 +979,7 @@ describe("public CLI", () => {
     });
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] }, assertledger: { version: "1.2.0", hosts: ["codex"] } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] }, assertledger: { version: "1.2.0", hosts: ["codex"] } },
     };
     for (const phase of ["doctor", "preflight", "apply"]) {
       for (const scenario of ["read-only", "read-close", "read-close-ancestry-io", "ownership-ancestry-io"]) {
@@ -959,7 +1055,7 @@ describe("public CLI", () => {
 
   test("doctor distinguishes an absent AssertLedger install from drift, partial metadata, and I/O failure", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex"] },
+      semctx: { version: "0.3.6", hosts: ["codex"] },
       assertledger: { version: "1.2.0", hosts: ["codex"] },
     } };
     const manifestPath = join("/repo", "package.json");
@@ -1026,7 +1122,7 @@ describe("public CLI", () => {
     const pendingState = structuredClone(state);
     pendingState.inProgress = {
       command: "upgrade", selected: ["semctx", "assertledger"], hosts: ["codex"],
-      versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      versions: { semctx: "0.3.6", assertledger: "1.3.0" },
     };
     const pendingFiles = {
       ...baseFiles,
@@ -1080,7 +1176,7 @@ describe("public CLI", () => {
   test("doctor accepts configured Compass status when Windows observation enumeration is unavailable", async () => {
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex"] },
+      semctx: { version: "0.3.6", hosts: ["codex"] },
       "latent-compass": { version: "0.3.0", hosts: ["codex"] },
     } };
     const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, workspaceReady: true });
@@ -1215,8 +1311,8 @@ describe("public CLI", () => {
   test("setup preserves unknown Semctx workspace evidence as a typed conflict", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" } },
     };
     const setupWrites = (rt) => rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run")).length;
 
@@ -1247,7 +1343,7 @@ describe("public CLI", () => {
   });
 
   test("release skew prevents writes", async () => {
-    const rt = fakeRuntime({ version: "0.3.4", stable: "0.3.5" });
+    const rt = fakeRuntime({ version: "0.3.6", stable: "0.3.7" });
     const report = await execute(setupOptions(), rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts[0].code).toBe("RELEASE_SKEW_OR_UNAVAILABLE");
@@ -1318,7 +1414,7 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo", components: {},
       inProgress: {
         command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.2.0" },
       },
     };
     const baseFiles = {
@@ -1494,12 +1590,12 @@ describe("public CLI", () => {
     const pendingUpgrade = {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
       },
       inProgress: {
         command: "upgrade", selected: ["semctx", "assertledger"], hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.3.0" },
       },
     };
     const beforeInstallFiles = filesAt();
@@ -1566,7 +1662,7 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+        semctx: { version: "0.3.6", hosts: ["codex", "claude"] },
         assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
       },
     };
@@ -1652,12 +1748,12 @@ describe("public CLI", () => {
       const state = scenario.saved ? {
         schemaVersion: 1, projectRoot: "/repo",
         components: {
-          semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+          semctx: { version: "0.3.6", hosts: ["codex", "claude"] },
           assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
         },
         inProgress: {
           command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex", "claude"],
-          versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+          versions: { semctx: "0.3.6", assertledger: "1.2.0" },
         },
       } : null;
       const rt = fakeRuntime({ state, tools: ["node", "npm", scenario.manager, "claude"], files: filesFor(scenario.manager) });
@@ -1723,7 +1819,7 @@ describe("public CLI", () => {
 
   test("doctor refuses readiness when AssertLedger prerequisites change between host previews", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+      semctx: { version: "0.3.6", hosts: ["codex", "claude"] },
       assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
     } };
     const files = {
@@ -1822,7 +1918,7 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo", components: {},
       inProgress: {
         command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.2.0" },
       },
     };
     for (const artifacts of [[null], {}]) {
@@ -1894,16 +1990,16 @@ describe("public CLI", () => {
       {
         schemaVersion: 1,
         projectRoot: "/repo",
-        components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+        components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
         inProgress: {
           command: "upgrade",
           selected: ["semctx", "assertledger"],
           hosts: ["codex"],
-          versions: { semctx: "0.3.4", assertledger: "1.4.0" },
+          versions: { semctx: "0.3.6", assertledger: "1.4.0" },
         },
       },
     ]) {
-      const rt = fakeRuntime({ state, version: "0.3.4", tools: ["node", "npm"], files });
+      const rt = fakeRuntime({ state, version: "0.3.6", tools: ["node", "npm"], files });
       const fetchJson = rt.fetchJson;
       rt.fetchJson = async (url) => url.includes("registry.npmjs.org/assertledger")
         ? { version: "1.4.0" } : fetchJson(url);
@@ -1916,7 +2012,7 @@ describe("public CLI", () => {
 
   test("a malformed installed AssertLedger package blocks package mutation", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.5", hosts: ["codex"] },
+      semctx: { version: "0.3.7", hosts: ["codex"] },
       assertledger: { version: "1.3.0", hosts: ["codex"] },
     } };
     for (const packageData of [JSON.stringify({ version: "bad" }), JSON.stringify({}), "not-json"]) {
@@ -1926,7 +2022,7 @@ describe("public CLI", () => {
         [join("/repo", "node_modules", "assertledger", "package.json")]: packageData,
         [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
       };
-      const rt = fakeRuntime({ state: structuredClone(state), version: "0.3.5", tools: ["node", "npm"], files });
+      const rt = fakeRuntime({ state: structuredClone(state), version: "0.3.7", tools: ["node", "npm"], files });
       const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
       expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
       expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
@@ -1939,14 +2035,14 @@ describe("public CLI", () => {
       schemaVersion: 1,
       projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
       },
       inProgress: {
         command: "upgrade",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.3.0" },
       },
     };
     const cliPath = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
@@ -2109,14 +2205,14 @@ describe("public CLI", () => {
       schemaVersion: 1,
       projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
       },
       inProgress: {
         command: "upgrade",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.3.0" },
       },
     };
     const cliPath = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
@@ -2199,14 +2295,14 @@ describe("public CLI", () => {
       schemaVersion: 1,
       projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
       },
       inProgress: {
         command: "upgrade",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.3.0" },
       },
     };
     const files = {
@@ -2228,14 +2324,14 @@ describe("public CLI", () => {
       schemaVersion: 1,
       projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
       },
       inProgress: {
         command: "upgrade",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.3.0" },
       },
     };
     for (const scenario of [
@@ -2503,13 +2599,13 @@ describe("public CLI", () => {
     expect(report.components.map((item) => item.state)).toEqual(["configured", "partial"]);
     expect(rt.writes).toHaveLength(2);
     expect(rt.writes[0].inProgress.versions.assertledger).toBe("1.2.0");
-    expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.4");
+    expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.6");
     expect(rt.writes.at(-1).components.assertledger).toBeUndefined();
   });
 
   test("AssertLedger write needs an unchanged native post-install preview", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex"] },
+      semctx: { version: "0.3.6", hosts: ["codex"] },
       assertledger: { version: "1.2.0", hosts: ["codex"] },
     } };
     const files = {
@@ -2535,7 +2631,7 @@ describe("public CLI", () => {
 
   test("AssertLedger cannot report configured when nested native outcomes conflict", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex"] },
+      semctx: { version: "0.3.6", hosts: ["codex"] },
       assertledger: { version: "1.2.0", hosts: ["codex"] },
     } };
     const files = {
@@ -2558,7 +2654,7 @@ describe("public CLI", () => {
   });
 
   test("interrupted host expansion preserves both selected hosts in its pending plan", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state, tools: ["claude"] });
     const nativeExec = rt.exec;
     let interrupt = true;
@@ -2610,7 +2706,7 @@ describe("public CLI", () => {
   });
 
   test("a missing recorded Semctx host is reinstalled instead of reported installed", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state, semctxMissing: true });
     const report = await execute(setupOptions(), rt);
     expect(report.ok).toBe(true);
@@ -2619,7 +2715,7 @@ describe("public CLI", () => {
   });
 
   test("altered Semctx plugin bytes block before workspace or host writes", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state, semctxContentDrift: true });
     const report = await execute(setupOptions(), rt);
     expect(report.ok).toBe(false);
@@ -2629,8 +2725,8 @@ describe("public CLI", () => {
   });
 
   test("Semctx upgrade never replaces an installed version with altered bytes", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", semctxContentDrift: true });
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7", semctxContentDrift: true });
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_DRIFT");
     expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
@@ -2638,7 +2734,7 @@ describe("public CLI", () => {
   });
 
   test("Semctx setup never replaces installed bytes without positive content attestation", async () => {
-    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5", installedSemctxVersion: "0.3.5" });
+    const rt = fakeRuntime({ version: "0.3.7", stable: "0.3.7", installedSemctxVersion: "0.3.7" });
     const nativeExec = rt.exec;
     let statusCalls = 0;
     rt.exec = async (argv, cwd, timeout) => {
@@ -2657,8 +2753,8 @@ describe("public CLI", () => {
   test("a pinned same-version upgrade does not overwrite modified Semctx plugin bytes", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
-      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" } },
     };
     const rt = fakeRuntime({ state, semctxContentDrift: true });
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
@@ -2669,7 +2765,7 @@ describe("public CLI", () => {
   });
 
   test("a foreign Semctx marketplace blocks before workspace setup", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state, semctxMarketplaceMatch: false });
     const report = await execute(setupOptions(), rt);
     expect(report.ok).toBe(false);
@@ -2681,20 +2777,20 @@ describe("public CLI", () => {
   test("an interrupted upgrade accepts its already installed pinned Semctx version", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
-      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.7" } },
     };
-    const rt = fakeRuntime({ state, version: "0.3.6", stable: "0.3.6", installedSemctxVersion: "0.3.5" });
+    const rt = fakeRuntime({ state, version: "0.3.8", stable: "0.3.8", installedSemctxVersion: "0.3.7" });
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(true);
-    expect(report.components[0].version).toBe("0.3.5");
+    expect(report.components[0].version).toBe("0.3.7");
     expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
-    expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.5");
+    expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.7");
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
   });
 
   test("a failed same-version upgrade pins its version before native writes", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state });
     const nativeExec = rt.exec;
     rt.exec = async (argv, cwd) => argv.includes("setup") && !argv.includes("--dry-run")
@@ -2702,23 +2798,23 @@ describe("public CLI", () => {
     const options = parseArgs(["upgrade", "/repo", "--host", "codex"]);
     const interrupted = await execute(options, rt);
     expect(interrupted.ok).toBe(false);
-    expect(rt.writes.at(-1).inProgress.versions.semctx).toBe("0.3.4");
+    expect(rt.writes.at(-1).inProgress.versions.semctx).toBe("0.3.6");
     rt.exec = nativeExec;
     const originalFetch = rt.fetchJson;
-    rt.fetchJson = async (url) => url.includes("semctx") ? { version: "0.3.5" } : originalFetch(url);
+    rt.fetchJson = async (url) => url.includes("semctx") ? { version: "0.3.7" } : originalFetch(url);
     const resumed = await execute(options, rt);
     expect(resumed.ok).toBe(true);
-    expect(resumed.components[0].version).toBe("0.3.4");
+    expect(resumed.components[0].version).toBe("0.3.6");
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
   });
 
   test("an interrupted upgrade can explicitly refresh a now-unavailable stable plan", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
-      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.7" } },
     };
-    const rt = fakeRuntime({ state, version: "0.3.6", stable: "0.3.6" });
+    const rt = fakeRuntime({ state, version: "0.3.8", stable: "0.3.8" });
     const pinned = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
     expect(pinned.ok).toBe(false);
     expect(pinned.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
@@ -2726,18 +2822,18 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
     const refreshed = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
     expect(refreshed.ok).toBe(true);
-    expect(refreshed.components[0].version).toBe("0.3.6");
-    expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.6");
+    expect(refreshed.components[0].version).toBe("0.3.8");
+    expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.8");
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
   });
 
   test("refreshing a pending plan cannot silently drop its other host", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex", "claude"], versions: { semctx: "0.3.4" } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex", "claude"], versions: { semctx: "0.3.6" } },
     };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7", tools: ["claude"] });
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("PENDING_PLAN_CONFLICT");
@@ -2753,17 +2849,17 @@ describe("public CLI", () => {
       schemaVersion: 1,
       projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
       },
       inProgress: {
         command: "setup",
         selected: ["semctx"],
         hosts: ["claude"],
-        versions: { semctx: "0.3.4" },
+        versions: { semctx: "0.3.6" },
       },
     };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7", tools: ["claude"] });
     const which = rt.which;
     rt.which = (name) => name === "codex" ? null : which(name);
     const writeState = rt.writeState;
@@ -2782,7 +2878,7 @@ describe("public CLI", () => {
     const refreshed = await execute(parseArgs(["upgrade", "/repo", "--host", "all", "--refresh-pending"]), rt);
     expect(refreshed.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
     expect(rt.writes[0].inProgress).toEqual({
-      command: "upgrade", selected: ["semctx"], hosts: ["codex", "claude"], versions: { semctx: "0.3.5" },
+      command: "upgrade", selected: ["semctx"], hosts: ["codex", "claude"], versions: { semctx: "0.3.7" },
     });
     expect(rt.writes[0].components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
     interrupt = false;
@@ -2797,10 +2893,10 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         "latent-compass": { version: "0.2.0", hosts: ["codex"] },
       },
-      inProgress: { command: "upgrade", selected: ["semctx", "latent-compass"], hosts: ["codex"], versions: { semctx: "0.3.4", "latent-compass": "0.3.0" } },
+      inProgress: { command: "upgrade", selected: ["semctx", "latent-compass"], hosts: ["codex"], versions: { semctx: "0.3.6", "latent-compass": "0.3.0" } },
     };
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
     const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, uvInstalled: true });
@@ -2833,7 +2929,7 @@ describe("public CLI", () => {
 
   test("a Compass install response needs independent native status readback", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex"] },
+      semctx: { version: "0.3.6", hosts: ["codex"] },
       "latent-compass": { version: "0.3.0", hosts: ["codex"] },
     } };
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
@@ -2855,7 +2951,7 @@ describe("public CLI", () => {
   });
 
   test("Compass setup accepts a configured install when Windows observation enumeration is unavailable", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
     const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, workspaceReady: true });
     const nativeExec = rt.exec;
@@ -2881,7 +2977,7 @@ describe("public CLI", () => {
   test("Compass setup rejects observation-unknown status without exact unknown evidence", async () => {
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
     for (const observed of [true, false, undefined]) {
-      const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+      const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
       const rt = fakeRuntime({ state, tools: ["uv"], files: { [executable]: "shim" }, workspaceReady: true });
       const nativeExec = rt.exec;
       rt.exec = async (argv, cwd, timeout) => {
@@ -2907,7 +3003,7 @@ describe("public CLI", () => {
 
   test("Compass post-install status needs a matching host snapshot", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex"] },
+      semctx: { version: "0.3.6", hosts: ["codex"] },
       "latent-compass": { version: "0.3.0", hosts: ["codex"] },
     } };
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
@@ -2932,8 +3028,8 @@ describe("public CLI", () => {
   });
 
   test("upgrading one host cannot relabel an untouched host at the new version", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex", "claude"] } } };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex", "claude"] } } };
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7", tools: ["claude"] });
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
@@ -2943,9 +3039,9 @@ describe("public CLI", () => {
 
   test("shared-host upgrade advice names a missing host prerequisite before its retry", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+      semctx: { version: "0.3.6", hosts: ["codex", "claude"] },
     } };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7" });
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
     const detail = report.conflicts.map((item) => item.detail).join("\n");
     expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
@@ -2955,10 +3051,10 @@ describe("public CLI", () => {
 
   test("expanded shared-host recovery checks every host required by its all-host retry", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["claude"] },
+      semctx: { version: "0.3.6", hosts: ["claude"] },
     } };
     for (const codexDisappears of [false, true]) {
-      const rt = fakeRuntime({ state: structuredClone(state), version: "0.3.5", stable: "0.3.5", tools: ["claude"] });
+      const rt = fakeRuntime({ state: structuredClone(state), version: "0.3.7", stable: "0.3.7", tools: ["claude"] });
       if (codexDisappears) {
         const which = rt.which;
         let codexChecks = 0;
@@ -2983,11 +3079,11 @@ describe("public CLI", () => {
         command: "setup",
         selected: ["semctx", "assertledger"],
         hosts: ["codex", "claude"],
-        versions: { semctx: "0.3.5", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.7", assertledger: "1.2.0" },
       },
     };
     for (const host of ["all", "auto"]) {
-      const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+      const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7" });
       const report = await execute(parseArgs(["setup", "/repo", "--host", host, "--with", "assertledger"]), rt);
       const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
       expect(report.ok).toBe(false);
@@ -2999,11 +3095,11 @@ describe("public CLI", () => {
 
   test("shared-host upgrade advice preserves explicit component selectors", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+      semctx: { version: "0.3.6", hosts: ["codex", "claude"] },
       assertledger: { version: "1.2.0", hosts: ["codex"] },
       "latent-compass": { version: "0.3.0", hosts: ["codex"] },
     } };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm", "claude"] });
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7", tools: ["node", "npm", "claude"] });
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
     expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
     expect(report.conflicts.map((item) => item.detail).join("\n"))
@@ -3016,14 +3112,14 @@ describe("public CLI", () => {
       schemaVersion: 1,
       projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+        semctx: { version: "0.3.6", hosts: ["codex", "claude"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
       },
       inProgress: {
         command: "upgrade",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.2.0" },
       },
     };
     const files = {
@@ -3032,7 +3128,7 @@ describe("public CLI", () => {
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm", "claude"], files });
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7", tools: ["node", "npm", "claude"], files });
     const blocked = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]), rt);
     const guidance = [blocked.conflicts.map((item) => item.detail).join("\n"), blocked.nextActions.join("\n")].join("\n");
     expect(blocked.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
@@ -3044,7 +3140,7 @@ describe("public CLI", () => {
     const retried = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
     expect(retried.ok).toBe(true);
     expect(retried.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
-    expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.4", hosts: ["codex", "claude"] });
+    expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.6", hosts: ["codex", "claude"] });
     expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
   });
 
@@ -3092,7 +3188,7 @@ describe("public CLI", () => {
       });
       const seededState = seedCompleted ? {
         schemaVersion: 1, projectRoot: root,
-        components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+        components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
       } : null;
       if (seededState) native.writeState(statePath, seededState);
       commits = 0;
@@ -3155,7 +3251,7 @@ describe("public CLI", () => {
         const bytes = readFileSync(raced.statePath);
         if (replacement === "foreign") expect(bytes.toString("utf8")).toBe("FOREIGN NON-JSON BYTES");
         else expect(JSON.parse(bytes.toString("utf8")).inProgress).toEqual({
-          command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" },
+          command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" },
         });
       }
 
@@ -3169,7 +3265,7 @@ describe("public CLI", () => {
         expect(guidance).toContain("inspect and validate the saved Devkit state");
         expect(guidance).not.toContain("complete the recorded plan");
         if (replacement === "foreign") expect(readFileSync(noOp.statePath, "utf8")).toBe("FOREIGN NON-JSON BYTES");
-        else expect(JSON.parse(readFileSync(noOp.statePath, "utf8")).components.semctx.version).toBe("0.3.4");
+        else expect(JSON.parse(readFileSync(noOp.statePath, "utf8")).components.semctx.version).toBe("0.3.6");
       }
 
       const failed = await run({ replacement: "foreign", seedCompleted: true, nativeFailure: true });
@@ -3186,12 +3282,12 @@ describe("public CLI", () => {
     const lockedState = {
       schemaVersion: 1,
       projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
       inProgress: {
         command: "upgrade",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.5", assertledger: "1.3.0" },
+        versions: { semctx: "0.3.7", assertledger: "1.3.0" },
       },
     };
     const rt = fakeRuntime({ tools: ["node", "npm"], files: {
@@ -3220,7 +3316,7 @@ describe("public CLI", () => {
         command: "setup",
         selected: ["semctx"],
         hosts: ["claude"],
-        versions: { semctx: "0.3.4" },
+        versions: { semctx: "0.3.6" },
       },
     };
     const rt = fakeRuntime();
@@ -3244,7 +3340,7 @@ describe("public CLI", () => {
   test("STATE_CHANGED release failures keep the latest locked recovery plan", async () => {
     const lockedState = {
       schemaVersion: 1, projectRoot: "/repo", components: {},
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.4" } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.6" } },
     };
     const rt = fakeRuntime({ tools: ["claude"] });
     const which = rt.which;
@@ -3264,9 +3360,9 @@ describe("public CLI", () => {
   test("STATE_CHANGED invalidates an admitted refresh in favor of the latest saved plan", async () => {
     const lockedState = {
       schemaVersion: 1, projectRoot: "/repo", components: {},
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.5" } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.7" } },
     };
-    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    const rt = fakeRuntime({ version: "0.3.7", stable: "0.3.7" });
     let reads = 0;
     let released = false;
     rt.readState = () => ++reads === 1 ? null : structuredClone(lockedState);
@@ -3287,7 +3383,7 @@ describe("public CLI", () => {
     const root = "/repo  with 'quote";
     const lockedState = {
       schemaVersion: 1, projectRoot: root, components: {},
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.4" } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.6" } },
     };
     const rt = fakeRuntime({ tools: ["claude"] });
     rt.resolve = () => root;
@@ -3329,7 +3425,7 @@ describe("public CLI", () => {
   test("lock release ownership conflict makes recorded-plan recovery conditional", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo", components: {},
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" } },
     };
     const rt = fakeRuntime({ state });
     const nativeExec = rt.exec;
@@ -3490,7 +3586,7 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
       },
     };
@@ -3534,7 +3630,7 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
       },
     };
@@ -3581,7 +3677,7 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo", components: {},
       inProgress: {
         command: "setup", selected: ["semctx", "latent-compass"], hosts: ["codex"],
-        versions: { semctx: "0.3.4", "latent-compass": "0.3.0" },
+        versions: { semctx: "0.3.6", "latent-compass": "0.3.0" },
       },
     };
     const rejectedAssert = fakeRuntime({ state: savedCompass, tools: ["node", "npm"] });
@@ -3596,7 +3692,7 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo", components: {},
       inProgress: {
         command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.2.0" },
       },
     };
     const files = {
@@ -3619,7 +3715,7 @@ describe("public CLI", () => {
     const allComponents = {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
         "latent-compass": { version: "0.3.0", hosts: ["codex"] },
       },
@@ -3654,7 +3750,7 @@ describe("public CLI", () => {
     }
 
     const semctxOnly = fakeRuntime({
-      state: { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } },
+      state: { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } },
       tools: ["node", "uv"],
     });
     const nativeWhich = semctxOnly.which;
@@ -3678,9 +3774,9 @@ describe("public CLI", () => {
   test("STATE_CHANGED treats a locked absence as authoritative", async () => {
     const initialState = {
       schemaVersion: 1, projectRoot: "/repo", components: {},
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.7" } },
     };
-    const rt = fakeRuntime({ state: initialState, version: "0.3.5", stable: "0.3.5" });
+    const rt = fakeRuntime({ state: initialState, version: "0.3.7", stable: "0.3.7" });
     let reads = 0;
     let released = false;
     rt.readState = () => ++reads === 1 ? structuredClone(initialState) : null;
@@ -3698,9 +3794,9 @@ describe("public CLI", () => {
   test("a locked foreign state never becomes recovery authority", async () => {
     const foreignState = {
       schemaVersion: 1, projectRoot: "/other", components: {},
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.5" } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.7" } },
     };
-    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    const rt = fakeRuntime({ version: "0.3.7", stable: "0.3.7" });
     let reads = 0;
     let released = false;
     rt.readState = () => ++reads === 1 ? null : structuredClone(foreignState);
@@ -3717,10 +3813,10 @@ describe("public CLI", () => {
   test("an invalid locked reread invalidates refresh and requires state revalidation", async () => {
     const initialState = {
       schemaVersion: 1, projectRoot: "/repo", components: {},
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.7" } },
     };
     for (const locked of [{}, { schemaVersion: 1, projectRoot: "/other", components: {} }]) {
-      const rt = fakeRuntime({ state: initialState, version: "0.3.5", stable: "0.3.5" });
+      const rt = fakeRuntime({ state: initialState, version: "0.3.7", stable: "0.3.7" });
       let reads = 0;
       let released = false;
       rt.readState = () => ++reads === 1 ? structuredClone(initialState) : structuredClone(locked);
@@ -3739,10 +3835,10 @@ describe("public CLI", () => {
 
   test("doctor incomplete-plan detail and action include missing host repair", async () => {
     const state = {
-      schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.5", hosts: ["codex"] } },
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.5" } },
+      schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.7", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["claude"], versions: { semctx: "0.3.7" } },
     };
-    const rt = fakeRuntime({ state, version: "0.3.5", workspaceReady: true });
+    const rt = fakeRuntime({ state, version: "0.3.7", workspaceReady: true });
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
     const detail = report.conflicts.find((item) => item.code === "INCOMPLETE_OPERATION")?.detail ?? "";
     const expected = "Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host claude";
@@ -3756,7 +3852,7 @@ describe("public CLI", () => {
       components: { assertledger: { version: "1.2.0", hosts: ["codex"] } },
       inProgress: {
         command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.2.0" },
       },
     };
     const files = {
@@ -3782,7 +3878,7 @@ describe("public CLI", () => {
           command: "setup",
           selected: ["semctx", "latent-compass", "assertledger"],
           hosts: ["codex"],
-          versions: { semctx: "0.3.5", assertledger: "1.3.0", "latent-compass": "0.3.0" },
+          versions: { semctx: "0.3.7", assertledger: "1.3.0", "latent-compass": "0.3.0" },
         },
       },
       {
@@ -3791,7 +3887,7 @@ describe("public CLI", () => {
           command: "setup",
           selected: ["semctx"],
           hosts: ["claude", "codex"],
-          versions: { semctx: "0.3.5" },
+          versions: { semctx: "0.3.7" },
         },
       },
     ]) {
@@ -3805,13 +3901,13 @@ describe("public CLI", () => {
 
   test("every accepted pending upgrade host scope has an admitted retry", async () => {
     const cases = [
-      { existing: ["codex"], pending: ["codex"], from: "0.3.4", to: "0.3.5", valid: true },
-      { existing: ["claude"], pending: ["claude"], from: "0.3.4", to: "0.3.5", valid: true },
-      { existing: ["codex", "claude"], pending: ["codex", "claude"], from: "0.3.4", to: "0.3.5", valid: true },
-      { existing: ["codex", "claude"], pending: ["codex"], from: "0.3.4", to: "0.3.5", valid: false },
-      { existing: ["codex", "claude"], pending: ["claude"], from: "0.3.4", to: "0.3.5", valid: false },
-      { existing: ["codex", "claude"], pending: ["codex"], from: "0.3.4", to: "0.3.4", valid: true },
-      { existing: ["codex", "claude"], pending: ["claude"], from: "0.3.4", to: "0.3.4", valid: true },
+      { existing: ["codex"], pending: ["codex"], from: "0.3.6", to: "0.3.7", valid: true },
+      { existing: ["claude"], pending: ["claude"], from: "0.3.6", to: "0.3.7", valid: true },
+      { existing: ["codex", "claude"], pending: ["codex", "claude"], from: "0.3.6", to: "0.3.7", valid: true },
+      { existing: ["codex", "claude"], pending: ["codex"], from: "0.3.6", to: "0.3.7", valid: false },
+      { existing: ["codex", "claude"], pending: ["claude"], from: "0.3.6", to: "0.3.7", valid: false },
+      { existing: ["codex", "claude"], pending: ["codex"], from: "0.3.6", to: "0.3.6", valid: true },
+      { existing: ["codex", "claude"], pending: ["claude"], from: "0.3.6", to: "0.3.6", valid: true },
     ];
     for (const scenario of cases) {
       const state = {
@@ -3896,7 +3992,7 @@ describe("public CLI", () => {
   });
 
   test("an unreadable initial state remains unobserved during refresh recovery", async () => {
-    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    const rt = fakeRuntime({ version: "0.3.7", stable: "0.3.7" });
     rt.readState = () => { throw Object.assign(new Error("state access denied"), { code: "EACCES" }); };
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
@@ -3911,18 +4007,18 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1,
       projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
       inProgress: {
         command: "setup",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.3.0" },
       },
     };
     const rt = fakeRuntime({
       state,
-      version: "0.3.5",
-      stable: "0.3.5",
+      version: "0.3.7",
+      stable: "0.3.7",
       tools: ["node", "npm"],
       files: {
         [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
@@ -3940,8 +4036,8 @@ describe("public CLI", () => {
 
     const checkpoint = fakeRuntime({
       state: structuredClone(state),
-      version: "0.3.5",
-      stable: "0.3.5",
+      version: "0.3.7",
+      stable: "0.3.7",
       tools: ["node", "npm"],
       files: {
         [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
@@ -3966,18 +4062,18 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1,
       projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
       inProgress: {
         command: "setup",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.3.0" },
       },
     };
     const rt = fakeRuntime({
       state,
-      version: "0.3.5",
-      stable: "0.3.5",
+      version: "0.3.7",
+      stable: "0.3.7",
       tools: ["node", "npm"],
       failAssertInstall: true,
       files: {
@@ -4086,7 +4182,7 @@ describe("public CLI", () => {
 
     const pending = {
       schemaVersion: 1, projectRoot: "/repo", components: {},
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" } },
     };
     const interruptedRelease = fakeRuntime({ state: pending });
     const nativeExec = interruptedRelease.exec;
@@ -4169,15 +4265,15 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1,
       projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
       inProgress: {
         command: "upgrade",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.5", assertledger: "1.3.0" },
+        versions: { semctx: "0.3.7", assertledger: "1.3.0" },
       },
     };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm"], files: {
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7", tools: ["node", "npm"], files: {
       [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
     } });
@@ -4196,10 +4292,10 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1,
       projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
-      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" } },
     };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.7" });
     rt.acquireLock = () => { throw Object.assign(new Error("Another operation is running"), { code: "RUN_LOCKED" }); };
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
@@ -4210,7 +4306,7 @@ describe("public CLI", () => {
   });
 
   test("fresh refresh lock contention preserves the requested refresh phase", async () => {
-    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    const rt = fakeRuntime({ version: "0.3.7", stable: "0.3.7" });
     rt.acquireLock = () => { throw Object.assign(new Error("Another operation is running"), { code: "RUN_LOCKED" }); };
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
@@ -4228,7 +4324,7 @@ describe("public CLI", () => {
         command: "setup",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.6", assertledger: "1.2.0" },
       },
     };
     const files = {
@@ -4237,7 +4333,7 @@ describe("public CLI", () => {
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
-    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.6", tools: ["node", "npm"], files });
+    const rt = fakeRuntime({ state, version: "0.3.7", stable: "0.3.8", tools: ["node", "npm"], files });
     const report = await execute(parseArgs([
       "upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending",
     ]), rt);
@@ -4253,10 +4349,10 @@ describe("public CLI", () => {
       projectRoot: "/repo",
       components: {},
       inProgress: {
-        command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" },
+        command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" },
       },
     };
-    const rt = fakeRuntime({ state, version: "0.3.4", stable: "0.3.4", setup: { kind: "invalid-plan" } });
+    const rt = fakeRuntime({ state, version: "0.3.6", stable: "0.3.6", setup: { kind: "invalid-plan" } });
     const report = await execute(parseArgs(["setup", "/repo", "--host", "codex"]), rt);
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_WORKSPACE_CONFLICT");
     expect(report.nextActions).toContain("Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex");
@@ -4278,7 +4374,7 @@ describe("public CLI", () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
-        semctx: { version: "0.3.4", hosts: ["codex"] },
+        semctx: { version: "0.3.6", hosts: ["codex"] },
         assertledger: { version: "1.2.0", hosts: ["codex"] },
       },
     };
@@ -4375,7 +4471,7 @@ describe("public CLI", () => {
   });
 
   test("setup pins unmanaged and declared versions without registry refresh", async () => {
-    const semctx = fakeRuntime({ version: "0.3.5", installedSemctxVersion: "0.3.4" });
+    const semctx = fakeRuntime({ version: "0.3.7", installedSemctxVersion: "0.3.6" });
     const semctxReport = await execute(setupOptions(), semctx);
     expect(semctxReport.ok).toBe(false);
     expect(semctxReport.conflicts.map((item) => item.code)).toContain("EXISTING_VERSION");
@@ -4482,28 +4578,28 @@ describe("public CLI", () => {
   test("setup preserves recorded pending and uv-installed versions without registry refresh", async () => {
     const recordedState = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      components: { semctx: { version: "0.3.6", hosts: ["codex"] } },
     };
-    const recorded = fakeRuntime({ state: recordedState, version: "0.3.5", stable: "0.3.5" });
+    const recorded = fakeRuntime({ state: recordedState, version: "0.3.7", stable: "0.3.7" });
     const recordedFetch = recorded.fetchJson;
     recorded.fetchJson = async (url) => url.includes("registry.npmjs.org/semctx")
       ? Promise.reject(new Error("recorded Semctx queried the registry")) : recordedFetch(url);
     const recordedReport = await execute({ ...setupOptions(), dryRun: true }, recorded);
     expect(recordedReport.ok).toBe(true);
-    expect(recordedReport.components[0].version).toBe("0.3.4");
+    expect(recordedReport.components[0].version).toBe("0.3.6");
     expect(recorded.writes).toHaveLength(0);
 
     const pendingState = {
       ...structuredClone(recordedState),
-      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+      inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.7" } },
     };
-    const pending = fakeRuntime({ state: pendingState, version: "0.3.6", stable: "0.3.6", installedSemctxVersion: "0.3.5" });
+    const pending = fakeRuntime({ state: pendingState, version: "0.3.8", stable: "0.3.8", installedSemctxVersion: "0.3.7" });
     const pendingFetch = pending.fetchJson;
     pending.fetchJson = async (url) => url.includes("registry.npmjs.org/semctx")
       ? Promise.reject(new Error("pending Semctx queried the registry")) : pendingFetch(url);
     const pendingReport = await execute({ ...parseArgs(["upgrade", "/repo", "--host", "codex"]), dryRun: true }, pending);
     expect(pendingReport.ok).toBe(true);
-    expect(pendingReport.components[0].version).toBe("0.3.5");
+    expect(pendingReport.components[0].version).toBe("0.3.7");
     expect(pending.writes).toHaveLength(0);
 
     const compass = fakeRuntime({ tools: ["uv"], uvInstalled: true });
@@ -4517,7 +4613,7 @@ describe("public CLI", () => {
     expect(compassReport.components.find((item) => item.name === "latent-compass").version).toBe("0.3.0");
     expect(compass.writes).toHaveLength(0);
 
-    const drift = fakeRuntime({ state: recordedState, installedSemctxVersion: "0.3.5" });
+    const drift = fakeRuntime({ state: recordedState, installedSemctxVersion: "0.3.7" });
     const driftReport = await execute(setupOptions(), drift);
     expect(driftReport.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
     expect(drift.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
@@ -4527,7 +4623,7 @@ describe("public CLI", () => {
   test("Compass apply and status reports keep configuration and identity independent", async () => {
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      semctx: { version: "0.3.4", hosts: ["codex"] },
+      semctx: { version: "0.3.6", hosts: ["codex"] },
       "latent-compass": { version: "0.3.0", hosts: ["codex"] },
     } };
 
@@ -4637,7 +4733,7 @@ describe("public CLI", () => {
     }
 
     for (const field of ["doctor-version", "index-kind", "index-partial"]) {
-      const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+      const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.6", hosts: ["codex"] } } };
       const rt = fakeRuntime({ state, workspaceReady: true });
       const nativeExec = rt.exec;
       rt.exec = async (argv, cwd, timeout) => {

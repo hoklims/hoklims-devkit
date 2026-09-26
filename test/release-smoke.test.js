@@ -11,7 +11,7 @@ import {
 } from "../scripts/release-smoke.js";
 
 const versions = {
-  semctx: "0.3.5",
+  semctx: "0.3.6",
   assertledger: "1.3.0",
   "latent-compass": "0.3.0",
 };
