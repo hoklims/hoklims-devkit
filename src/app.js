@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import packageJson from "../package.json" with { type: "json" };
-import { createRuntime, parseJsonOutput, shortError, validateState } from "./runtime.js";
+import { createRuntime, parseJsonOutput, RunLockedError, shortError, validateState } from "./runtime.js";
 
 const COMPONENTS = ["semctx", "assertledger", "latent-compass"];
 const HOSTS = ["codex", "claude"];
@@ -60,6 +60,11 @@ function problem(report, code, detail, exitCode = 4) {
   report.conflicts.push({ code, detail });
   report.exitCode = Math.max(report.exitCode ?? 0, exitCode);
   return report;
+}
+
+function stateIoProblem(report, error, statePath, operation) {
+  const detail = String(error?.message ?? error);
+  return problem(report, "STATE_IO_ERROR", `Devkit state ${operation} failed at ${statePath}: ${detail}. Check disk space and permissions, replace linked state paths with real local directories or files, then rerun setup.`, 5);
 }
 
 function nativeResult(result, name, report) {
@@ -846,6 +851,16 @@ export async function execute(options, rt = createRuntime()) {
   let releaseLock;
   try {
     releaseLock = rt.acquireLock(statePath);
+  } catch (error) {
+    if (error instanceof RunLockedError || error?.code === "RUN_LOCKED") {
+      problem(report, "RUN_LOCKED", String(error.message ?? error), 4);
+    } else {
+      stateIoProblem(report, error, statePath, "lock acquisition");
+    }
+    report.ok = false;
+    return report;
+  }
+  try {
     // Preflights can take time. Another setup may have committed while they ran.
     // Revalidate under the exclusive lock before applying or recording anything.
     const currentState = validateState(rt.readState(statePath));
@@ -856,7 +871,11 @@ export async function execute(options, rt = createRuntime()) {
     const saveStateIfChanged = () => {
       const next = JSON.stringify(nextState);
       if (next !== savedState) {
-        rt.writeState(statePath, nextState);
+        try {
+          rt.writeState(statePath, nextState);
+        } catch (error) {
+          throw Object.assign(new Error(String(error.message ?? error)), { code: "STATE_IO_ERROR", cause: error });
+        }
         savedState = next;
       }
     };
@@ -889,6 +908,7 @@ export async function execute(options, rt = createRuntime()) {
           break;
         }
       } catch (error) {
+        if (error?.code === "STATE_IO_ERROR") throw error;
         component.state = "partial";
         component.installed = "unknown";
         component.configured = "unknown";
@@ -901,9 +921,13 @@ export async function execute(options, rt = createRuntime()) {
       saveStateIfChanged();
     }
   } catch (error) {
-    problem(report, "RUN_LOCKED", String(error.message ?? error), 4);
+    stateIoProblem(report, error, statePath, "read or write");
   } finally {
-    releaseLock?.();
+    try {
+      releaseLock?.();
+    } catch (error) {
+      stateIoProblem(report, error, statePath, "lock release");
+    }
   }
   report.ok = report.conflicts.length === 0;
   return report;

@@ -1190,7 +1190,7 @@ describe("public CLI", () => {
       rt.readState = () => structuredClone(persisted);
       rt.writeState = (_path, value) => { persisted = structuredClone(value); rt.writes.push(structuredClone(value)); };
       rt.acquireLock = () => {
-        if (locked) throw new Error("Another setup is running");
+        if (locked) throw Object.assign(new Error("Another setup is running"), { code: "RUN_LOCKED" });
         locked = true;
         return () => { locked = false; };
       };
@@ -1203,6 +1203,51 @@ describe("public CLI", () => {
     expect([codex, claude].find((report) => !report.ok).conflicts[0].code).toMatch(/^(RUN_LOCKED|STATE_CHANGED)$/u);
     expect(runtimes.flatMap((rt) => rt.writes)).toHaveLength(3);
     expect(persisted.components.semctx.hosts).toHaveLength(1);
+  });
+
+  test("state I/O failures are distinct from lock contention and release the owned lock", async () => {
+    const permission = fakeRuntime();
+    permission.acquireLock = () => { throw Object.assign(new Error("access denied"), { code: "EACCES" }); };
+    const denied = await execute(setupOptions(), permission);
+    expect(denied.ok).toBe(false);
+    expect(denied.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(denied.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
+    expect(denied.conflicts.map((item) => item.detail).join("\n")).toMatch(/disk space|permissions/u);
+
+    const writeFailure = fakeRuntime();
+    let released = false;
+    writeFailure.acquireLock = () => () => { released = true; };
+    writeFailure.writeState = () => { throw Object.assign(new Error("quota exhausted"), { code: "ENOSPC" }); };
+    const failedWrite = await execute(setupOptions(), writeFailure);
+    expect(failedWrite.ok).toBe(false);
+    expect(failedWrite.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(failedWrite.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
+    expect(released).toBe(true);
+
+    const rereadFailure = fakeRuntime();
+    const initialRead = rereadFailure.readState;
+    let reads = 0;
+    let rereadReleased = false;
+    rereadFailure.readState = (path) => {
+      reads += 1;
+      if (reads === 1) return initialRead(path);
+      throw Object.assign(new Error("state read failed"), { code: "EIO" });
+    };
+    rereadFailure.acquireLock = () => () => { rereadReleased = true; };
+    const failedReread = await execute(setupOptions(), rereadFailure);
+    expect(failedReread.ok).toBe(false);
+    expect(failedReread.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(failedReread.conflicts.map((item) => item.code)).not.toContain("RUN_LOCKED");
+    expect(rereadReleased).toBe(true);
+  });
+
+  test("genuine lock contention remains RUN_LOCKED", async () => {
+    const rt = fakeRuntime();
+    rt.acquireLock = () => { throw Object.assign(new Error("another setup is running"), { code: "RUN_LOCKED" }); };
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
+    expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
   });
 
   test("an incomplete Semctx index is reported without claiming the profile is ready", async () => {
