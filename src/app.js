@@ -318,6 +318,24 @@ function assertProjectAdmission(rt, root, manager, allowedVersions) {
   return project;
 }
 
+function assertAssertAdmission(rt, root, manager, projectVersions, localVersions, allowAbsent = false) {
+  const project = assertProjectAdmission(rt, root, manager, allowAbsent ? [...projectVersions, null] : projectVersions);
+  let entry;
+  try {
+    entry = localAssertEntry(rt, root);
+  } catch (error) {
+    throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
+  }
+  if (!entry) {
+    if (allowAbsent) return { project, entry: null };
+    throw projectAdmissionError(new Error("The project-local AssertLedger package is absent after admission"), "PACKAGE_MANIFEST_CONFLICT");
+  }
+  if (!localVersions.includes(entry.version)) {
+    throw projectAdmissionError(new Error(`The project-local AssertLedger version changed outside the admitted versions: ${entry.version}`), "INSTALLED_VERSION_DRIFT");
+  }
+  return { project, entry };
+}
+
 function installPackageCommand(manager, version) {
   const spec = `assertledger@${version}`;
   if (manager === "npm") return ["npm", "install", "--save-dev", "--save-exact", "--ignore-scripts", spec];
@@ -739,6 +757,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     return null;
   }
   const needsInstall = current !== version || localEntry?.version !== version;
+  const admittedVersions = [...new Set([previous?.version, current, localEntry?.version, version, pendingVersion].filter(isStableVersion))];
   const previews = [];
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
@@ -760,7 +779,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     });
   }
   report.plannedChanges.push({ component: "assertledger", packageManager: manager, installPackage: needsInstall, previews });
-  return { manager, current, needsInstall, previews };
+  return { manager, current, needsInstall, previews, admittedVersions };
 }
 
 async function preflightCompass(rt, root, hosts, version, previous, command, report, pendingVersion) {
@@ -854,41 +873,35 @@ async function applySemctx(rt, root, hosts, version, preflight) {
 }
 
 async function applyAssert(rt, root, hosts, version, preflight) {
-  assertProjectAdmission(rt, root, preflight.manager, [preflight.current, version]);
+  const beforeVersions = preflight.needsInstall ? preflight.admittedVersions : [version];
+  assertAssertAdmission(rt, root, preflight.manager, beforeVersions, beforeVersions, preflight.needsInstall);
   if (preflight.needsInstall) {
     const install = await rt.exec(installPackageCommand(preflight.manager, version), root, 300_000);
     if (install.code !== 0) throw new Error(`AssertLedger package install: ${shortError(install)}`);
   }
-  assertProjectAdmission(rt, root, preflight.manager, [version]);
-  let entry;
-  try {
-    entry = localAssertEntry(rt, root);
-  } catch (error) {
-    throw projectAdmissionError(error, "PACKAGE_MANIFEST_CONFLICT");
-  }
-  if (entry?.version !== version) throw new Error(`AssertLedger project executable is not the requested ${version}`);
+  let admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
   for (const host of hosts) {
     const client = host === "claude" ? "claude-code" : "codex";
-    assertProjectAdmission(rt, root, preflight.manager, [version]);
-    const preview = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
+    admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
+    const preview = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const previewReport = parseJsonOutput(preview);
     if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
       throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
     }
-    assertProjectAdmission(rt, root, preflight.manager, [version]);
-    const result = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--write", "--json"]), root);
+    admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
+    const result = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--write", "--json"]), root);
     const parsed = parseJsonOutput(result);
     if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"])) {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
     }
-    assertProjectAdmission(rt, root, preflight.manager, [version]);
-    const verify = await rt.exec(localAssertCommand(entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
+    admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
+    const verify = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const verified = parseJsonOutput(verify);
     if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"])) {
       throw new Error(`AssertLedger post-install verification (${client}): ${shortError(verify)}`);
     }
   }
-  assertProjectAdmission(rt, root, preflight.manager, [version]);
+  assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
   return { activation: "unknown", next: ["Approve or trust the project integration in the selected client, then restart it"] };
 }
 

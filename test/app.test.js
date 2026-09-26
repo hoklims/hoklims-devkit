@@ -89,8 +89,14 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
         if (!failAssertInstall) {
           const manifestPath = join("/repo", "package.json");
           const manifest = JSON.parse(files[manifestPath]);
-          manifest.devDependencies = { ...(manifest.devDependencies ?? {}), assertledger: assertSpec.slice("assertledger@".length) };
+          const installedVersion = assertSpec.slice("assertledger@".length);
+          for (const group of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+            if (manifest[group]) delete manifest[group].assertledger;
+          }
+          manifest.devDependencies = { ...(manifest.devDependencies ?? {}), assertledger: installedVersion };
           files[manifestPath] = JSON.stringify(manifest);
+          files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: installedVersion });
+          files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")] = "cli";
         }
         return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
       }
@@ -1253,6 +1259,83 @@ describe("public CLI", () => {
     expect(valid.writes.at(-1).inProgress).toBeUndefined();
   });
 
+  test("AssertLedger apply revalidates local metadata before install and write", async () => {
+    const filesAt = (version = "1.2.0") => ({
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: version }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    });
+    const pendingUpgrade = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade", selected: ["semctx", "assertledger"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const beforeInstallFiles = filesAt();
+    const beforeInstall = fakeRuntime({ state: pendingUpgrade, tools: ["node", "npm"], files: beforeInstallFiles });
+    const beforeInstallExec = beforeInstall.exec;
+    beforeInstall.exec = async (argv, cwd, timeout) => {
+      const result = await beforeInstallExec(argv, cwd, timeout);
+      if (argv[0] === "bunx" && argv.includes("setup") && !argv.includes("--dry-run")) {
+        beforeInstallFiles[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "9.9.9" });
+      }
+      return result;
+    };
+    const blockedInstall = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), beforeInstall);
+    expect(blockedInstall.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
+    expect(beforeInstall.calls.filter((argv) => argv[0] === "npm" && argv.includes("install"))).toHaveLength(0);
+    expect(beforeInstall.writes).toHaveLength(0);
+
+    const mutations = [
+      { name: "foreign", code: "INSTALLED_VERSION_DRIFT" },
+      { name: "malformed", code: "PACKAGE_MANIFEST_CONFLICT" },
+      { name: "io", code: "STATE_IO_ERROR" },
+      { name: "missing-cli", code: "PACKAGE_MANIFEST_CONFLICT" },
+    ];
+    for (const mutation of mutations) {
+      const files = filesAt();
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const nativeExec = rt.exec;
+      const read = rt.readPlainText;
+      let denyLocalRead = false;
+      let mutated = false;
+      rt.readPlainText = (path) => {
+        if (denyLocalRead && path === join("/repo", "node_modules", "assertledger", "package.json")) {
+          throw Object.assign(new Error("local metadata EIO before write"), { code: "EIO" });
+        }
+        return read(path);
+      };
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (!mutated && argv[0] === "node" && argv.includes("setup") && argv.includes("--dry-run")) {
+          mutated = true;
+          if (mutation.name === "foreign") files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "9.9.9" });
+          else if (mutation.name === "malformed") files[join("/repo", "node_modules", "assertledger", "package.json")] = "{";
+          else if (mutation.name === "io") denyLocalRead = true;
+          else delete files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")];
+        }
+        return result;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.conflicts.map((item) => item.code)).toContain(mutation.code);
+      expect(rt.calls.filter((argv) => argv[0] === "node" && argv.includes("setup") && argv.includes("--write"))).toHaveLength(0);
+      expect(rt.writes.at(-1).inProgress.selected).toEqual(["semctx", "assertledger"]);
+    }
+
+    const validUpgrade = fakeRuntime({ state: structuredClone(pendingUpgrade), tools: ["node", "npm"], files: filesAt() });
+    const upgraded = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), validUpgrade);
+    expect(upgraded.ok).toBe(true);
+    expect(validUpgrade.calls.filter((argv) => argv[0] === "npm" && argv.includes("install"))).toHaveLength(1);
+    expect(JSON.parse(validUpgrade.readPlainText(join("/repo", "node_modules", "assertledger", "package.json"))).version).toBe("1.3.0");
+    expect(validUpgrade.writes.at(-1).components.assertledger.version).toBe("1.3.0");
+  });
+
   test("valid packageManager declarations retain supported manager selection", async () => {
     for (const packageManager of [
       "npm@10.9.8",
@@ -1929,6 +2012,10 @@ describe("public CLI", () => {
     rt.exec = async (argv, cwd, timeout) => {
       if (argv[0] === "npm" && argv.includes("install")) {
         if (failOnce) { failOnce = false; return { code: 5, stdout: "", stderr: "simulated interruption" }; }
+        files[join("/repo", "package.json")] = JSON.stringify({
+          name: "fixture",
+          devDependencies: { assertledger: "1.2.0" },
+        });
         files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "1.2.0" });
         files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")] = "cli";
       }
