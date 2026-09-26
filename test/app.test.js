@@ -2555,7 +2555,8 @@ describe("public CLI", () => {
       const report = await execute(parseArgs(["setup", "/repo", "--host", host, "--with", "assertledger"]), rt);
       const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
       expect(report.ok).toBe(false);
-      expect(guidance).toContain("Restore claude CLI, Node, npm on PATH before running hoklims-devkit setup /repo --host all --with assertledger");
+      expect(guidance).toContain("Restore claude CLI, Node on PATH");
+      expect(guidance).toContain("Inspect the declared AssertLedger package manager and restore it on PATH if missing before running hoklims-devkit setup /repo --host all --with assertledger");
       expect(rt.writes).toHaveLength(0);
     }
   });
@@ -2981,6 +2982,45 @@ describe("public CLI", () => {
       }
       expect(guidance).not.toContain("before running.");
     }
+  });
+
+  test("recovery prerequisites follow the same admitted saved plan as the retry command", async () => {
+    const savedCompass = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: {
+        command: "setup", selected: ["semctx", "latent-compass"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", "latent-compass": "0.3.0" },
+      },
+    };
+    const rejectedAssert = fakeRuntime({ state: savedCompass, tools: ["node", "npm"] });
+    const rejected = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rejectedAssert);
+    const rejectedGuidance = [...rejected.nextActions, ...rejected.conflicts.map((item) => item.detail)].join("\n");
+    expect(rejected.conflicts.map((item) => item.code)).toContain("PENDING_PLAN_CONFLICT");
+    expect(rejectedGuidance).toContain("--with latent-compass");
+    expect(rejectedGuidance.toLowerCase()).toContain("restore uv");
+    expect(rejectedGuidance).not.toContain("Restore Node");
+
+    const savedAssert = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: {
+        command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const missingPnpm = fakeRuntime({ state: savedAssert, tools: ["node", "npm"], files });
+    const failedPreflight = await execute(parseArgs(["setup", "/repo", "--host", "codex"]), missingPnpm);
+    const pnpmGuidance = [...failedPreflight.nextActions, ...failedPreflight.conflicts.map((item) => item.detail)].join("\n");
+    expect(failedPreflight.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_MISSING");
+    expect(pnpmGuidance).toContain("--with assertledger");
+    expect(pnpmGuidance.toLowerCase()).toContain("restore pnpm");
+    expect(pnpmGuidance).not.toContain("restore npm");
+    expect(missingPnpm.writes).toHaveLength(0);
   });
 
   test("STATE_CHANGED treats a locked absence as authoritative", async () => {

@@ -69,13 +69,16 @@ function retryInstruction(rt, hosts, command, { components = [], packageManager 
   for (const host of hosts) if (!rt.which(host)) add(`${host} CLI`);
   if (components.includes("assertledger")) {
     if (!rt.which("node")) add("Node");
-    const manager = packageManager ?? "npm";
-    if (!rt.which(manager)) add(manager);
+    if (packageManager && !rt.which(packageManager)) add(packageManager);
   }
   if (components.includes("latent-compass") && !rt.which("uv")) add("uv");
-  if (!missing.length) return `Run ${command}`;
-  if (missing.length === 1 && missing[0].endsWith(" CLI")) return `Restore the ${missing[0]} on PATH before running ${command}`;
-  return `Restore ${missing.join(", ")} on PATH before running ${command}`;
+  const prerequisites = [];
+  if (missing.length === 1 && missing[0].endsWith(" CLI")) prerequisites.push(`Restore the ${missing[0]} on PATH`);
+  else if (missing.length) prerequisites.push(`Restore ${missing.join(", ")} on PATH`);
+  if (components.includes("assertledger") && !packageManager) {
+    prerequisites.push("Inspect the declared AssertLedger package manager and restore it on PATH if missing");
+  }
+  return prerequisites.length ? `${prerequisites.join(", then ")} before running ${command}` : `Run ${command}`;
 }
 
 function stateIoProblem(report, error, statePath, operation, recoveryAction) {
@@ -107,16 +110,21 @@ export function quoteShellToken(value) {
   return `'${text.replaceAll("'", `'"'"'`)}'`;
 }
 
-function stateRecoveryCommand(options, root, state, hosts, { useRequestedRefresh = false } = {}) {
+function stateRecoveryPlan(options, state, hosts, { useRequestedRefresh = false } = {}) {
   const pending = state?.inProgress;
   const requestedSelected = options.refreshPending && pending && options.with.length === 0
     ? pending.selected : ["semctx", ...options.with];
   const command = pending && !useRequestedRefresh ? pending.command : options.command;
   const selected = pending && !useRequestedRefresh ? pending.selected : requestedSelected;
   const selectedHosts = pending && !useRequestedRefresh ? pending.hosts : hosts;
-  const host = selectedHosts.length === 2 ? "all" : selectedHosts[0];
-  const optional = selected.filter((name) => name !== "semctx");
-  return `hoklims-devkit ${command} ${quoteShellToken(root)} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}${useRequestedRefresh ? " --refresh-pending" : ""}`;
+  return { command, selected, hosts: selectedHosts };
+}
+
+function stateRecoveryCommand(options, root, state, hosts, recoveryOptions = {}) {
+  const plan = stateRecoveryPlan(options, state, hosts, recoveryOptions);
+  const host = plan.hosts.length === 2 ? "all" : plan.hosts[0];
+  const optional = plan.selected.filter((name) => name !== "semctx");
+  return `hoklims-devkit ${plan.command} ${quoteShellToken(root)} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}${recoveryOptions.useRequestedRefresh ? " --refresh-pending" : ""}`;
 }
 
 function failureGuidance(rt, options, root, hosts, candidateState, recoveryOptions = {}) {
@@ -124,10 +132,12 @@ function failureGuidance(rt, options, root, hosts, candidateState, recoveryOptio
   if (!candidateState?.inProgress && options.refreshPending && effectiveOptions.useRequestedRefresh === undefined) {
     effectiveOptions.useRequestedRefresh = true;
   }
+  const plan = stateRecoveryPlan(options, candidateState, hosts, effectiveOptions);
   const command = stateRecoveryCommand(options, root, candidateState, hosts, effectiveOptions);
-  const recoveryHosts = candidateState?.inProgress && !effectiveOptions.useRequestedRefresh
-    ? candidateState.inProgress.hosts : hosts;
-  const recoveryAction = retryInstruction(rt, recoveryHosts, command, effectiveOptions);
+  const recoveryAction = retryInstruction(rt, plan.hosts, command, {
+    ...effectiveOptions,
+    components: plan.selected,
+  });
   const continuedAction = `${recoveryAction[0].toLowerCase()}${recoveryAction.slice(1)}`;
   if (effectiveOptions.repair) {
     return { action: `${effectiveOptions.repair}, then ${continuedAction}`, command };
@@ -1149,10 +1159,9 @@ export async function execute(options, rt = createRuntime()) {
   let recoveryPackageManager;
   const recoveryCommandFor = (candidateState, recoveryOptions) => stateRecoveryCommand(options, root, candidateState, requestedRecoveryHosts, recoveryOptions);
   const recoveryActionFor = (candidateState, recoveryOptions) => {
-    const recoveryHosts = candidateState?.inProgress && !recoveryOptions?.useRequestedRefresh
-      ? candidateState.inProgress.hosts : requestedRecoveryHosts;
-    return retryInstruction(rt, recoveryHosts, recoveryCommandFor(candidateState, recoveryOptions), {
-      components: selectedComponents(options, candidateState),
+    const plan = stateRecoveryPlan(options, candidateState, requestedRecoveryHosts, recoveryOptions);
+    return retryInstruction(rt, plan.hosts, recoveryCommandFor(candidateState, recoveryOptions), {
+      components: plan.selected,
       packageManager: recoveryPackageManager,
     });
   };
@@ -1160,7 +1169,6 @@ export async function execute(options, rt = createRuntime()) {
     if (report.conflicts.length === 0) return report;
     const { action, command } = failureGuidance(rt, options, root, requestedRecoveryHosts, candidateState, {
       ...recoveryOptions,
-      components: selectedComponents(options, candidateState),
       packageManager: recoveryPackageManager,
     });
     return recordFailureRecovery(action, command);
@@ -1213,6 +1221,9 @@ export async function execute(options, rt = createRuntime()) {
     return report.ok ? report : finalizeFailure(state);
   }
   const selected = selectedComponents(options, state);
+  if (selected.includes("assertledger") || state?.inProgress?.selected.includes("assertledger")) {
+    try { recoveryPackageManager = inspectAssertProject(rt, root).manager; } catch { /* Normal preflight reports the concrete admission error. */ }
+  }
   const refreshExpandsHosts = options.refreshPending && state?.inProgress
     && state.inProgress.hosts.every((host) => hosts.includes(host));
   if (state?.inProgress && ((state.inProgress.command !== options.command && !options.refreshPending)
@@ -1254,7 +1265,7 @@ export async function execute(options, rt = createRuntime()) {
     else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions["latent-compass"]);
     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
-  recoveryPackageManager = previews.assertledger?.manager;
+  recoveryPackageManager = previews.assertledger?.manager ?? recoveryPackageManager;
   if (report.conflicts.length || options.dryRun) {
     if (report.conflicts.length) finalizeFailure(state);
     if (state?.inProgress && !options.refreshPending
@@ -1293,9 +1304,10 @@ export async function execute(options, rt = createRuntime()) {
     refreshPhaseInvalidated = true;
   };
   const lockedUnknownGuidance = () => {
+    const plan = stateRecoveryPlan(options, null, requestedRecoveryHosts, { useRequestedRefresh: false });
     const current = stateRecoveryCommand(options, root, null, requestedRecoveryHosts, { useRequestedRefresh: false });
     return unverifiedStateGuidance("Resolve the locked state conflict", current,
-      retryInstruction(rt, requestedRecoveryHosts, current, { components: selected, packageManager: recoveryPackageManager }));
+      retryInstruction(rt, plan.hosts, current, { components: plan.selected, packageManager: recoveryPackageManager }));
   };
   const replaceFailureRecovery = (guidance) => {
     const stale = [...staleRecoveryFragments].filter(Boolean).sort((left, right) => right.length - left.length);

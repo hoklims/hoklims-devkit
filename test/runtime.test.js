@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readSync, realpathSync, readdirSync, renameSync, rmdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntime, validateState } from "../src/runtime.js";
@@ -643,6 +643,46 @@ test("runtime revalidates Windows destination bytes after publication fails", ()
     } else {
       expect(() => transaction.close()).not.toThrow();
       expect(readFileSync(statePath, "utf8")).toBe(original);
+    }
+  }
+});
+
+test("runtime rejects state growth and metadata races during the final checkpoint read", () => {
+  for (const scenario of ["unchanged", "growth", "same-bytes"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-final-read-")));
+    const statePath = join(root, "repository.json");
+    const original = `${JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }, null, 2)}\n`;
+    writeFileSync(statePath, original);
+    let readPass = 0;
+    let commits = 0;
+    const rt = createRuntime({
+      randomId: () => "candidate",
+      readDescriptorData: (descriptor, buffer, offset, length, position) => {
+        const count = readSync(descriptor, buffer, offset, length, position);
+        if (position === 0 && length > 0 && ++readPass === 3) {
+          if (scenario === "growth") writeFileSync(statePath, "FOREIGN\n", { flag: "a" });
+          if (scenario === "same-bytes") {
+            writeFileSync(statePath, original);
+            utimesSync(statePath, new Date(1_000), new Date(2_000));
+          }
+        }
+        return count;
+      },
+      commitOwnedFile: (from, to) => { commits += 1; renameSync(from, to); },
+    });
+    const transaction = rt.openStateTransaction(statePath);
+    let error;
+    try {
+      transaction.write({ schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } });
+    } catch (caught) { error = caught; }
+    if (scenario === "unchanged") {
+      expect(error).toBeUndefined();
+      expect(commits).toBe(1);
+      transaction.close();
+    } else {
+      expect(error?.code).toBe("STATE_CONFLICT");
+      expect(commits).toBe(0);
+      expect(readFileSync(statePath, "utf8")).toBe(scenario === "growth" ? `${original}FOREIGN\n` : original);
     }
   }
 });
