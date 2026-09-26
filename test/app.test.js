@@ -1462,7 +1462,7 @@ describe("public CLI", () => {
   test("shell-quoted recovery paths round-trip as one inert token", () => {
     const root = process.platform === "win32"
       ? "C:\\repo with 'quote $() ` tick"
-      : "/tmp/repo with 'quote $() ` tick";
+      : "/tmp/a\\b repo with 'quote $() ` tick";
     const quoted = quoteShellToken(root);
     const command = process.platform === "win32"
       ? ["powershell", "-NoProfile", "-Command", `[Console]::Out.Write(${quoted})`]
@@ -1526,6 +1526,33 @@ describe("public CLI", () => {
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
     expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_IO_ERROR");
+  });
+
+  test("lock contention preserves the admitted pending-plan recovery", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.5", assertledger: "1.3.0" },
+      },
+    };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm"], files: {
+      [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+    } });
+    rt.acquireLock = () => { throw Object.assign(new Error("Another setup may be running"), { code: "RUN_LOCKED" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    const detail = report.conflicts.map((item) => item.detail).join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
+    expect(detail).toContain("another Devkit operation");
+    expect(detail).not.toContain("Another setup");
+    expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(report.nextActions.join("\n")).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(rt.writes).toHaveLength(0);
   });
 
   test("an incomplete Semctx index is reported without claiming the profile is ready", async () => {

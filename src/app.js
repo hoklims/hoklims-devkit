@@ -74,7 +74,8 @@ function isStateIoError(error) {
 
 function stateBoundaryProblem(report, error, statePath, operation, { allowRunLocked = false, recoveryCommand } = {}) {
   if (allowRunLocked && (error instanceof RunLockedError || error?.code === "RUN_LOCKED")) {
-    return problem(report, "RUN_LOCKED", String(error.message ?? error), 4);
+    report.nextActions.push(`After resolving the state lock, run ${recoveryCommand}`);
+    return problem(report, "RUN_LOCKED", `State lock unavailable at ${statePath}; another Devkit operation may be running. Wait for active operations to finish. If none is active, inspect the lock and state paths; remove a lock only after confirming it is stale and belongs to this Devkit state. Then retry with: ${recoveryCommand}.`, 4);
   }
   if (error?.code === "STATE_CONFLICT" || !isStateIoError(error)) {
     return problem(report, "STATE_CONFLICT", `${String(error.message ?? error)} After resolving the state conflict, retry with: ${recoveryCommand}.`, 4);
@@ -84,7 +85,8 @@ function stateBoundaryProblem(report, error, statePath, operation, { allowRunLoc
 
 export function quoteShellToken(value) {
   const text = String(value);
-  if (/^[A-Za-z0-9_./:\\-]+$/u.test(text)) return text;
+  const safe = process.platform === "win32" ? /^[A-Za-z0-9_./:\\-]+$/u : /^[A-Za-z0-9_./:-]+$/u;
+  if (safe.test(text)) return text;
   if (process.platform === "win32") return `'${text.replaceAll("'", "''")}'`;
   return `'${text.replaceAll("'", `'"'"'`)}'`;
 }
