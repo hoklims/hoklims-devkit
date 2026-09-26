@@ -125,6 +125,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
       throw new Error(`Unexpected command: ${argv.join(" ")}`);
     },
     exists: (path) => Object.hasOwn(files, path),
+    isReadableFile: (path) => Object.hasOwn(files, path) && typeof files[path] === "string",
     readText: (path) => files[path],
     join: (...parts) => parts.join("/"),
   };
@@ -759,6 +760,37 @@ describe("public CLI", () => {
     }
   });
 
+  test("an AssertLedger CLI directory blocks package mutation", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {
+        semctx: { version: "0.3.4", hosts: ["codex"] },
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      },
+      inProgress: {
+        command: "upgrade",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.3.0" },
+      },
+    };
+    const cliPath = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [cliPath]: "directory-placeholder",
+    };
+    const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+    const isReadableFile = rt.isReadableFile;
+    rt.isReadableFile = (path) => path !== cliPath && isReadableFile(path);
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+    expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("matching AssertLedger declarations resolve to their shared exact version", async () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],
@@ -1150,6 +1182,15 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("Semctx upgrade never replaces an installed version with altered bytes", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", semctxContentDrift: true });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_DRIFT");
+    expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("a pinned same-version upgrade does not overwrite modified Semctx plugin bytes", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
@@ -1431,6 +1472,20 @@ describe("public CLI", () => {
     expect(report.ok).toBe(false);
     expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
     expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("shared-host upgrade advice preserves explicit component selectors", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.4", hosts: ["codex", "claude"] },
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      "latent-compass": { version: "0.3.0", hosts: ["codex"] },
+    } };
+    const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm", "claude"] });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+    expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+    expect(report.conflicts.map((item) => item.detail).join("\n"))
+      .toContain("hoklims-devkit upgrade /repo --host all --with assertledger");
     expect(rt.writes).toHaveLength(0);
   });
 

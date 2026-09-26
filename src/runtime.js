@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -209,6 +209,15 @@ export function createRuntime({
       return response.json();
     },
     exists: existsSync,
+    isReadableFile: (path) => {
+      try {
+        if (!statSync(path).isFile()) return false;
+        accessSync(path, constants.R_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     readText: (path) => readFileSync(path, "utf8"),
     realpath: realpathSync,
     statePath: (root) => {

@@ -285,6 +285,18 @@ test("runtime distinguishes malformed lock records from contention", () => {
   expect(readFileSync(lockPath, "utf8")).toBe(valid);
 });
 
+test("runtime distinguishes readable regular files from directories", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-readable-file-")));
+  const filePath = join(root, "cli.js");
+  const directoryPath = join(root, "cli-directory");
+  writeFileSync(filePath, "#!/usr/bin/env node\n");
+  mkdirSync(directoryPath);
+  const rt = createRuntime();
+  expect(rt.isReadableFile(filePath)).toBe(true);
+  expect(rt.isReadableFile(directoryPath)).toBe(false);
+  expect(rt.isReadableFile(join(root, "missing.js"))).toBe(false);
+});
+
 test("state validation accepts only canonical component and host order", () => {
   const canonical = {
     schemaVersion: 1,

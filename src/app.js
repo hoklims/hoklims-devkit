@@ -217,6 +217,7 @@ function localAssertEntry(rt, root) {
   const cliPresent = rt.exists(cliPath);
   if (!packagePresent && !cliPresent) return null;
   if (!packagePresent || !cliPresent) throw new Error("The project-local AssertLedger package is incomplete");
+  if (!rt.isReadableFile(cliPath)) throw new Error("The project-local AssertLedger CLI is not a readable regular file");
   let version;
   try {
     version = JSON.parse(rt.readText(packagePath))?.version;
@@ -505,10 +506,10 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     if (installed.version !== null && statusJson.hosts[host].marketplace?.matchesSemctx !== true) {
       problem(report, "SEMCTX_MARKETPLACE_CONFLICT", `${host} Semctx plugin is not from the expected marketplace`);
     }
-    if (installed.version === version && installed.contentMatchesSnapshot === false) {
-      // A pinned retry must not replace modified plugin bytes, even when upgrade is explicit.
+    if (installed.version !== null && installed.contentMatchesSnapshot === false) {
+      // Never replace modified plugin bytes, including during an explicit upgrade.
       problem(report, "SEMCTX_CONTENT_DRIFT", `${host} Semctx plugin bytes differ from its marketplace snapshot; inspect or repair with the native installer`);
-    } else if (previous && installed.version === version && installed.contentMatchesSnapshot !== true) {
+    } else if (previous && installed.version !== null && installed.contentMatchesSnapshot !== true) {
       problem(report, "SEMCTX_CONTENT_UNVERIFIED", `${host} Semctx plugin content is unverified; inspect semctx plugin-status before retrying`);
     }
   }
@@ -920,7 +921,9 @@ export async function execute(options, rt = createRuntime()) {
     for (const name of selected) {
       const previous = state?.components?.[name];
       if (previous && previous.version !== versions[name] && previous.hosts.some((host) => !hosts.includes(host))) {
-        problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; re-run upgrade with --host all to change its shared version safely`);
+        const optional = selected.filter((item) => item !== "semctx");
+        const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}`;
+        problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; run ${retry} to change its shared version safely`);
       }
     }
     if (report.conflicts.length) return report;
