@@ -1,0 +1,14 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..f9f2bbb 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -205,8 +205,7 @@ function unverifiedStateGuidance(repair, currentCommand, retry = `Run ${currentC
+ function nativeResult(result, name, report) {
+   const json = parseJsonOutput(result);
+   if (!json) {
+-    problem(report, "NATIVE_REPORT_INVALID", `${name}: ${shortError(result)}`, 5);
+-    return null;
++    return {};
+   }
+   return json;
+ }

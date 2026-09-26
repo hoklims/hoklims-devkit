@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'shared-host upgrade advice names a missing host prerequisite before its retry'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+2815 |     } };
+2816 |     const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+2817 |     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+2818 |     const detail = report.conflicts.map((item) => item.detail).join("\n");
+2819 |     expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+2820 |     expect(detail).toContain("Restore the claude CLI on PATH before running hoklims-devkit upgrade /repo --host all");
+                          ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Restore the claude CLI on PATH before running hoklims-devkit upgrade /repo --host all"
+Received: "semctx also serves codex,claude; Run hoklims-devkit upgrade /repo --host all to change its shared version safely"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:2820:20)
+(fail) public CLI > shared-host upgrade advice names a missing host prerequisite before its retry [6.92ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [38.00ms]
+EXIT=1

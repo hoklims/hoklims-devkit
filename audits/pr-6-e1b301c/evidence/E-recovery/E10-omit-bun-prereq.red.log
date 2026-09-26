@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'a missing-Bun subdirectory lookup cannot prove repository state absence'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+305 |     rt.which = (name) => name === "codex" ? "/bin/codex" : null;
+306 |     const report = await execute(parseArgs(["upgrade", "/repo/subdir", "--host", "codex", "--refresh-pending"]), rt);
+307 |     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+308 |     expect(guidance).toContain("inspect and validate the saved Devkit state");
+309 |     expect(guidance).toContain("If a saved plan is present, follow it");
+310 |     expect(guidance).toContain("Only if no saved plan exists, restore Bun on PATH before running hoklims-devkit upgrade /repo/subdir --host codex --refresh-pending");
+                           ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Only if no saved plan exists, restore Bun on PATH before running hoklims-devkit upgrade /repo/subdir --host codex --refresh-pending"
+Received: "Bun >=1.4 is required. Install Bun >=1.4 and ensure bun and bunx are on PATH, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, run hoklims-devkit upgrade /repo/subdir --host codex --refresh-pending.\nInstall Bun >=1.4 and ensure bun and bunx are on PATH, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, run hoklims-devkit upgrade /repo/subdir --host codex --refresh-pending"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:310:22)
+(fail) public CLI > a missing-Bun subdirectory lookup cannot prove repository state absence [6.77ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [30.00ms]
+EXIT=1

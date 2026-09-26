@@ -1,0 +1,107 @@
+$ rtk proxy bun test test/app.test.js -t 'doctor keeps Semctx installation unknown without positive content attestation'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+634 |         codex: { requested: true, installed: { version: "0.3.4", contentMatchesSnapshot: null }, marketplace: { matchesSemctx: true } },
+635 |       } }), stderr: "" }
+636 |       : nativeExec(argv, cwd);
+637 |     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+638 |     expect(report.ok).toBe(false);
+639 |     expect(report.components[0]).toMatchObject({ installed: "unknown", approved: "unknown" });
+                                       ^
+error: expect(received).toMatchObject(expected)
+
+@@ -2,3 +2,78 @@
+    "approved": "unknown",
+-   "installed": "unknown",
++   "checks": [
++     {
++       "command": "plugin-status",
++       "exitCode": 3,
++       "report": {
++         "hosts": {
++           "codex": {
++             "installed": {
++               "contentMatchesSnapshot": null,
++               "version": "0.3.4",
++             },
++             "marketplace": {
++               "matchesSemctx": true,
++             },
++             "requested": true,
++           },
++         },
++         "kind": "plugin_delivery_status",
++         "schemaVersion": 2,
++       },
++     },
++     {
++       "command": "doctor",
++       "exitCode": 1,
++       "report": {
++         "checks": [
++           {
++             "name": "cli",
++             "ok": true,
++           },
++           {
++             "name": "workspace",
++             "ok": false,
++           },
++           {
++             "name": "config",
++             "ok": true,
++           },
++           {
++             "name": "index",
++             "ok": true,
++             "status": "healthy",
++           },
++           {
++             "name": "runtime",
++             "ok": true,
++           },
++         ],
++         "healthy": false,
++         "version": "0.3.4",
++       },
++     },
++     {
++       "command": "index-health",
++       "exitCode": 2,
++       "report": {
++         "binding": {
++           "status": "absent",
++         },
++         "coverage": {
++           "status": "partial",
++         },
++         "freshness": {
++           "canRunHighRiskControl": false,
++         },
++         "kind": "index_health",
++         "schemaVersion": 1,
++       },
++     },
++   ],
++   "configured": "no",
++   "installed": "yes",
++   "loaded": "unknown",
++   "name": "semctx",
++   "observed": "unknown",
++   "version": "0.3.4",
+  }
+
+- Expected  - 1
++ Received  + 76
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:639:34)
+(fail) public CLI > doctor keeps Semctx installation unknown without positive content attestation [9.45ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [67.00ms]
+EXIT=1

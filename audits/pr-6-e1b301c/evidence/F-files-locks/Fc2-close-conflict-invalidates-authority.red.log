@@ -1,0 +1,39 @@
+$ rtk proxy bun test test/app.test.js -t 'late authority loss'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3178 |     const expectedCommand = `hoklims-devkit setup ${quoteShellToken(root)} --host codex`;
+3179 |     const collapsedCommand = `hoklims-devkit setup ${quoteShellToken(root.replace("  ", " "))} --host codex`;
+3180 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+3181 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+3182 |     expect(report.nextActions).toHaveLength(1);
+3183 |     expect(report.nextActions[0]).toContain("inspect and validate the saved Devkit state");
+                                         ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "inspect and validate the saved Devkit state"
+Received: "Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup '/repo  with '\"'\"'quote' --host claude"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/app.test.js:3183:35)
+(fail) public CLI > late authority loss replaces every earlier recovery instruction [11.46ms]
+3256 |       expect(guidance).not.toContain("Only if no saved plan exists, run.");
+3257 |       expect(guidance).not.toContain("before running.");
+3258 |       if (closeConflict) {
+3259 |         expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+3260 |         expect(report.nextActions).toHaveLength(1);
+3261 |         expect(report.nextActions[0]).toContain("inspect and validate the saved Devkit state");
+                                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "inspect and validate the saved Devkit state"
+Received: "Resolve the reported native conflict, then restore the codex CLI on PATH before running hoklims-devkit setup '/repo  with '\"'\"'quote' --host codex"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/app.test.js:3261:39)
+(fail) public CLI > late authority loss retains missing-host repair before its conditional retry [3.07ms]
+
+ 2 pass
+ 155 filtered out
+ 2 fail
+ 43 expect() calls
+Ran 4 tests across 1 file. [72.00ms]
+EXIT=1

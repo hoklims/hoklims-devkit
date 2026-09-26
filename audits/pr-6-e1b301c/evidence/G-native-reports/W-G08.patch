@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..091099e 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1033,7 +1033,7 @@ async function applyCompass(rt, root, hosts, version, preflight) {
+     const result = await rt.exec([entry.executable, "host", "install", "--project-root", root, "--host", host, "--json"], root);
+     const parsed = parseJsonOutput(result);
+     if (result.code !== 0 || !validCompassInstallReport(rt, parsed, root, host, version, false)
+-      || parsed.states?.[host]?.installed !== true || parsed.states?.[host]?.configured !== true) {
++      ) {
+       throw new Error(`Latent Compass hook install (${host}): ${shortError(result)}`);
+     }
+     const status = await rt.exec([entry.executable, "host", "status", "--project-root", root, "--host", host, "--json"], root);

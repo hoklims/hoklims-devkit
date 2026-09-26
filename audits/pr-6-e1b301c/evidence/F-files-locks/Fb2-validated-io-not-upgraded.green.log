@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/runtime.test.js -t 'lock ownership when descriptor reads fail|removal after inspection|parent creation|exclusive owned-file open failure|root-down inspection'
+bun test v1.4.2 (744846f84)
+
+ 5 pass
+ 33 filtered out
+ 0 fail
+ 58 expect() calls
+Ran 5 tests across 1 file. [303.00ms]
+EXIT=0

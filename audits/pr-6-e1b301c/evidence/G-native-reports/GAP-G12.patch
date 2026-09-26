@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..5ab2b70 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -742,7 +742,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
+   const setup = await rt.exec(["bunx", `semctx@${version}`, "setup", "--dry-run", ...args], root);
+   const setupJson = nativeResult(setup, "semctx setup --dry-run", report);
+   if (!setupJson) return null;
+-  if (setup.code !== 0 || !validSemctxSetupPlan(setupJson, root)) {
++  if (!validSemctxSetupPlan(setupJson, root)) {
+     problem(report, "SEMCTX_WORKSPACE_CONFLICT", JSON.stringify(setupJson).slice(0, 600));
+   }
+   const status = await rt.exec(["bunx", `semctx@${version}`, "plugin-status", "--host", hostMode, ...args], root);

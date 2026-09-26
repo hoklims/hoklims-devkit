@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/app.test.js -t 'doctor rejects Compass host flags without status identity'
+# mutation:  1 file changed, 3 insertions(+), 2 deletions(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+1012 |     rt.exec = async (argv, cwd) => argv[0] === executable && argv.includes("status")
+1013 |       ? { code: 0, stdout: JSON.stringify({ hosts: [{ host: "codex", status: "NO_OBSERVATIONS" }], states: { codex: { installed: true, configured: true } } }), stderr: "" }
+1014 |       : nativeExec(argv, cwd);
+1015 |     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+1016 |     expect(report.ok).toBe(false);
+1017 |     expect(report.components.find((item) => item.name === "latent-compass").configured).toBe("unknown");
+                                                                                               ^
+error: expect(received).toBe(expected)
+
+Expected: "unknown"
+Received: "yes"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:1017:89)
+(fail) public CLI > doctor rejects Compass host flags without status identity [7.18ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [48.00ms]
+EXIT=1

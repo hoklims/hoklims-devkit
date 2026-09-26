@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/runtime.test.js -t 'revalidates every pathname after descriptor reads'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+171 |       if (kind === "state") rt.readState(statePath);
+172 |       else if (kind === "lock") rt.acquireLock(statePath);
+173 |       else rt.readPlainText(readPath);
+174 |     } catch (caught) { error = caught; }
+175 |     expect(replaced).toBe(true);
+176 |     expect(error?.code).toBe("STATE_CONFLICT");
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: "STATE_CONFLICT"
+Received: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:176:25)
+(fail) runtime revalidates every pathname after descriptor reads [8.68ms]
+
+ 0 pass
+ 37 filtered out
+ 1 fail
+ 8 expect() calls
+Ran 1 test across 1 file. [37.00ms]
+EXIT=1

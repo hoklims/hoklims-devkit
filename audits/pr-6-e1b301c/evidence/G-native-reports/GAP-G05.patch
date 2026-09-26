@@ -1,0 +1,14 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..c24ca4d 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -596,8 +596,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
+ }
+ 
+ function recognizableCompassStatus(rt, parsed, root, host, version) {
+-  if (parsed?.schema_version !== 1 || parsed.operation !== "status" || parsed.version !== version
+-    || typeof parsed.project_root !== "string" || !Array.isArray(parsed.hosts) || parsed.hosts.length !== 1
++  if (parsed?.schema_version !== 1 || parsed.operation !== "status" || typeof parsed.project_root !== "string" || !Array.isArray(parsed.hosts) || parsed.hosts.length !== 1
+     || parsed.hosts[0]?.host !== host
+     || !["NO_OBSERVATIONS", "OBSERVING", "OBSERVATION_UNKNOWN", "DEGRADED"].includes(parsed.hosts[0].status)
+     || typeof parsed.states?.[host]?.installed !== "boolean"

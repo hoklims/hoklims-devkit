@@ -1,0 +1,10 @@
+$ rtk proxy bun test test/app.test.js -t 'Semctx upgrade never replaces an installed version with altered bytes|a pinned same-version upgrade does not overwrite modified Semctx plugin bytes'
+# git status --porcelain: ''
+bun test v1.4.2 (744846f84)
+
+ 2 pass
+ 157 filtered out
+ 0 fail
+ 7 expect() calls
+Ran 2 tests across 1 file. [53.00ms]
+EXIT=0

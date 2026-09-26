@@ -1,0 +1,45 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'dry-run performs every preflight without installation or state writes'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+326 | 
+327 |   test("dry-run performs every preflight without installation or state writes", async () => {
+328 |     const rt = fakeRuntime();
+329 |     const report = await execute({ ...setupOptions(), dryRun: true }, rt);
+330 |     expect(report.ok).toBe(true);
+331 |     expect(report.components).toEqual([expect.objectContaining({ name: "semctx", state: "planned" })]);
+                                    ^
+error: expect(received).toEqual(expected)
+
+@@ -1,5 +1,11 @@
+  [
+-   ObjectContaining {
++   {
++     "approved": "unknown",
++     "configured": "yes",
++     "installed": "yes",
++     "loaded": "unknown",
+      "name": "semctx",
+-     "state": "planned",
++     "observed": "unknown",
++     "state": "configured",
++     "version": "0.3.4",
+    },
+
+- Expected  - 2
++ Received  + 8
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:331:31)
+(fail) public CLI > dry-run performs every preflight without installation or state writes [11.54ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [56.00ms]
+EXIT CODE: 1

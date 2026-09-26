@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/runtime.test.js -t 'final checkpoint read|staged ownership after the final destination read'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+833 |     if (scenario === "unchanged") {
+834 |       expect(error).toBeUndefined();
+835 |       expect(commits).toBe(1);
+836 |       transaction.close();
+837 |     } else {
+838 |       expect(error?.code).toBe("STATE_CONFLICT");
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: "STATE_CONFLICT"
+Received: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:838:27)
+(fail) runtime rejects state growth and metadata races during the final checkpoint read [6.59ms]
+
+ 1 pass
+ 36 filtered out
+ 1 fail
+ 15 expect() calls
+Ran 2 tests across 1 file. [67.00ms]
+EXIT=1

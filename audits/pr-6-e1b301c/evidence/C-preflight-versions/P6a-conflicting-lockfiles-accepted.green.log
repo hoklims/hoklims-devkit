@@ -1,0 +1,12 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'optional package-manager conflict blocks Semctx application too'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+---
+bun test v1.4.2 (744846f84)
+
+ 1 pass
+ 158 filtered out
+ 0 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [57.00ms]
+EXIT CODE: 0

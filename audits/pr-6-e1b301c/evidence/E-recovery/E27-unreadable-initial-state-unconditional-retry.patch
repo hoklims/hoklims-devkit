@@ -1,0 +1,15 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..94bbcc6 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1271,8 +1271,8 @@ export async function execute(options, rt = createRuntime()) {
+     const current = recoveryCommandFor(null, { useRequestedRefresh: false });
+     const guidance = renderUnverifiedRecovery("Resolve the initial state read conflict", current,
+       renderRetryInstruction(requestedRecoveryHosts, current, { components: selectedComponents(options, null) }));
+-    stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: guidance.action });
+-    return recordFailureRecovery(guidance.action, guidance.command);
++    stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: `Run ${current}` });
++    return recordFailureRecovery(`Run ${current}`, guidance.command);
+   }
+   if (options.with.includes("assertledger") || state?.components?.assertledger
+     || state?.inProgress?.selected.includes("assertledger")) {

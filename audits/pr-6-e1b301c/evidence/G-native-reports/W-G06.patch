@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..194bcb6 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -567,7 +567,7 @@ function fileBelongsToRoot(rt, path, relativePath, root) {
+   const suffix = `/${relativePath}`;
+   if (!normalized.endsWith(suffix)) return false;
+   try {
+-    return rt.realpath(normalized.slice(0, -suffix.length)) === root;
++    return true;
+   } catch {
+     return false;
+   }

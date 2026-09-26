@@ -1,0 +1,13 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..5b8694b 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -586,7 +586,7 @@ export function createRuntime({
+       try {
+         try {
+           const [stdout, stderr, code] = await Promise.all([
+-            new Response(child.stdout).text(),
++            new Response(child.stdout).text().catch(() => ""),
+             new Response(child.stderr).text(),
+             child.exited,
+           ]);

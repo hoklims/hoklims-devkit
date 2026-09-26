@@ -1,0 +1,24 @@
+$ rtk proxy bun test test/release-report.test.js
+bun test v1.4.2 (744846f84)
+
+test/release-report.test.js:
+60 |       [{ ...exact[0], name: "wrong" }, ...exact.slice(1)],
+61 |       [exact[1], exact[0], exact[2]],
+62 |       [exact[0], exact[1], { ...exact[2], name: "assertledger" }],
+63 |     ];
+64 |     for (const candidate of cases) {
+65 |       expect(validComponentReport(report(candidate), projectRoot, expectedNames, configuredOptions)).toBe(false);
+                                                                                                          ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/release-report.test.js:65:102)
+(fail) validComponentReport > rejects empty, subset, superset, wrong, reordered, and duplicate component lists [0.70ms]
+
+ 6 pass
+ 1 fail
+ 43 expect() calls
+Ran 7 tests across 1 file. [9.00ms]
+EXIT=1

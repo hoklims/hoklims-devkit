@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..afb7c34 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -773,7 +773,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
+   if (command !== "upgrade" && !previous && installedVersions.some((installed) => installed !== version)) {
+     problem(report, "EXISTING_VERSION", `Semctx is already installed at ${[...new Set(installedVersions)].join(", ")}; use upgrade explicitly`);
+   }
+-  if (previous && installedVersions.some((installed) => installed !== previous.version
++  if (false && previous && installedVersions.some((installed) => installed !== previous.version
+     && !(command === "upgrade" && (installed === version || installed === pendingVersion)))) {
+     problem(report, "INSTALLED_VERSION_DRIFT", `Semctx installation differs from recorded ${previous.version}`);
+   }

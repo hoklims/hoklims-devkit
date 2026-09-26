@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/runtime.test.js -t 'runtime'
+bun test v1.4.2 (744846f84)
+
+ 37 pass
+ 1 filtered out
+ 0 fail
+ 274 expect() calls
+Ran 37 tests across 1 file. [531.00ms]
+EXIT=0

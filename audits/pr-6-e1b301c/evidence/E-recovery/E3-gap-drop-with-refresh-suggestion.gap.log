@@ -1,0 +1,17 @@
+$ rtk proxy bun test test/app.test.js -t "refresh|release|skew|pending"
+bun test v1.4.2 (744846f84)
+
+ 24 pass
+ 135 filtered out
+ 0 fail
+ 174 expect() calls
+Ran 24 tests across 1 file. [75.00ms]
+EXIT=0
+
+$ rtk proxy bun test test/app.test.js (full file)
+
+ 159 pass
+ 0 fail
+ 1345 expect() calls
+Ran 159 tests across 1 file. [312.00ms]
+EXIT=0

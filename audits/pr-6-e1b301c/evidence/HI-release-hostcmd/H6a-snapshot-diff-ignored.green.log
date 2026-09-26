@@ -1,0 +1,8 @@
+$ rtk proxy bun test test/profile-snapshot.test.js test/release-upgrade.test.js
+bun test v1.4.2 (744846f84)
+
+ 9 pass
+ 0 fail
+ 18 expect() calls
+Ran 9 tests across 2 files. [26.00ms]
+EXIT=0

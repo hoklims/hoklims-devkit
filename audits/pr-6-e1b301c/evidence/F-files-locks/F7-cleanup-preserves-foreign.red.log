@@ -1,0 +1,35 @@
+$ rtk proxy bun test test/runtime.test.js -t 'preserves a replacement temporary file when the writer fails|preserves a state destination replaced|lock ownership when descriptor reads fail|preserves a replacement lock'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+934 |       throw Object.assign(new Error("disk write failed"), { code: "ENOSPC" });
+935 |     },
+936 |   });
+937 |   let error;
+938 |   try { rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} }); } catch (caught) { error = caught; }
+939 |   expect(error?.message).toMatch(/ownership changed/u);
+                               ^
+error: expect(received).toMatch(expected)
+
+Expected substring or pattern: /ownership changed/u
+Received: "disk write failed"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:939:26)
+(fail) runtime preserves a replacement temporary file when the writer fails [1.27ms]
+1012 |   });
+1013 |   let error;
+1014 |   try { rt.acquireLock(statePath); } catch (caught) { error = caught; }
+1015 |   expect(error?.message).toMatch(/ownership changed/u);
+1016 |   expect(error?.code).toBe("STATE_CONFLICT");
+1017 |   expect(readFileSync(lockPath, "utf8")).toBe("foreign lock\n");
+                ^
+error: ENOENT: no such file or directory, open '/tmp/hoklims-devkit-lock-replaced-hcuqh6/repository.json.lock'
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:1017:10)
+(fail) runtime preserves a replacement lock after its writer returns [0.92ms]
+
+ 2 pass
+ 34 filtered out
+ 2 fail
+ 30 expect() calls
+Ran 4 tests across 1 file. [50.00ms]
+EXIT=1

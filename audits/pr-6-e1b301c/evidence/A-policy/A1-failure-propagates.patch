@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..6efcd6c 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -123,7 +123,7 @@ function stateBoundaryProblem(report, error, statePath, operation, { allowRunLoc
+     report.nextActions.push(`After resolving the state lock: ${recoveryAction}`);
+     return problem(report, "RUN_LOCKED", `State lock unavailable at ${statePath}; another Devkit operation may be running. Wait for active operations to finish. If none is active, inspect the lock and state paths; remove a lock only after confirming it is stale and belongs to this Devkit state. ${recoveryAction}.`, 4);
+   }
+-  if (error?.code === "STATE_CONFLICT" || !isStateIoError(error)) {
++  if (error?.code === "STATE_CONFLICT") {
+     return problem(report, "STATE_CONFLICT", `${String(error.message ?? error)} After resolving the state conflict: ${recoveryAction}.`, 4);
+   }
+   return stateIoProblem(report, error, statePath, operation, recoveryAction);

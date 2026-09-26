@@ -1,0 +1,39 @@
+$ rtk proxy bun test test/app.test.js -t 'STATE_CHANGED recovery uses the latest locked reread plan|a rejected refresh preflight resumes the saved plan without refresh'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3071 |     rt.readState = () => ++reads === 1 ? null : structuredClone(lockedState);
+3072 |     rt.acquireLock = () => () => { released = true; };
+3073 |     const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+3074 |     const detail = report.conflicts.map((item) => item.detail).join("\n");
+3075 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+3076 |     expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+                          ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "hoklims-devkit upgrade /repo --host codex --with assertledger"
+Received: "Installation state changed during preflight. Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3076:20)
+(fail) public CLI > STATE_CHANGED recovery uses the latest locked reread plan [12.58ms]
+4036 |     const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.6", tools: ["node", "npm"], files });
+4037 |     const report = await execute(parseArgs([
+4038 |       "upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending",
+4039 |     ]), rt);
+4040 |     expect(report.conflicts.map((item) => item.code)).toContain("RELEASE_SKEW_OR_UNAVAILABLE");
+4041 |     expect(report.nextActions).toContain("Complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger before refreshing releases");
+                                      ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger before refreshing releases"
+Received: [ "Complete the recorded plan with hoklims-devkit upgrade /repo --host codex --with assertledger before refreshing releases" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:4041:32)
+(fail) public CLI > a rejected refresh preflight resumes the saved plan without refresh [2.38ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 4 expect() calls
+Ran 2 tests across 1 file. [67.00ms]
+EXIT=1

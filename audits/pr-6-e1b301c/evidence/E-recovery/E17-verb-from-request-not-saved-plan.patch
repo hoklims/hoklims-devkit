@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..409acb0 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -141,7 +141,7 @@ function stateRecoveryPlan(options, state, hosts, { useRequestedRefresh = false
+   const pending = state?.inProgress;
+   const requestedSelected = options.refreshPending && pending && options.with.length === 0
+     ? pending.selected : state ? selectedComponents(options, state) : ["semctx", ...options.with];
+-  const command = pending && !useRequestedRefresh ? pending.command : options.command;
++  const command = options.command;
+   const selected = pending && !useRequestedRefresh ? pending.selected : requestedSelected;
+   const selectedHosts = pending && !useRequestedRefresh ? pending.hosts : hosts;
+   return { command, selected, hosts: selectedHosts };

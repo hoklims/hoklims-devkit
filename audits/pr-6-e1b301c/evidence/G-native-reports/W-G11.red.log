@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/app.test.js -t 'setup preserves unknown Semctx workspace evidence as a typed conflict'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+1097 |       native.checks.push(null);
+1098 |       return { ...result, stdout: JSON.stringify(native) };
+1099 |     };
+1100 |     const blocked = await execute(setupOptions(), malformed);
+1101 |     const guidance = [blocked.conflicts.map((item) => item.detail).join("\n"), blocked.nextActions.join("\n")].join("\n");
+1102 |     expect(blocked.conflicts.map((item) => item.code)).toContain("SEMCTX_WORKSPACE_STATUS_INVALID");
+                                                              ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "SEMCTX_WORKSPACE_STATUS_INVALID"
+Received: []
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:1102:56)
+(fail) public CLI > setup preserves unknown Semctx workspace evidence as a typed conflict [9.92ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [51.00ms]
+EXIT=1

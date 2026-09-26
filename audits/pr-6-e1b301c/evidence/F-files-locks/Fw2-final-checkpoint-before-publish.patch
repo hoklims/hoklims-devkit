@@ -1,0 +1,12 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..c7cb056 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -513,7 +513,6 @@ export function createRuntime({
+           owned = openOwnedManagedFile(temp, createOwnedFile, "wx+", inspectOwnedDescriptor);
+           writeStateData(owned.descriptor, data);
+           assertOwnedFile(owned);
+-          assertExpectedDestination();
+           const stagedBytes = readOwnedSnapshot(owned, { readChunk: readDescriptorData, path: temp });
+           if (!stagedBytes.equals(Buffer.from(data, "utf8"))) {
+             throw ownedFileConflict(temp, "the staged state bytes changed before publication");

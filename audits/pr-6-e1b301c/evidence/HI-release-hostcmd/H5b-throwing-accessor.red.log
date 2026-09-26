@@ -1,0 +1,24 @@
+$ rtk proxy bun test test/release-report.test.js
+bun test v1.4.2 (744846f84)
+
+test/release-report.test.js:
+120 |     const throwingOptions = {};
+121 |     Object.defineProperty(throwingOptions, "expectedState", {
+122 |       get() { throw new Error("boom"); },
+123 |     });
+124 |     let result;
+125 |     expect(() => { result = validComponentReport(report(components()), projectRoot, expectedNames, throwingOptions); }).not.toThrow();
+                                                                                                                                  ^
+error: expect(received).not.toThrow()
+
+Error name: "Error"
+Error message: "boom"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/release-report.test.js:125:125)
+(fail) validComponentReport > rejects throwing option accessors without propagating the exception [0.64ms]
+
+ 6 pass
+ 1 fail
+ 43 expect() calls
+Ran 7 tests across 1 file. [10.00ms]
+EXIT=1

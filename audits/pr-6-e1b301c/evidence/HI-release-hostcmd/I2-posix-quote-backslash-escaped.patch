@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..5e2b4eb 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -134,7 +134,7 @@ export function quoteShellToken(value) {
+   const safe = process.platform === "win32" ? /^[A-Za-z0-9_./:\\-]+$/u : /^[A-Za-z0-9_./:-]+$/u;
+   if (safe.test(text)) return text;
+   if (process.platform === "win32") return `'${text.replaceAll("'", "''")}'`;
+-  return `'${text.replaceAll("'", `'"'"'`)}'`;
++  return `'${text.replaceAll("'", "\\'")}'`;
+ }
+ 
+ function stateRecoveryPlan(options, state, hosts, { useRequestedRefresh = false } = {}) {

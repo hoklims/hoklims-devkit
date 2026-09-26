@@ -1,0 +1,12 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..6821246 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -475,6 +475,7 @@ export function createRuntime({
+         return;
+       }
+       if (destination.observation === "closed-existing") {
++        return;
+         const currentBytes = readVerifiedFile(path, inspectManagedFile, ownedFileConflict,
+           beforeManagedReadOpen, readFileData, openReadDescriptor, destination.identity, null, readDescriptorData);
+         if (currentBytes === null || !Buffer.from(currentBytes).equals(expectedBytes)) {

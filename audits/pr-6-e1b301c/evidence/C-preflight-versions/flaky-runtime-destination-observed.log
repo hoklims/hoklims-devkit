@@ -1,0 +1,25 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/ -t '.'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+745 |       },
+746 |     });
+747 |     let error;
+748 |     try { rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} }); } catch (caught) { error = caught; }
+749 |     expect(error?.code).toBe("STATE_CONFLICT");
+750 |     expect(readFileSync(statePath, "utf8")).toBe("foreign replacement\n");
+                 ^
+error: ENOENT: no such file or directory, open '/tmp/hoklims-devkit-state-destination-GqmIXW/repository.json'
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/runtime.test.js:750:12)
+(fail) runtime preserves a state destination replaced during temporary write [1.09ms]
+
+ 212 pass
+ 1 fail
+ 1691 expect() calls
+Ran 213 tests across 5 files. [763.00ms]
+EXIT CODE: 1

@@ -1,0 +1,44 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'optional package-manager conflict blocks Semctx application too|conflicting AssertLedger declarations block every write|a Compass preview without evidence'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+1131 |         [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+1132 |       },
+1133 |     });
+1134 |     const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+1135 |     expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_CONFLICT");
+1136 |     expect(rt.calls.some((args) => args.includes("install") && !args.includes("--dry-run"))).toBe(false);
+                                                                                                    ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:1136:94)
+(fail) public CLI > optional package-manager conflict blocks Semctx application too [14.10ms]
+2259 |       ? { code: 0, stdout: JSON.stringify({ dry_run: true, conflicts: [] }), stderr: "" }
+2260 |       : nativeExec(argv, cwd);
+2261 |     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+2262 |     expect(report.ok).toBe(false);
+2263 |     expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+2264 |     expect(rt.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+                                                                                                    ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:2264:94)
+(fail) public CLI > a Compass preview without evidence for its requested host blocks every write [2.18ms]
+
+ 1 pass
+ 156 filtered out
+ 2 fail
+ 14 expect() calls
+Ran 3 tests across 1 file. [50.00ms]
+EXIT CODE: 1

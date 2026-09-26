@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..dada582 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -660,7 +660,7 @@ function semctxStatusHasHosts(rt, status, root, hosts) {
+     && status?.schemaVersion === 2 && status.kind === "plugin_delivery_status"
+     && hosts.every((host) => status.hosts?.[host]?.requested === true
+       && status.hosts[host].installed
+-      && (status.hosts[host].installed.version === null || isStableVersion(status.hosts[host].installed.version))
++      && true
+       && [true, false, null].includes(status.hosts[host].installed.contentMatchesSnapshot)
+       && [true, false, null].includes(status.hosts[host].marketplace?.matchesSemctx));
+ }

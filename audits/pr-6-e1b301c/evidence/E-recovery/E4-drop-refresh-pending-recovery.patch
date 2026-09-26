@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..3ed3da1 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -151,7 +151,7 @@ function stateRecoveryCommand(options, root, state, hosts, recoveryOptions = {})
+   const plan = stateRecoveryPlan(options, state, hosts, recoveryOptions);
+   const host = plan.hosts.length === 2 ? "all" : plan.hosts[0];
+   const optional = plan.selected.filter((name) => name !== "semctx");
+-  return `hoklims-devkit ${plan.command} ${quoteShellToken(root)} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}${recoveryOptions.useRequestedRefresh ? " --refresh-pending" : ""}`;
++  return `hoklims-devkit ${plan.command} ${quoteShellToken(root)} --host ${host}${optional.length ? ` --with ${optional.join(",")}` : ""}`;
+ }
+ 
+ function failureGuidance(rt, options, root, hosts, candidateState, recoveryOptions = {}) {

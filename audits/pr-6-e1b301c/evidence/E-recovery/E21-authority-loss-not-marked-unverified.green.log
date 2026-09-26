@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'late authority loss replaces every earlier recovery instruction|lock release ownership conflict makes recorded-plan recovery conditional'
+bun test v1.4.2 (744846f84)
+
+ 2 pass
+ 157 filtered out
+ 0 fail
+ 23 expect() calls
+Ran 2 tests across 1 file. [49.00ms]
+EXIT=0

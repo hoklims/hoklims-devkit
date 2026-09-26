@@ -1,0 +1,13 @@
+diff --git a/scripts/profile-snapshot.js b/scripts/profile-snapshot.js
+index 0f1237d..52ab44c 100644
+--- a/scripts/profile-snapshot.js
++++ b/scripts/profile-snapshot.js
+@@ -10,7 +10,7 @@ export function snapshot(path) {
+     throw error;
+   }
+   if (root.isSymbolicLink()) return { link: readlinkSync(path) };
+-  if (root.isFile()) return { file: Buffer.from(readFileSync(path)).toString("base64"), mode: root.mode & 0o7777 };
++  if (root.isFile()) return { file: Buffer.from(readFileSync(path)).toString("base64") };
+   if (!root.isDirectory()) throw new Error(`Unexpected special file in smoke profile: ${path}`);
+   return {
+     mode: root.mode & 0o7777,

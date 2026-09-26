@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'lock contention preserves an admitted refresh request|state I/O recovery repeats the recorded upgrade selectors'
+bun test v1.4.2 (744846f84)
+
+ 2 pass
+ 157 filtered out
+ 0 fail
+ 11 expect() calls
+Ran 2 tests across 1 file. [41.00ms]
+EXIT=0

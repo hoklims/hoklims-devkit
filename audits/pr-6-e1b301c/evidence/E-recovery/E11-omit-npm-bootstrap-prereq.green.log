@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'AssertLedger recovery includes its npm bootstrap alongside the selected package manager'
+bun test v1.4.2 (744846f84)
+
+ 1 pass
+ 158 filtered out
+ 0 fail
+ 15 expect() calls
+Ran 1 test across 1 file. [52.00ms]
+EXIT=0

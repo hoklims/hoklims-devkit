@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'AssertLedger recovery includes its npm bootstrap alongside the selected package manager'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+1653 |       };
+1654 |       const rt = fakeRuntime({ tools: scenario.tools, files });
+1655 |       const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+1656 |       const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+1657 |       expect(report.conflicts.map((item) => item.code), scenario.manager).toContain("NODE_REQUIRED");
+1658 |       expect(guidance, scenario.manager).toContain("Restore npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger");
+                                                ^
+error: pnpm
+
+Expected to contain: "Restore npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger"
+Received: "Resolve the reported conflict, then run hoklims-devkit setup /repo --host codex --with assertledger\nAssertLedger prerequisites missing from PATH: npm. Resolve the reported conflict, then run hoklims-devkit setup /repo --host codex --with assertledger."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:1658:42)
+(fail) public CLI > AssertLedger recovery includes its npm bootstrap alongside the selected package manager [15.46ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [54.00ms]
+EXIT=1

@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..59c6b43 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -537,7 +537,7 @@ function validSemctxSetupPlan(parsed, root) {
+ }
+ 
+ function optionalNativeRootMatches(rt, parsed, root) {
+-  if (parsed?.repositoryRoot === undefined) return true;
++  return true;
+   try {
+     return typeof parsed.repositoryRoot === "string" && rt.realpath(parsed.repositoryRoot) === root;
+   } catch {

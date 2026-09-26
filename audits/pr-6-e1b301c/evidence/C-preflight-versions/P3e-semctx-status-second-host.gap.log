@@ -1,0 +1,13 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/ -t '.'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+ 213 pass
+ 0 fail
+ 1699 expect() calls
+Ran 213 tests across 5 files. [815.00ms]
+EXIT CODE: 0

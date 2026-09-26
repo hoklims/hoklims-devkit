@@ -1,0 +1,44 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'doctor keeps invalid AssertLedger artifact evidence unknown|doctor does not infer AssertLedger configuration from empty artifacts'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+753 |       rt.exec = async (argv, cwd, timeout) => argv[0] === "node" && argv.includes("setup")
+754 |         ? { code: 0, stdout: JSON.stringify({ ...assertSetupReport(argv, "UNCHANGED", "dry-run"), artifacts }), stderr: "" }
+755 |         : nativeExec(argv, cwd, timeout);
+756 |       const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+757 |       const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+758 |       expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+                                                                                              ^
+error: expect(received).toBe(expected)
+
+Expected: "unknown"
+Received: "no"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:758:89)
+(fail) public CLI > doctor keeps invalid AssertLedger artifact evidence unknown [11.56ms]
+781 |     rt.exec = async (argv, cwd) => argv[0] === "node" && argv.includes("setup")
+782 |       ? { code: 0, stdout: JSON.stringify({ ...assertSetupReport(argv, "UNCHANGED", "dry-run"), artifacts: [] }), stderr: "" }
+783 |       : nativeExec(argv, cwd);
+784 |     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+785 |     expect(report.ok).toBe(false);
+786 |     expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+                                                                                            ^
+error: expect(received).toBe(expected)
+
+Expected: "unknown"
+Received: "no"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:786:87)
+(fail) public CLI > doctor does not infer AssertLedger configuration from empty artifacts [1.16ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 3 expect() calls
+Ran 2 tests across 1 file. [63.00ms]
+EXIT CODE: 1

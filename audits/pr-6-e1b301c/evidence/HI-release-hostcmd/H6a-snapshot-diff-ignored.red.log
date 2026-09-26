@@ -1,0 +1,116 @@
+$ rtk proxy bun test test/profile-snapshot.test.js test/release-upgrade.test.js
+bun test v1.4.2 (744846f84)
+
+test/profile-snapshot.test.js:
+15 |   const hookBefore = [snapshot(hooks)];
+16 |   const plannedReport = { ok: true, components: [{ name: "semctx", state: "planned" }] };
+17 |   expect(plannedReport.ok).toBe(true);
+18 |   assertSnapshotUnchanged(protectedPaths, before, "codex");
+19 |   writeFileSync(hooks, '{"hooks":{"SessionStart":[]}}\n');
+20 |   expect(() => assertSnapshotUnchanged(protectedPaths, before, "codex")).toThrow(/modified the host profile/u);
+                                                                              ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /modified the host profile/u
+
+Received function did not throw
+Received value: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/profile-snapshot.test.js:20:74)
+(fail) release smoke rejects a host mutation despite a valid planned report [2.14ms]
+32 |   mkdirSync(git, { recursive: true });
+33 |   const config = join(git, "config");
+34 |   writeFileSync(config, "[core]\n");
+35 |   let before = [snapshot(repository)];
+36 |   writeFileSync(join(repository, ".ignored-local"), "unexpected\n");
+37 |   expect(() => assertSnapshotUnchanged([repository], before, "codex")).toThrow();
+                                                                            ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/profile-snapshot.test.js:37:72)
+(fail) release smoke detects ignored and Git metadata writes [0.66ms]
+46 |   const bin = join(home, "uv-bin");
+47 |   expect(paths).toContain(bin);
+48 |   const before = paths.map(snapshot);
+49 |   mkdirSync(bin);
+50 |   writeFileSync(join(bin, "latent-compass"), "unexpected\n");
+51 |   expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow(/modified the host profile/u);
+                                                                     ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /modified the host profile/u
+
+Received function did not throw
+Received value: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/profile-snapshot.test.js:51:65)
+(fail) release smoke detects a persistent tool written outside host config folders [0.72ms]
+69 |   const paths = protectedProfilePaths(home);
+70 |   const before = paths.map(snapshot);
+71 |   const skill = join(codex, "skills", "foreign");
+72 |   mkdirSync(skill, { recursive: true });
+73 |   writeFileSync(join(skill, "SKILL.md"), "unexpected\n");
+74 |   expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
+                                                                     ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/profile-snapshot.test.js:74:65)
+(fail) release smoke detects a new host skill outside the standard hook file [0.70ms]
+83 |   writeFileSync(executable, "#!/bin/sh\n");
+84 |   chmodSync(executable, 0o755);
+85 |   const paths = protectedProfilePaths(home);
+86 |   const before = paths.map(snapshot);
+87 |   chmodSync(executable, 0o644);
+88 |   expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
+                                                                     ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/profile-snapshot.test.js:88:65)
+(fail) release smoke detects an executable permission change [0.61ms]
+ 97 |   writeFileSync(executable, "#!/bin/sh\n");
+ 98 |   chmodSync(executable, 0o755);
+ 99 |   const paths = protectedProfilePaths(home);
+100 |   let before = paths.map(snapshot);
+101 |   chmodSync(executable, 0o4755);
+102 |   expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
+                                                                      ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/profile-snapshot.test.js:102:65)
+(fail) release smoke detects special permission-bit changes [0.58ms]
+
+test/release-upgrade.test.js:
+16 |   writeFileSync(managed, "before\n");
+17 |   const paths = [managed];
+18 |   const before = paths.map(snapshot);
+19 |   writeFileSync(managed, "foreign rewrite\n");
+20 |   expect(() => assertNoopUpgradeUnchanged(paths, before, report("0.3.5"), report("0.3.5"), report("0.3.5"), "noop"))
+21 |     .toThrow(/modified the host profile/u);
+          ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /modified the host profile/u
+
+Received function did not throw
+Received value: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/release-upgrade.test.js:21:6)
+(fail) same-version upgrade rejects changed managed bytes [1.22ms]
+
+ 2 pass
+ 7 fail
+ 13 expect() calls
+Ran 9 tests across 2 files. [22.00ms]
+EXIT=1

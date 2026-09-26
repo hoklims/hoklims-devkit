@@ -1,0 +1,65 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'doctor keeps Compass observation unknown when native status omits the evidence'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+940 |     const nativeExec = rt.exec;
+941 |     rt.exec = async (argv, cwd) => argv[0] === executable && argv.includes("status")
+942 |       ? { code: 0, stdout: JSON.stringify({ schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo", hosts: [{ host: "codex", status: "OBSERVING" }], states: { codex: { installed: true, configured: true } } }), stderr: "" }
+943 |       : nativeExec(argv, cwd);
+944 |     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+945 |     expect(report.components.find((item) => item.name === "latent-compass")).toMatchObject({ configured: "yes", observed: "unknown" });
+                                                                                   ^
+error: expect(received).toMatchObject(expected)
+
+  {
++   "approved": "unknown",
++   "checks": [
++     {
++       "command": "host-status:codex",
++       "exitCode": 0,
++       "report": {
++         "hosts": [
++           {
++             "host": "codex",
++             "status": "OBSERVING",
++           },
++         ],
++         "operation": "status",
++         "project_root": "/repo",
++         "schema_version": 1,
++         "states": {
++           "codex": {
++             "configured": true,
++             "installed": true,
++           },
++         },
++         "version": "0.3.0",
++       },
++     },
++   ],
+    "configured": "yes",
+-   "observed": "unknown",
++   "installed": "yes",
++   "loaded": "unknown",
++   "name": "latent-compass",
++   "observed": "no",
++   "version": "0.3.0",
+  }
+
+- Expected  - 1
++ Received  + 30
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:945:78)
+(fail) public CLI > doctor keeps Compass observation unknown when native status omits the evidence [6.10ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [55.00ms]
+EXIT CODE: 1

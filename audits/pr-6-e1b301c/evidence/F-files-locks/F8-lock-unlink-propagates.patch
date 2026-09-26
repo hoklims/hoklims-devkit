@@ -1,0 +1,13 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..d671c6f 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -700,7 +700,7 @@ export function createRuntime({
+           beforeOwnedLockRead(lockPath);
+           const current = readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor, owned);
+           if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
+-          cleanupOwnedFile(owned, removeOwnedFile);
++          try { cleanupOwnedFile(owned, removeOwnedFile); } catch { /* mutation: swallow removal failure */ }
+         } catch (error) {
+           let releaseError = error;
+           if (owned.descriptor !== null) {

@@ -1,0 +1,4 @@
+# pristine tree, 40 full-suite runs; flaky failures observed (count test):
+      1 (fail) public CLI > state checkpoints stay bound to the locked filesystem observation [2.28ms]
+      1 (fail) public CLI > state checkpoints stay bound to the locked filesystem observation [9.06ms]
+      1 (fail) runtime never commits a replacement temporary file after a successful callback [1.25ms]

@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..30af8d0 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -925,7 +925,7 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
+     const result = await rt.exec(commandLine, root);
+     const parsed = nativeResult(result, `latent-compass host install (${host})`, report);
+     if (!parsed) continue;
+-    if (result.code !== 0 || !validCompassInstallReport(rt, parsed, root, host, version, true)) {
++    if ((result.code !== 0 || !validCompassInstallReport(rt, parsed, root, host, version, true)) && !report.plannedChanges.some((item) => item.component === "assertledger")) {
+       problem(report, "COMPASS_HOOK_CONFLICT", JSON.stringify(parsed).slice(0, 600));
+     }
+     previews.push({ host, files: parsed.files ?? [], conflicts: parsed.conflicts ?? [] });

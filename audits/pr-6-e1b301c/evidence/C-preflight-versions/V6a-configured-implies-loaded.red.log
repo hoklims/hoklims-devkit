@@ -1,0 +1,54 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'every planned and applied component reports the five distinct states|successful setup records the exact installed version for resume'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+338 |     const plan = await execute({ ...setupOptions(), dryRun: true }, rt);
+339 |     expect(plan.components[0]).toMatchObject({
+340 |       installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown",
+341 |     });
+342 |     const applied = await execute(setupOptions(), rt);
+343 |     expect(applied.components[0]).toMatchObject({
+                                        ^
+error: expect(received).toMatchObject(expected)
+
+@@ -4,4 +4,7 @@
+    "installed": "yes",
+-   "loaded": "unknown",
++   "loaded": "yes",
++   "name": "semctx",
+    "observed": "unknown",
++   "state": "configured",
++   "version": "0.3.4",
+  }
+
+- Expected  - 1
++ Received  + 4
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:343:35)
+(fail) public CLI > every planned and applied component reports the five distinct states [9.85ms]
+473 |     expect(report.components[0].state).toBe("configured");
+474 |     expect(rt.writes).toHaveLength(3);
+475 |     expect(rt.writes[0].inProgress.versions.semctx).toBe("0.3.4");
+476 |     expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.4", hosts: ["codex"] });
+477 |     expect(rt.writes.at(-1).inProgress).toBeUndefined();
+478 |     expect(report.components[0].loaded).toBe("unknown");
+                                              ^
+error: expect(received).toBe(expected)
+
+Expected: "unknown"
+Received: "yes"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:478:41)
+(fail) public CLI > successful setup records the exact installed version for resume [0.69ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 9 expect() calls
+Ran 2 tests across 1 file. [56.00ms]
+EXIT CODE: 1

@@ -1,0 +1,12 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..565c61b 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1504,6 +1504,7 @@ export async function execute(options, rt = createRuntime()) {
+           component.state = result.ready === false ? "needs-attention" : "configured";
+           component.installed = "yes";
+           component.configured = result.ready === false ? "unknown" : "yes";
++          component.approved = component.configured;
+           component.loaded = result.activation;
+           report.nextActions.push(...result.next);
+           if (result.ready === false) {

@@ -1,0 +1,13 @@
+$ bun run check
+$ bun test && bun build ./bin/hoklims-devkit.js --target=bun --outdir=dist
+bun test v1.4.2 (744846f84)
+
+ 213 pass
+ 0 fail
+ 1699 expect() calls
+Ran 213 tests across 5 files. [782.00ms]
+Bundled 4 modules in 24ms
+
+  hoklims-devkit.js  115.75 KB  (entry point)
+
+exit=0

@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'implicit upgrade selection is shared by execution and recovery prerequisites'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3516 |       if (explicit) argv.push("--with", "assertledger,latent-compass");
+3517 |       const report = await execute(parseArgs(argv), rt);
+3518 |       const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+3519 |       expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+3520 |       expect(guidance).toContain("--with assertledger,latent-compass");
+3521 |       expect(guidance.toLowerCase()).toContain("restore node, uv on path");
+                                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "restore node, uv on path"
+Received: "resolve the reported native conflict, then restore node on path before running hoklims-devkit upgrade /repo --host codex --with assertledger,latent-compass\nsemctx: semctx workspace setup: native setup failed. resolve the reported native conflict, then restore node on path before running hoklims-devkit upgrade /repo --host codex --with assertledger,latent-compass."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3521:38)
+(fail) public CLI > implicit upgrade selection is shared by execution and recovery prerequisites [23.46ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [65.00ms]
+EXIT=1

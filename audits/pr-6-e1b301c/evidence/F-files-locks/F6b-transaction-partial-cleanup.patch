@@ -1,0 +1,13 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..2136f46 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -537,7 +537,7 @@ export function createRuntime({
+         } catch (error) {
+           if (owned) {
+             try {
+-              cleanupOwnedFile(owned, removeOwnedFile);
++              closeOwnedFile(owned);
+             } catch (cleanupError) {
+               throw cleanupError;
+             }

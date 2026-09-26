@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/app.test.js -t 'doctor keeps invalid AssertLedger artifact evidence unknown'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+753 |       rt.exec = async (argv, cwd, timeout) => argv[0] === "node" && argv.includes("setup")
+754 |         ? { code: 0, stdout: JSON.stringify({ ...assertSetupReport(argv, "UNCHANGED", "dry-run"), artifacts }), stderr: "" }
+755 |         : nativeExec(argv, cwd, timeout);
+756 |       const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+757 |       const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+758 |       expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+                                                                                              ^
+error: expect(received).toBe(expected)
+
+Expected: "unknown"
+Received: "yes"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:758:89)
+(fail) public CLI > doctor keeps invalid AssertLedger artifact evidence unknown [13.54ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 5 expect() calls
+Ran 1 test across 1 file. [56.00ms]
+EXIT=1

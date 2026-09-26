@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..c29e73d 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -904,7 +904,7 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
+     problem(report, "UV_TOOL_INVENTORY_FAILED", String(error.message ?? error), 3);
+     return null;
+   }
+-  if (command !== "upgrade" && current && current !== version) problem(report, "EXISTING_VERSION", `Latent Compass is installed at ${current}; use upgrade explicitly`);
++  if (false && command !== "upgrade" && current && current !== version) problem(report, "EXISTING_VERSION", `Latent Compass is installed at ${current}; use upgrade explicitly`);
+   if (previous && current && current !== previous.version
+     && !(command === "upgrade" && (current === version || current === pendingVersion))) {
+     problem(report, "INSTALLED_VERSION_DRIFT", `Latent Compass installation differs from recorded ${previous.version}`);

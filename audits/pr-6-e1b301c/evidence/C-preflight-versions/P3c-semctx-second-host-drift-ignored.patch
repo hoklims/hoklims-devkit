@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..95d1311 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -753,7 +753,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
+     return null;
+   }
+   if (previous && hosts.some((host) => statusJson.hosts[host].installed.version === null)) hostInstallNeeded = true;
+-  for (const host of hosts) {
++  for (const host of hosts.slice(0, 1)) {
+     const installed = statusJson.hosts[host].installed;
+     if (installed.version !== null && statusJson.hosts[host].marketplace?.matchesSemctx !== true) {
+       problem(report, "SEMCTX_MARKETPLACE_CONFLICT", `${host} Semctx plugin is not from the expected marketplace`);

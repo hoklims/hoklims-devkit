@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'all and auto recoveries restore missing saved-plan hosts before the full retry'
+bun test v1.4.2 (744846f84)
+
+ 1 pass
+ 158 filtered out
+ 0 fail
+ 8 expect() calls
+Ran 1 test across 1 file. [44.00ms]
+EXIT=0

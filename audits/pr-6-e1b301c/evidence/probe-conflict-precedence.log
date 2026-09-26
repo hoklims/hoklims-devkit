@@ -1,0 +1,10 @@
+A conflict, cleanup ok      -> STATE_CONFLICT | Managed state file ownership changed at /tmp/probe-ADyxrx/hoklims-devkit/s.json: the destination was replaced 
+   files: [ "s.json" ]
+B conflict, cleanup EIO     -> EIO | EIO: simulated unlink failure
+   files: [ "s.json.77b55c52-5438-40ae-9e79-4718f4df5fec.tmp", "s.json" ]
+C tx conflict, cleanup ok   -> STATE_CONFLICT | Managed state file ownership changed at /tmp/probe-EpY3yI/hoklims-devkit/s.json: the pathname now identifies a
+   close -> STATE_CONFLICT
+   files: [ "s.json.a01b59dd-bef9-45f4-b41a-cae0a4818c1a.tmp", "s.json" ]
+D tx conflict, cleanup EIO  -> EIO | EIO: simulated unlink failure
+   close -> STATE_CONFLICT
+   files: [ "s.json.e45c4841-a67c-45c0-b2a7-f457b00a74aa.tmp", "s.json" ]

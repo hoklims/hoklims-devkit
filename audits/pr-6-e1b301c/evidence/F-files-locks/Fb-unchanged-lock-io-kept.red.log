@@ -1,0 +1,63 @@
+$ rtk proxy bun test test/runtime.test.js -t 'lock ownership when descriptor reads fail|propagates an owned lock unlink failure'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+633 |     if (replace) {
+634 |       expect(error?.code).toBe("STATE_CONFLICT");
+635 |       expect(readFileSync(lockPath, "utf8")).toBe("FOREIGN-LOCK\n");
+636 |       expect(existsSync(originalPath)).toBe(true);
+637 |     } else {
+638 |       expect(error).toBe(readError);
+                          ^
+error: expect(received).toBe(expected)
+
+Expected: 612 |   for (const replace of [false, true]) {
+613 |     const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-lock-read-error-${replace}-`)));
+614 |     const statePath = join(root, "repository.json");
+615 |     const lockPath = `${statePath}.lock`;
+616 |     const originalPath = `${lockPath}.original`;
+617 |     const readError = Object.assign(new Error("simulated lock read EIO"), { code: "EIO" });
+                                              ^
+error: simulated lock read EIO
+ code: "EIO"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:617:41)
+
+Received: 30 |     throw error;
+31 |   }
+32 | }
+33 | 
+34 | function ownedFileConflict(path, detail) {
+35 |   return Object.assign(new Error(`Managed state file ownership changed at ${path}: ${detail}. Preserve the foreign path, inspect it, then rerun.`), { code: "STATE_CONFLICT" });
+                                ^
+error: Managed state file ownership changed at /tmp/hoklims-devkit-lock-read-error-false-jEjC6s/repository.json.lock: release failed. Preserve the foreign path, inspect it, then rerun.
+ code: "STATE_CONFLICT"
+
+      at ownedFileConflict (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:35:28)
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:705:73)
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:631:11)
+
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:638:21)
+(fail) runtime revalidates lock ownership when descriptor reads fail [4.47ms]
+1048 |   const lockPath = `${statePath}.lock`;
+1049 |   const rt = createRuntime({
+1050 |     removeOwnedFile: () => { throw Object.assign(new Error("lock unlink denied"), { code: "EACCES" }); },
+1051 |   });
+1052 |   const release = rt.acquireLock(statePath);
+1053 |   expect(release).toThrow(/lock unlink denied/u);
+                         ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /lock unlink denied/u
+Received message: "Managed state file ownership changed at /tmp/hoklims-devkit-lock-unlink-vqsApQ/repository.json.lock: release failed. Preserve the foreign path, inspect it, then rerun."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:1053:19)
+(fail) runtime propagates an owned lock unlink failure [1.65ms]
+
+ 0 pass
+ 36 filtered out
+ 2 fail
+ 3 expect() calls
+Ran 2 tests across 1 file. [50.00ms]
+EXIT=1
