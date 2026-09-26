@@ -127,6 +127,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
     exists: (path) => Object.hasOwn(files, path),
     pathPresent: (path) => Object.hasOwn(files, path),
     plainFilePresent: (path) => Object.hasOwn(files, path),
+    directoryPresent: (path) => Object.keys(files).some((candidate) => candidate.startsWith(`${path}${process.platform === "win32" ? "\\" : "/"}`)),
     isReadableFile: (path) => Object.hasOwn(files, path) && typeof files[path] === "string",
     readText: (path) => files[path],
     readPlainText: (path) => files[path],
@@ -889,9 +890,49 @@ describe("public CLI", () => {
     const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
     const pathPresent = rt.pathPresent;
     rt.pathPresent = (path) => path === cliPath || pathPresent(path);
+    const packageRoot = join("/repo", "node_modules", "assertledger");
+    rt.directoryPresent = (path) => path === join("/repo", "node_modules") || path === packageRoot;
     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
     expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
     expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("unsafe or empty AssertLedger package entries block every native preview", async () => {
+    for (const shape of ["dangling-parent", "empty-package"]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+      };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const packageRoot = join("/repo", "node_modules", "assertledger");
+      rt.directoryPresent = (path) => {
+        if (path === join("/repo", "node_modules")) return true;
+        if (path === packageRoot && shape === "dangling-parent") {
+          throw Object.assign(new Error("AssertLedger package directory is a dangling link"), { code: "STATE_CONFLICT" });
+        }
+        return path === packageRoot;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("a valid pnpm-linked AssertLedger package remains locally executable", async () => {
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const rt = fakeRuntime({ tools: ["node", "npm", "pnpm"], files });
+    const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+    expect(report.ok).toBe(true);
+    expect(report.plannedChanges.find((item) => item.component === "assertledger")?.installPackage).toBe(false);
+    expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup"))).toBe(true);
     expect(rt.writes).toHaveLength(0);
   });
 
@@ -1659,6 +1700,28 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
     expect(detail).toContain("Restore the claude CLI on PATH before running hoklims-devkit upgrade /repo --host all");
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("all and auto recoveries restore missing saved-plan hosts before the full retry", async () => {
+    const state = {
+      schemaVersion: 1,
+      projectRoot: "/repo",
+      components: {},
+      inProgress: {
+        command: "setup",
+        selected: ["semctx", "assertledger"],
+        hosts: ["codex", "claude"],
+        versions: { semctx: "0.3.5", assertledger: "1.2.0" },
+      },
+    };
+    for (const host of ["all", "auto"]) {
+      const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+      const report = await execute(parseArgs(["setup", "/repo", "--host", host, "--with", "assertledger"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.ok).toBe(false);
+      expect(guidance).toContain("Restore the claude CLI on PATH before running hoklims-devkit setup /repo --host all --with assertledger");
+      expect(rt.writes).toHaveLength(0);
+    }
   });
 
   test("shared-host upgrade advice preserves explicit component selectors", async () => {

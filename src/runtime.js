@@ -61,6 +61,22 @@ function inspectPlainProjectFile(path, options) {
   return stat;
 }
 
+function inspectProjectDirectory(path) {
+  const entry = lstatIfPresent(path);
+  if (!entry) return false;
+  let target;
+  try {
+    target = statSync(path);
+  } catch (error) {
+    if (entry.isSymbolicLink() && error?.code === "ENOENT") {
+      throw unsafeProjectPath(path, "is a dangling directory link");
+    }
+    throw error;
+  }
+  if (!target.isDirectory()) throw unsafeProjectPath(path, "is not a directory");
+  return true;
+}
+
 function openVerifiedReadDescriptor(path) {
   const flags = platform() === "win32"
     ? constants.O_RDONLY
@@ -311,6 +327,7 @@ export function createRuntime({
     exists: existsSync,
     pathPresent: (path) => Boolean(lstatIfPresent(path)),
     plainFilePresent: (path) => Boolean(inspectPlainProjectFile(path)),
+    directoryPresent: inspectProjectDirectory,
     isReadableFile: (path) => {
       try {
         if (!statSync(path).isFile()) return false;

@@ -188,6 +188,29 @@ test("runtime project-file inspection rejects linked and non-file entries", () =
   expect(rt.readPlainText(regular)).toBe("{}\n");
 });
 
+test("runtime distinguishes absent, linked, and unsafe package directories", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-package-directory-")));
+  const nodeModules = join(root, "node_modules");
+  const packagePath = join(nodeModules, "assertledger");
+  const storePackage = join(root, ".pnpm", "assertledger");
+  mkdirSync(nodeModules);
+  const rt = createRuntime();
+  expect(rt.directoryPresent(packagePath)).toBe(false);
+  mkdirSync(storePackage, { recursive: true });
+  try {
+    symlinkSync(storePackage, packagePath, process.platform === "win32" ? "junction" : undefined);
+  } catch (error) {
+    if (error?.code === "EPERM") return;
+    throw error;
+  }
+  expect(rt.directoryPresent(packagePath)).toBe(true);
+  unlinkSync(packagePath);
+  symlinkSync(join(root, "missing-store"), packagePath, process.platform === "win32" ? "junction" : undefined);
+  let dangling;
+  try { rt.directoryPresent(packagePath); } catch (error) { dangling = error; }
+  expect(dangling?.code).toBe("STATE_CONFLICT");
+});
+
 test("runtime preserves a dangling state symlink and its target while writing", () => {
   const fixture = danglingStateFixture();
   if (!fixture) return;

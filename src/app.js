@@ -62,9 +62,15 @@ function problem(report, code, detail, exitCode = 4) {
   return report;
 }
 
-function stateIoProblem(report, error, statePath, operation, recoveryCommand) {
+function retryInstruction(rt, hosts, command) {
+  const missing = hosts.filter((host) => !rt.which(host));
+  if (!missing.length) return `Run ${command}`;
+  return `Restore the ${missing.join(",")} CLI${missing.length === 1 ? "" : "s"} on PATH before running ${command}`;
+}
+
+function stateIoProblem(report, error, statePath, operation, recoveryAction) {
   const detail = String(error?.message ?? error);
-  return problem(report, "STATE_IO_ERROR", `Devkit state ${operation} failed at ${statePath}: ${detail}. Check disk space and permissions, replace linked state paths with real local directories or files, then retry with: ${recoveryCommand}.`, 5);
+  return problem(report, "STATE_IO_ERROR", `Devkit state ${operation} failed at ${statePath}: ${detail}. Check disk space and permissions, replace linked state paths with real local directories or files. ${recoveryAction}.`, 5);
 }
 
 function isStateIoError(error) {
@@ -72,15 +78,15 @@ function isStateIoError(error) {
     || (typeof error?.code === "string" && /^E[A-Z0-9_]+$/u.test(error.code));
 }
 
-function stateBoundaryProblem(report, error, statePath, operation, { allowRunLocked = false, recoveryCommand } = {}) {
+function stateBoundaryProblem(report, error, statePath, operation, { allowRunLocked = false, recoveryAction } = {}) {
   if (allowRunLocked && (error instanceof RunLockedError || error?.code === "RUN_LOCKED")) {
-    report.nextActions.push(`After resolving the state lock, run ${recoveryCommand}`);
-    return problem(report, "RUN_LOCKED", `State lock unavailable at ${statePath}; another Devkit operation may be running. Wait for active operations to finish. If none is active, inspect the lock and state paths; remove a lock only after confirming it is stale and belongs to this Devkit state. Then retry with: ${recoveryCommand}.`, 4);
+    report.nextActions.push(`After resolving the state lock: ${recoveryAction}`);
+    return problem(report, "RUN_LOCKED", `State lock unavailable at ${statePath}; another Devkit operation may be running. Wait for active operations to finish. If none is active, inspect the lock and state paths; remove a lock only after confirming it is stale and belongs to this Devkit state. ${recoveryAction}.`, 4);
   }
   if (error?.code === "STATE_CONFLICT" || !isStateIoError(error)) {
-    return problem(report, "STATE_CONFLICT", `${String(error.message ?? error)} After resolving the state conflict, retry with: ${recoveryCommand}.`, 4);
+    return problem(report, "STATE_CONFLICT", `${String(error.message ?? error)} After resolving the state conflict: ${recoveryAction}.`, 4);
   }
-  return stateIoProblem(report, error, statePath, operation, recoveryCommand);
+  return stateIoProblem(report, error, statePath, operation, recoveryAction);
 }
 
 export function quoteShellToken(value) {
@@ -235,11 +241,14 @@ function installPackageCommand(manager, version) {
 }
 
 function localAssertEntry(rt, root) {
-  const packagePath = join(root, "node_modules", "assertledger", "package.json");
-  const cliPath = join(root, "node_modules", "assertledger", "dist", "cli.js");
+  const nodeModules = join(root, "node_modules");
+  const packageRoot = join(nodeModules, "assertledger");
+  const packagePath = join(packageRoot, "package.json");
+  const cliPath = join(packageRoot, "dist", "cli.js");
+  if (!rt.directoryPresent(nodeModules)) return null;
+  if (!rt.directoryPresent(packageRoot)) return null;
   const packagePresent = rt.pathPresent(packagePath);
   const cliPresent = rt.pathPresent(cliPath);
-  if (!packagePresent && !cliPresent) return null;
   if (!packagePresent || !cliPresent) throw new Error("The project-local AssertLedger package is incomplete");
   if (!rt.isReadableFile(cliPath)) throw new Error("The project-local AssertLedger CLI is not a readable regular file");
   let version;
@@ -892,25 +901,39 @@ export async function execute(options, rt = createRuntime()) {
   report.projectRoot = root;
   const hosts = options.host === "auto" ? HOSTS.filter((host) => rt.which(host))
     : options.host === "all" ? HOSTS : [options.host];
-  if (hosts.length === 0 || hosts.some((host) => !rt.which(host))) {
-    return problem(report, "HOST_UNAVAILABLE", `Requested host is not on PATH: ${options.host}`, 3);
-  }
   report.hosts = hosts;
   let state;
   const statePath = rt.statePath(root);
-  const recoveryCommandFor = (candidateState, recoveryOptions) => stateRecoveryCommand(options, root, candidateState, hosts, recoveryOptions);
+  const requestedRecoveryHosts = hosts.length ? hosts : HOSTS;
+  const recoveryCommandFor = (candidateState, recoveryOptions) => stateRecoveryCommand(options, root, candidateState, requestedRecoveryHosts, recoveryOptions);
+  const recoveryActionFor = (candidateState, recoveryOptions) => {
+    const recoveryHosts = candidateState?.inProgress && !recoveryOptions?.useRequestedRefresh
+      ? candidateState.inProgress.hosts : requestedRecoveryHosts;
+    return retryInstruction(rt, recoveryHosts, recoveryCommandFor(candidateState, recoveryOptions));
+  };
   const addSavedPlanRecovery = () => {
     if (!state?.inProgress) return;
+    const command = recoveryCommandFor(state);
+    const recoveryAction = recoveryActionFor(state);
+    const missingPrerequisite = recoveryAction.startsWith("Restore ");
+    const continuedAction = `${recoveryAction[0].toLowerCase()}${recoveryAction.slice(1)}`;
     const action = options.refreshPending
-      ? `Complete the recorded plan with ${recoveryCommandFor(state)} before refreshing releases`
-      : `Resolve the reported native conflict, then complete the recorded plan with ${recoveryCommandFor(state)}`;
+      ? missingPrerequisite
+        ? `${recoveryAction} to complete the recorded plan before refreshing releases`
+        : `Complete the recorded plan with ${command} before refreshing releases`
+      : missingPrerequisite
+        ? `Resolve the reported native conflict, then ${continuedAction}`
+        : `Resolve the reported native conflict, then complete the recorded plan with ${command}`;
     if (!report.nextActions.includes(action)) report.nextActions.push(action);
   };
   try {
     state = validateState(rt.readState(statePath));
     if (state && state.projectRoot !== root) throw new Error("State belongs to another repository");
   } catch (error) {
-    return stateBoundaryProblem(report, error, statePath, "initial read", { recoveryCommand: recoveryCommandFor(null) });
+    return stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: recoveryActionFor(null) });
+  }
+  if (hosts.length === 0 || hosts.some((host) => !rt.which(host))) {
+    return problem(report, "HOST_UNAVAILABLE", `Requested host is not on PATH: ${options.host}. ${recoveryActionFor(state)}`, 3);
   }
   if (options.command === "doctor") {
     const names = new Set(["semctx", ...options.with, ...Object.keys(state?.components ?? {}), ...(state?.inProgress?.selected ?? [])]);
@@ -945,7 +968,7 @@ export async function execute(options, rt = createRuntime()) {
   if (state?.inProgress && ((state.inProgress.command !== options.command && !options.refreshPending)
     || (JSON.stringify(state.inProgress.hosts) !== JSON.stringify(hosts) && !refreshExpandsHosts)
     || JSON.stringify(state.inProgress.selected) !== JSON.stringify(selected))) {
-    return problem(report, "PENDING_PLAN_CONFLICT", `Complete the recorded plan with ${recoveryCommandFor(state)} before changing selectors`, 4);
+    return problem(report, "PENDING_PLAN_CONFLICT", `The saved plan must be completed before changing selectors. ${recoveryActionFor(state)}`, 4);
   }
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) {
@@ -958,10 +981,7 @@ export async function execute(options, rt = createRuntime()) {
       if (previous && previous.version !== versions[name] && previous.hosts.some((host) => !hosts.includes(host))) {
         const optional = selected.filter((item) => item !== "semctx");
         const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
-        const missingHosts = previous.hosts.filter((host) => !rt.which(host));
-        const instruction = missingHosts.length
-          ? `Restore the ${missingHosts.join(",")} CLI${missingHosts.length === 1 ? "" : "s"} on PATH before running ${retry}`
-          : `run ${retry}`;
+        const instruction = retryInstruction(rt, previous.hosts, retry);
         problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; ${instruction} to change its shared version safely`);
       }
     }
@@ -999,7 +1019,7 @@ export async function execute(options, rt = createRuntime()) {
   } catch (error) {
     stateBoundaryProblem(report, error, statePath, "lock acquisition", {
       allowRunLocked: true,
-      recoveryCommand: recoveryCommandFor(state, { useRequestedRefresh: refreshSavePending }),
+      recoveryAction: recoveryActionFor(state, { useRequestedRefresh: refreshSavePending }),
     });
     report.ok = false;
     return report;
@@ -1057,8 +1077,9 @@ export async function execute(options, rt = createRuntime()) {
         report.nextActions.push(...result.next);
         if (result.ready === false) {
           const retry = recoveryCommandFor(persistedState);
-          report.nextActions.push(`Resume the recorded Devkit plan with ${retry}`);
-          problem(report, "SEMCTX_NOT_READY", `Semctx installed but its workspace analysis is incomplete. Resume the recorded plan with ${retry}.`, 3);
+          const retryAction = retryInstruction(rt, persistedState?.inProgress?.hosts ?? hosts, retry);
+          report.nextActions.push(retryAction);
+          problem(report, "SEMCTX_NOT_READY", `Semctx installed but its workspace analysis is incomplete. ${retryAction}.`, 3);
           break;
         }
       } catch (error) {
@@ -1066,7 +1087,7 @@ export async function execute(options, rt = createRuntime()) {
         component.state = "partial";
         component.installed = "unknown";
         component.configured = "unknown";
-        problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error, re-run ${recoveryCommandFor(persistedState)}.`, 5);
+        problem(report, "APPLY_FAILED", `${name}: ${String(error.message ?? error)}. After resolving the error: ${recoveryActionFor(persistedState)}.`, 5);
         break;
       }
     }
@@ -1076,14 +1097,14 @@ export async function execute(options, rt = createRuntime()) {
     }
   } catch (error) {
     stateBoundaryProblem(report, error, statePath, "read or write", {
-      recoveryCommand: recoveryCommandFor(persistedState, { useRequestedRefresh: refreshSavePending }),
+      recoveryAction: recoveryActionFor(persistedState, { useRequestedRefresh: refreshSavePending }),
     });
   } finally {
     try {
       releaseLock?.();
     } catch (error) {
       stateBoundaryProblem(report, error, statePath, "lock release", {
-        recoveryCommand: recoveryCommandFor(persistedState, { useRequestedRefresh: refreshSavePending }),
+        recoveryAction: recoveryActionFor(persistedState, { useRequestedRefresh: refreshSavePending }),
       });
     }
   }
