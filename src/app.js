@@ -1655,7 +1655,7 @@ export async function execute(options, rt = createRuntime()) {
     }
   } catch (error) {
     if ((lockedRereadStarted && !persistedStateObserved)
-      || (stateTransaction && error?.code === "STATE_CONFLICT")) {
+      || (error?.stateBoundary === true && error?.code === "STATE_CONFLICT")) {
       invalidateLockedAuthority();
     }
     stateBoundaryProblem(report, error, statePath, "read or write", {

@@ -4227,6 +4227,59 @@ describe("public CLI", () => {
     }
   });
 
+  test("fallback checkpoint conflicts invalidate only state-bound recovery authority", async () => {
+    const pending = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.6" } },
+    };
+    const conflict = () => Object.assign(new Error("state destination changed during checkpoint"), { code: "STATE_CONFLICT" });
+    const renderedGuidance = (report) => [
+      report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n"),
+    ].join("\n");
+
+    const fallback = fakeRuntime({ state: structuredClone(pending) });
+    let fallbackAttempts = 0;
+    fallback.writeState = () => { fallbackAttempts += 1; throw conflict(); };
+    const fallbackReport = await execute(setupOptions(), fallback);
+    const fallbackGuidance = renderedGuidance(fallbackReport);
+    expect(fallbackAttempts).toBe(1);
+    expect(fallbackReport.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(fallbackGuidance).toContain("inspect and validate the saved Devkit state");
+    expect(fallbackGuidance).not.toContain("complete the recorded plan");
+
+    const transaction = fakeRuntime({ state: structuredClone(pending) });
+    let transactionAttempts = 0;
+    transaction.openStateTransaction = () => ({
+      state: structuredClone(pending),
+      write: () => { transactionAttempts += 1; throw conflict(); },
+      close: () => {},
+    });
+    const transactionReport = await execute(setupOptions(), transaction);
+    const transactionGuidance = renderedGuidance(transactionReport);
+    expect(transactionAttempts).toBe(1);
+    expect(transactionReport.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+    expect(transactionGuidance).toContain("inspect and validate the saved Devkit state");
+    expect(transactionGuidance).not.toContain("complete the recorded plan");
+
+    const unchanged = fakeRuntime({ state: structuredClone(pending) });
+    const unchangedReport = await execute(setupOptions(), unchanged);
+    expect(unchangedReport.ok).toBe(true);
+    expect(unchanged.writes.length).toBeGreaterThan(0);
+
+    const native = fakeRuntime({ state: structuredClone(pending) });
+    const nativeExec = native.exec;
+    native.exec = async (argv, cwd, timeout) => {
+      if (argv.includes("install") && !argv.includes("--dry-run")) throw conflict();
+      return nativeExec(argv, cwd, timeout);
+    };
+    const nativeReport = await execute(setupOptions(), native);
+    const nativeGuidance = renderedGuidance(nativeReport);
+    expect(nativeReport.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+    expect(nativeGuidance).toContain("complete the recorded plan");
+    expect(nativeGuidance).not.toContain("inspect and validate the saved Devkit state");
+    expect(native.writes).toHaveLength(0);
+  });
+
   test("state boundary reports preserve suppressed cleanup diagnostics", async () => {
     const cleanupPath = "/state/repo.json.candidate.tmp";
     const cleanupError = Object.assign(new Error(`EBUSY: cannot remove '${cleanupPath}'`), {
