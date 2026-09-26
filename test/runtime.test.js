@@ -103,6 +103,45 @@ test("runtime binds state and lock reads to the inspected regular file", () => {
   }
 });
 
+test("runtime classifies removal after inspection as ownership drift", () => {
+  for (const kind of ["state", "lock", "destination"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-${kind}-removed-open-`)));
+    const statePath = join(root, "repository.json");
+    const openedPath = kind === "lock" ? `${statePath}.lock` : statePath;
+    const content = kind === "lock"
+      ? JSON.stringify({ token: "00000000-0000-4000-8000-000000000000", pid: 42 })
+      : JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} });
+    writeFileSync(openedPath, content);
+    let removalExecuted = false;
+    const rt = createRuntime({
+      beforeManagedReadOpen: (path) => {
+        if (path !== openedPath || removalExecuted) return;
+        removalExecuted = true;
+        unlinkSync(path);
+      },
+    });
+    let error;
+    try {
+      if (kind === "state") rt.readState(statePath);
+      else if (kind === "lock") rt.acquireLock(statePath);
+      else rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} });
+    } catch (caught) { error = caught; }
+    expect(removalExecuted).toBe(true);
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(existsSync(openedPath)).toBe(false);
+    expect(readdirSync(root)).toHaveLength(0);
+  }
+
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-open-io-")));
+  const statePath = join(root, "repository.json");
+  writeFileSync(statePath, JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }));
+  const denied = Object.assign(new Error("read denied"), { code: "EACCES" });
+  let ioError;
+  try { createRuntime({ openReadDescriptor: () => { throw denied; } }).readState(statePath); } catch (caught) { ioError = caught; }
+  expect(ioError).toBe(denied);
+  expect(readFileSync(statePath, "utf8")).toContain("schemaVersion");
+});
+
 test("runtime revalidates every pathname after descriptor reads", () => {
   for (const kind of ["state", "lock", "project"]) {
     const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-${kind}-post-read-`)));

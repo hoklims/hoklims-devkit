@@ -1037,17 +1037,22 @@ export async function execute(options, rt = createRuntime()) {
     return finalizeFailure(state);
   }
   if (options.command === "upgrade") {
+    const rejectedPendingRefresh = Boolean(state?.inProgress && options.refreshPending);
     for (const name of selected) {
       const previous = state?.components?.[name];
       if (previous && previous.version !== versions[name] && previous.hosts.some((host) => !hosts.includes(host))) {
-        const optional = selected.filter((item) => item !== "semctx");
-        const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
-        const instruction = retryInstruction(rt, previous.hosts, retry);
-        problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; ${instruction} to change its shared version safely`);
-        if (!report.nextActions.includes(instruction)) report.nextActions.push(instruction);
+        if (rejectedPendingRefresh) {
+          problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; the requested refresh cannot replace the recorded plan without every registered host`);
+        } else {
+          const optional = selected.filter((item) => item !== "semctx");
+          const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
+          const instruction = retryInstruction(rt, previous.hosts, retry);
+          problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; ${instruction} to change its shared version safely`);
+          if (!report.nextActions.includes(instruction)) report.nextActions.push(instruction);
+        }
       }
     }
-    if (report.conflicts.length) return report;
+    if (report.conflicts.length) return rejectedPendingRefresh ? finalizeFailure(state) : report;
   }
   const previews = {};
   for (const name of COMPONENTS.filter((item) => versions[item])) {

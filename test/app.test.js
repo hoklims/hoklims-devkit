@@ -1820,7 +1820,7 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
-  test("shared-host refresh advice preserves refresh and runs as printed", async () => {
+  test("a rejected shared-host refresh resumes the saved plan without refresh", async () => {
     const state = {
       schemaVersion: 1,
       projectRoot: "/repo",
@@ -1843,16 +1843,18 @@ describe("public CLI", () => {
     };
     const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", tools: ["node", "npm", "claude"], files });
     const blocked = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]), rt);
-    const detail = blocked.conflicts.map((item) => item.detail).join("\n");
+    const guidance = [blocked.conflicts.map((item) => item.detail).join("\n"), blocked.nextActions.join("\n")].join("\n");
     expect(blocked.conflicts.map((item) => item.code)).toContain("HOST_SCOPE_UPGRADE_CONFLICT");
-    expect(detail).toContain("hoklims-devkit upgrade /repo --host all --with assertledger --refresh-pending");
+    expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger");
+    expect(guidance).not.toContain("--host all");
+    expect(guidance).not.toContain("--refresh-pending");
     expect(rt.writes).toHaveLength(0);
 
-    const retried = await execute(parseArgs(["upgrade", "/repo", "--host", "all", "--with", "assertledger", "--refresh-pending"]), rt);
+    const retried = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
     expect(retried.ok).toBe(true);
     expect(retried.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
-    expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.5", hosts: ["codex", "claude"] });
-    expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex", "claude"] });
+    expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.4", hosts: ["codex", "claude"] });
+    expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
   });
 
   test("concurrent host setups cannot overwrite a completed state record", async () => {

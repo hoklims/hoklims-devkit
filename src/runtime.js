@@ -84,7 +84,12 @@ function openVerifiedReadDescriptor(path) {
   return openSync(path, flags);
 }
 
-function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync) {
+function assertInspectedIdentity(path, inspectFile, conflict, identity, detail) {
+  const current = inspectFile(path, { bigint: true });
+  if (!current || current.dev !== identity.dev || current.ino !== identity.ino) throw conflict(path, detail);
+}
+
+function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, readFileData = readFileSync, openReadDescriptor = openVerifiedReadDescriptor) {
   const initial = inspectFile(path, { bigint: true });
   if (!initial) return null;
   const identity = { dev: initial.dev, ino: initial.ino };
@@ -92,9 +97,9 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
   let descriptor;
   try {
     try {
-      descriptor = openVerifiedReadDescriptor(path);
+      descriptor = openReadDescriptor(path);
     } catch (error) {
-      inspectFile(path, { bigint: true });
+      assertInspectedIdentity(path, inspectFile, conflict, identity, "the pathname changed before it could be opened for reading");
       throw error;
     }
     const assertReadIdentity = () => {
@@ -127,16 +132,17 @@ function assertManagedDestination(path, expectedIdentity) {
   }
 }
 
-function captureManagedDestination(path) {
+function captureManagedDestination(path, beforeOpen, openReadDescriptor) {
   const initial = inspectManagedFile(path, { bigint: true });
   if (!initial) return { descriptor: null, identity: null };
   const identity = { dev: initial.dev, ino: initial.ino };
   let descriptor;
   try {
+    beforeOpen(path);
     try {
-      descriptor = openVerifiedReadDescriptor(path);
+      descriptor = openReadDescriptor(path);
     } catch (error) {
-      inspectManagedFile(path, { bigint: true });
+      assertInspectedIdentity(path, inspectManagedFile, ownedFileConflict, identity, "the destination changed before its identity could be captured");
       throw error;
     }
     const opened = fstatSync(descriptor, { bigint: true });
@@ -221,10 +227,10 @@ function cleanupOwnedFile(owned, removeOwnedFile) {
   if (operationError) throw operationError;
 }
 
-function readLockRecord(path, beforeOpen, readFileData) {
+function readLockRecord(path, beforeOpen, readFileData, openReadDescriptor) {
   let record;
   try {
-    record = JSON.parse(readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeOpen, readFileData));
+    record = JSON.parse(readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeOpen, readFileData, openReadDescriptor));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
@@ -300,6 +306,7 @@ export function createRuntime({
   beforeManagedReadOpen = () => {},
   commitOwnedFile = renameSync,
   createManagedParent = mkdirSync,
+  openReadDescriptor = openVerifiedReadDescriptor,
   randomId = randomUUID,
   readFileData = readFileSync,
   removeOwnedFile = unlinkSync,
@@ -349,7 +356,7 @@ export function createRuntime({
         return false;
       }
     },
-    readPlainText: (path) => readVerifiedFile(path, inspectPlainProjectFile, unsafeProjectPath, undefined, readFileData),
+    readPlainText: (path) => readVerifiedFile(path, inspectPlainProjectFile, unsafeProjectPath, undefined, readFileData, openReadDescriptor),
     realpath: realpathSync,
     statePath: (root) => {
       const base = platform() === "win32"
@@ -359,14 +366,14 @@ export function createRuntime({
       return join(base, "hoklims-devkit", `${key}.json`);
     },
     readState: (path) => {
-      const text = readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeManagedReadOpen, readFileData);
+      const text = readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeManagedReadOpen, readFileData, openReadDescriptor);
       if (text === null) return null;
       return validateState(JSON.parse(text));
     },
     writeState: (path, state) => {
       validateState(state);
       prepareManagedParent(path, createManagedParent);
-      const destination = captureManagedDestination(path);
+      const destination = captureManagedDestination(path, beforeManagedReadOpen, openReadDescriptor);
       const temp = `${path}.${randomId()}.tmp`;
       let owned = null;
       try {
@@ -404,7 +411,7 @@ export function createRuntime({
       const lockPath = `${statePath}.lock`;
       const existingLock = inspectManagedFile(lockPath);
       if (existingLock) {
-        readLockRecord(lockPath, beforeManagedReadOpen, readFileData);
+        readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor);
         throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
       }
       const token = randomId();
@@ -425,7 +432,7 @@ export function createRuntime({
         if (error?.code === "EEXIST") {
           const racedLock = inspectManagedFile(lockPath);
           if (racedLock) {
-            readLockRecord(lockPath, beforeManagedReadOpen, readFileData);
+            readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor);
             throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
           }
           throw unsafeManagedPath(lockPath, "changed during exclusive lock creation");
@@ -435,7 +442,7 @@ export function createRuntime({
       return () => {
         try {
           assertOwnedFile(owned);
-          const current = readLockRecord(lockPath, beforeManagedReadOpen, readFileData);
+          const current = readLockRecord(lockPath, beforeManagedReadOpen, readFileData, openReadDescriptor);
           if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
           cleanupOwnedFile(owned, removeOwnedFile);
         } catch (error) {
