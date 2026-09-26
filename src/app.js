@@ -432,6 +432,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
   ];
   return statuses.includes(parsed?.status) && parsed.client === client && parsed.mode === mode
     && Array.isArray(parsed.artifacts) && parsed.artifacts.length === expected.length
+    && parsed.artifacts.every((artifact) => artifact !== null && !Array.isArray(artifact) && typeof artifact === "object")
     && expected.every(([owner, relativePath]) => parsed.artifacts.filter((artifact) => artifact?.owner === owner
       && fileBelongsToRoot(rt, artifact.path, relativePath, root)).length === 1)
     && parsed.artifacts.every((artifact) => ["init", "connection"].includes(artifact?.owner)
@@ -701,6 +702,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     if (!parsed) continue;
     if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
       problem(report, "ASSERTLEDGER_CONFLICT", JSON.stringify(parsed).slice(0, 600));
+      continue;
     }
     previews.push({
       host,
@@ -1026,8 +1028,10 @@ export async function execute(options, rt = createRuntime()) {
   try {
     state = validateBoundState(rt.readState(statePath), root);
   } catch (error) {
-    stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: recoveryActionFor(null) });
-    return finalizeFailure(null);
+    const current = recoveryCommandFor(null, { useRequestedRefresh: false });
+    const guidance = unverifiedStateGuidance("Resolve the initial state read conflict", current);
+    stateBoundaryProblem(report, error, statePath, "initial read", { recoveryAction: guidance.action });
+    return recordFailureRecovery(guidance.action, guidance.command);
   }
   if (hosts.length === 0 || hosts.some((host) => !rt.which(host))) {
     problem(report, "HOST_UNAVAILABLE", `Requested host is not on PATH: ${options.host}. ${recoveryActionFor(state)}`, 3);

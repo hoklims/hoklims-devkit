@@ -977,6 +977,44 @@ describe("public CLI", () => {
     expect(rt.writes).toHaveLength(0);
   });
 
+  test("malformed AssertLedger artifacts preserve the saved recovery plan", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo", components: {},
+      inProgress: {
+        command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
+        versions: { semctx: "0.3.4", assertledger: "1.2.0" },
+      },
+    };
+    for (const artifacts of [[null], {}]) {
+      const rt = fakeRuntime({
+        state,
+        tools: ["node", "npm"],
+        files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }) },
+      });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd) => argv[0] === "npm" && argv.includes("exec")
+        ? { code: 0, stdout: JSON.stringify({ ...assertSetupReport(argv, "WOULD_CREATE", "dry-run"), artifacts }), stderr: "" }
+        : nativeExec(argv, cwd);
+      const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+      expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_CONFLICT");
+      expect(report.conflicts.map((item) => item.code)).not.toContain("UNEXPECTED_ERROR");
+      expect(report.projectRoot).toBe("/repo");
+      expect(guidance).toContain("hoklims-devkit setup /repo --host codex --with assertledger");
+      expect(rt.writes).toHaveLength(0);
+    }
+
+    const valid = fakeRuntime({
+      state,
+      tools: ["node", "npm"],
+      files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }) },
+    });
+    const accepted = await execute({ ...parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), dryRun: true }, valid);
+    expect(accepted.ok).toBe(true);
+    expect(accepted.conflicts).toHaveLength(0);
+    expect(valid.writes).toHaveLength(0);
+  });
+
   test("a declared AssertLedger version without installed executable still plans installation", async () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],
@@ -2331,6 +2369,18 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_CONFLICT");
     expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/disk space|permissions/u);
     expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("hoklims-devkit setup /repo --host codex");
+    expect(rt.writes).toHaveLength(0);
+  });
+
+  test("an unreadable initial state remains unobserved during refresh recovery", async () => {
+    const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+    rt.readState = () => { throw Object.assign(new Error("state access denied"), { code: "EACCES" }); };
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+    const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+    expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+    expect(guidance).toContain("inspect and validate the saved Devkit state");
+    expect(guidance).toContain("Only if no saved plan exists, run hoklims-devkit upgrade /repo --host codex");
+    expect(guidance).not.toContain("--refresh-pending");
     expect(rt.writes).toHaveLength(0);
   });
 
