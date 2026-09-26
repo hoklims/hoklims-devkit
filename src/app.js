@@ -128,11 +128,12 @@ function compareVersions(left, right) {
 
 function existingAssertVersion(rt, root) {
   const manifestPath = join(root, "package.json");
-  if (!rt.exists(manifestPath)) return null;
+  if (!rt.plainFilePresent(manifestPath)) return null;
   let manifest;
   try {
-    manifest = JSON.parse(rt.readText(manifestPath));
-  } catch {
+    manifest = JSON.parse(rt.readPlainText(manifestPath));
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
     throw new Error("package.json is invalid JSON");
   }
   const declarations = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]
@@ -167,8 +168,8 @@ function validExactPackageManagerVersion(value) {
 
 function packageManager(rt, root) {
   const manifestPath = join(root, "package.json");
-  if (!rt.exists(manifestPath)) throw new Error("AssertLedger setup needs an existing package.json");
-  const manifest = JSON.parse(rt.readText(manifestPath));
+  if (!rt.plainFilePresent(manifestPath)) throw new Error("AssertLedger setup needs an existing package.json");
+  const manifest = JSON.parse(rt.readPlainText(manifestPath));
   const hasDeclaration = Object.hasOwn(manifest, "packageManager");
   if (hasDeclaration && typeof manifest.packageManager !== "string") {
     throw new Error(`packageManager must be a string in manager@version form; found ${String(manifest.packageManager)}`);
@@ -194,11 +195,17 @@ function packageManager(rt, root) {
     ["pnpm", ["pnpm-lock.yaml"]],
     ["bun", ["bun.lock", "bun.lockb"]],
   ];
-  const found = new Set(locks.filter(([, paths]) => paths.some((path) => rt.exists(join(root, path)))).map(([name]) => name));
+  const found = new Set();
+  for (const [name, paths] of locks) {
+    for (const path of paths) {
+      if (rt.plainFilePresent(join(root, path))) found.add(name);
+    }
+  }
+  const yarnPresent = rt.plainFilePresent(join(root, "yarn.lock"));
   if (declared) found.add(declared);
   if (found.size > 1) throw new Error(`Conflicting package managers: ${[...found].join(", ")}`);
   const selected = [...found][0] ?? "npm";
-  if (rt.exists(join(root, "yarn.lock"))) throw new Error("Yarn repositories must use AssertLedger's native setup until a verified Yarn adapter is available");
+  if (yarnPresent) throw new Error("Yarn repositories must use AssertLedger's native setup until a verified Yarn adapter is available");
   if (!["npm", "pnpm", "bun"].includes(selected)) throw new Error(`Unsupported package manager: ${selected}`);
   return selected;
 }

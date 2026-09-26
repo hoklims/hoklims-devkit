@@ -126,8 +126,10 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
     },
     exists: (path) => Object.hasOwn(files, path),
     pathPresent: (path) => Object.hasOwn(files, path),
+    plainFilePresent: (path) => Object.hasOwn(files, path),
     isReadableFile: (path) => Object.hasOwn(files, path) && typeof files[path] === "string",
     readText: (path) => files[path],
+    readPlainText: (path) => files[path],
     join: (...parts) => parts.join("/"),
   };
   return rt;
@@ -664,6 +666,30 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_CONFLICT");
     expect(rt.calls.some((args) => args.includes("install") && !args.includes("--dry-run"))).toBe(false);
     expect(rt.writes).toHaveLength(0);
+  });
+
+  test("AssertLedger inspects the manifest and every lockfile detector before checkpointing", async () => {
+    const names = [
+      "package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml",
+      "bun.lock", "bun.lockb", "yarn.lock",
+    ];
+    for (const unsafeName of names) {
+      const files = { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const inspected = [];
+      rt.plainFilePresent = (path) => {
+        const name = path.split(/[\\/]/u).at(-1);
+        inspected.push(name);
+        if (name === unsafeName) throw Object.assign(new Error(`${name} is linked`), { code: "STATE_CONFLICT" });
+        return Object.hasOwn(files, path);
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts.map((item) => item.detail).join("\n")).toContain(`${unsafeName} is linked`);
+      expect(inspected).toContain(unsafeName);
+      expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("exec"))).toBe(false);
+      expect(rt.writes).toHaveLength(0);
+    }
   });
 
   test("malformed packageManager declarations block before state writes", async () => {

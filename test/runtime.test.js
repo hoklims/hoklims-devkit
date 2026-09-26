@@ -64,6 +64,73 @@ test("runtime rejects a dangling state symlink while reading", () => {
   expect(existsSync(fixture.outsideTarget)).toBe(false);
 });
 
+test("runtime binds state and lock reads to the inspected regular file", () => {
+  for (const kind of ["state", "lock"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-${kind}-read-race-`)));
+    const statePath = join(root, "repository.json");
+    const readPath = kind === "state" ? statePath : `${statePath}.lock`;
+    const outside = join(root, `outside-${kind}.json`);
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {} };
+    const lock = { token: "00000000-0000-4000-8000-000000000000", pid: 42 };
+    writeFileSync(readPath, JSON.stringify(kind === "state" ? state : lock));
+    writeFileSync(outside, JSON.stringify(kind === "state" ? state : lock));
+    const probe = join(root, `probe-${kind}`);
+    try {
+      symlinkSync(outside, probe, process.platform === "win32" ? "file" : undefined);
+      unlinkSync(probe);
+    } catch (error) {
+      if (error?.code === "EPERM") continue;
+      throw error;
+    }
+    let replaced = false;
+    const rt = createRuntime({
+      beforeManagedReadOpen: (path) => {
+        if (replaced || path !== readPath) return;
+        replaced = true;
+        unlinkSync(readPath);
+        symlinkSync(outside, readPath, process.platform === "win32" ? "file" : undefined);
+      },
+    });
+    let error;
+    try {
+      if (kind === "state") rt.readState(statePath);
+      else rt.acquireLock(statePath);
+    } catch (caught) { error = caught; }
+    expect(replaced).toBe(true);
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(lstatSync(readPath).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(outside, "utf8"))).toEqual(kind === "state" ? state : lock);
+  }
+});
+
+test("runtime project-file inspection rejects linked and non-file entries", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-project-files-")));
+  const regular = join(root, "package.json");
+  const directory = join(root, "directory-lock");
+  const target = join(root, "target-lock");
+  const linked = join(root, "linked-lock");
+  const dangling = join(root, "dangling-lock");
+  writeFileSync(regular, "{}\n");
+  mkdirSync(directory);
+  writeFileSync(target, "lock\n");
+  try {
+    symlinkSync(target, linked, process.platform === "win32" ? "file" : undefined);
+    symlinkSync(join(root, "missing-target"), dangling, process.platform === "win32" ? "file" : undefined);
+  } catch (error) {
+    if (error?.code === "EPERM") return;
+    throw error;
+  }
+  const rt = createRuntime();
+  expect(rt.plainFilePresent(regular)).toBe(true);
+  expect(rt.plainFilePresent(join(root, "missing"))).toBe(false);
+  for (const unsafe of [directory, linked, dangling]) {
+    let error;
+    try { rt.plainFilePresent(unsafe); } catch (caught) { error = caught; }
+    expect(error?.code).toBe("STATE_CONFLICT");
+  }
+  expect(rt.readPlainText(regular)).toBe("{}\n");
+});
+
 test("runtime preserves a dangling state symlink and its target while writing", () => {
   const fixture = danglingStateFixture();
   if (!fixture) return;

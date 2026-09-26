@@ -26,6 +26,10 @@ function ownedFileConflict(path, detail) {
   return Object.assign(new Error(`Managed state file ownership changed at ${path}: ${detail}. Preserve the foreign path, inspect it, then rerun.`), { code: "STATE_CONFLICT" });
 }
 
+function unsafeProjectPath(path, detail) {
+  return Object.assign(new Error(`Unsafe project package path: ${path} ${detail}. Replace it with a regular local file, then rerun.`), { code: "STATE_CONFLICT" });
+}
+
 function assertSafeManagedParents(path) {
   const parents = [];
   let current = dirname(resolve(path));
@@ -48,6 +52,40 @@ function inspectManagedFile(path, options) {
   if (stat?.isSymbolicLink()) throw unsafeManagedPath(path, "is a symbolic link");
   if (stat && !stat.isFile()) throw unsafeManagedPath(path, "is not a regular file");
   return stat;
+}
+
+function inspectPlainProjectFile(path, options) {
+  const stat = lstatIfPresent(path, options);
+  if (stat?.isSymbolicLink()) throw unsafeProjectPath(path, "is a symbolic link");
+  if (stat && !stat.isFile()) throw unsafeProjectPath(path, "is not a regular file");
+  return stat;
+}
+
+function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}) {
+  const initial = inspectFile(path, { bigint: true });
+  if (!initial) return null;
+  const identity = { dev: initial.dev, ino: initial.ino };
+  beforeOpen(path);
+  let descriptor;
+  try {
+    try {
+      descriptor = openSync(path, "r");
+    } catch (error) {
+      inspectFile(path, { bigint: true });
+      throw error;
+    }
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile() || opened.dev !== identity.dev || opened.ino !== identity.ino) {
+      throw conflict(path, "the file changed while it was opened for reading");
+    }
+    const current = inspectFile(path, { bigint: true });
+    if (!current || current.dev !== identity.dev || current.ino !== identity.ino) {
+      throw conflict(path, "the pathname changed while it was opened for reading");
+    }
+    return readFileSync(descriptor, "utf8");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 }
 
 function assertManagedDestination(path, expectedIdentity) {
@@ -136,10 +174,10 @@ function cleanupOwnedFile(owned, removeOwnedFile) {
   if (closeError) throw closeError;
 }
 
-function readLockRecord(path) {
+function readLockRecord(path, beforeOpen) {
   let record;
   try {
-    record = JSON.parse(readFileSync(path, "utf8"));
+    record = JSON.parse(readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeOpen));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     throw Object.assign(new Error(`Unsafe managed state path: ${path} contains an invalid lock record. Preserve and inspect the file before retrying.`), { code: "STATE_CONFLICT" });
@@ -212,6 +250,7 @@ export function validateState(state) {
 
 export function createRuntime({
   beforeLockOpen = () => {},
+  beforeManagedReadOpen = () => {},
   randomId = randomUUID,
   removeOwnedFile = unlinkSync,
   writeLockData = writeFileSync,
@@ -249,6 +288,7 @@ export function createRuntime({
     },
     exists: existsSync,
     pathPresent: (path) => Boolean(lstatIfPresent(path)),
+    plainFilePresent: (path) => Boolean(inspectPlainProjectFile(path)),
     isReadableFile: (path) => {
       try {
         if (!statSync(path).isFile()) return false;
@@ -259,6 +299,7 @@ export function createRuntime({
       }
     },
     readText: (path) => readFileSync(path, "utf8"),
+    readPlainText: (path) => readVerifiedFile(path, inspectPlainProjectFile, unsafeProjectPath),
     realpath: realpathSync,
     statePath: (root) => {
       const base = platform() === "win32"
@@ -268,9 +309,9 @@ export function createRuntime({
       return join(base, "hoklims-devkit", `${key}.json`);
     },
     readState: (path) => {
-      const stat = inspectManagedFile(path);
-      if (!stat) return null;
-      return validateState(JSON.parse(readFileSync(path, "utf8")));
+      const text = readVerifiedFile(path, inspectManagedFile, ownedFileConflict, beforeManagedReadOpen);
+      if (text === null) return null;
+      return validateState(JSON.parse(text));
     },
     writeState: (path, state) => {
       validateState(state);
@@ -310,7 +351,7 @@ export function createRuntime({
       const lockPath = `${statePath}.lock`;
       const existingLock = inspectManagedFile(lockPath);
       if (existingLock) {
-        readLockRecord(lockPath);
+        readLockRecord(lockPath, beforeManagedReadOpen);
         throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
       }
       const token = randomId();
@@ -335,7 +376,7 @@ export function createRuntime({
         if (error?.code === "EEXIST") {
           const racedLock = inspectManagedFile(lockPath);
           if (racedLock) {
-            readLockRecord(lockPath);
+            readLockRecord(lockPath, beforeManagedReadOpen);
             throw new RunLockedError(`Another setup may be running. Inspect ${lockPath} before removing a stale lock.`);
           }
           throw unsafeManagedPath(lockPath, "changed during exclusive lock creation");
@@ -344,7 +385,7 @@ export function createRuntime({
       }
       return () => {
         assertOwnedFile(owned);
-        const current = readLockRecord(lockPath);
+        const current = readLockRecord(lockPath, beforeManagedReadOpen);
         if (current.token !== token) throw ownedFileConflict(lockPath, "the lock token was changed");
         removeOwnedFile(lockPath);
       };
