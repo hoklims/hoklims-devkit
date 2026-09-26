@@ -953,7 +953,9 @@ export async function execute(options, rt = createRuntime()) {
         component.loaded = result.activation;
         report.nextActions.push(...result.next);
         if (result.ready === false) {
-          problem(report, "SEMCTX_NOT_READY", "Semctx installed but its workspace analysis is incomplete", 3);
+          const retry = recoveryCommandFor(persistedState);
+          report.nextActions.push(`Resume the recorded Devkit plan with ${retry}`);
+          problem(report, "SEMCTX_NOT_READY", `Semctx installed but its workspace analysis is incomplete. Resume the recorded plan with ${retry}.`, 3);
           break;
         }
       } catch (error) {

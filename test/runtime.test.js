@@ -295,4 +295,27 @@ test("state validation accepts only canonical component and host order", () => {
     invalid.inProgress.selected = selected;
     expect(() => validateState(invalid)).toThrow(/Invalid in-progress installation plan/u);
   }
+
+  const missingManagedComponent = structuredClone(canonical);
+  missingManagedComponent.inProgress.selected = ["semctx"];
+  missingManagedComponent.inProgress.versions = { semctx: "0.3.5" };
+  expect(() => validateState(missingManagedComponent)).toThrow(/Invalid in-progress installation plan/u);
+});
+
+test("runtime classifies a regular-file ancestor as a state conflict", () => {
+  for (const operation of ["read", "write", "lock"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-file-ancestor-")));
+    const ancestor = join(root, "not-a-directory");
+    const statePath = join(ancestor, "child", "repository.json");
+    writeFileSync(ancestor, "foreign ancestor\n");
+    const rt = createRuntime();
+    const action = operation === "read" ? () => rt.readState(statePath)
+      : operation === "write" ? () => rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} })
+        : () => rt.acquireLock(statePath);
+    let error;
+    try { action(); } catch (caught) { error = caught; }
+    expect(error?.code).toBe("STATE_CONFLICT");
+    expect(error?.message).toMatch(/is not a directory/u);
+    expect(readFileSync(ancestor, "utf8")).toBe("foreign ancestor\n");
+  }
 });

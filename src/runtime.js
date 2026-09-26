@@ -26,14 +26,18 @@ function ownedFileConflict(path, detail) {
 }
 
 function assertSafeManagedParents(path) {
+  const parents = [];
   let current = dirname(resolve(path));
   while (true) {
-    const stat = lstatIfPresent(current);
-    if (stat?.isSymbolicLink()) throw unsafeManagedPath(current, "is a symbolic link");
-    if (stat && !stat.isDirectory()) throw unsafeManagedPath(current, "is not a directory");
+    parents.push(current);
     const parent = dirname(current);
-    if (parent === current) return;
+    if (parent === current) break;
     current = parent;
+  }
+  for (const candidate of parents.reverse()) {
+    const stat = lstatIfPresent(candidate);
+    if (stat?.isSymbolicLink()) throw unsafeManagedPath(candidate, "is a symbolic link");
+    if (stat && !stat.isDirectory()) throw unsafeManagedPath(candidate, "is not a directory");
   }
 }
 
@@ -125,6 +129,7 @@ export function validateState(state) {
       || plan.selected.some((name) => !COMPONENT_NAMES.has(name))
       || new Set(plan.selected).size !== plan.selected.length
       || JSON.stringify(plan.selected) !== JSON.stringify(COMPONENT_ORDER.filter((name) => plan.selected.includes(name)))
+      || Object.keys(state.components).some((name) => !plan.selected.includes(name))
       || !Array.isArray(plan.hosts) || plan.hosts.length === 0
       || plan.hosts.some((host) => !HOST_NAMES.has(host))
       || new Set(plan.hosts).size !== plan.hosts.length

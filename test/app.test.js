@@ -1298,6 +1298,20 @@ describe("public CLI", () => {
           versions: { semctx: "0.3.5" },
         },
       },
+      {
+        schemaVersion: 1,
+        projectRoot: "/repo",
+        components: {
+          semctx: { version: "0.3.5", hosts: ["codex"] },
+          assertledger: { version: "1.3.0", hosts: ["codex"] },
+        },
+        inProgress: {
+          command: "upgrade",
+          selected: ["semctx"],
+          hosts: ["codex"],
+          versions: { semctx: "0.3.5" },
+        },
+      },
     ]) {
       const rt = fakeRuntime({ state, tools: ["claude"] });
       const report = await execute(parseArgs(["setup", "/repo", "--host", "all"]), rt);
@@ -1561,6 +1575,8 @@ describe("public CLI", () => {
     expect(report.ok).toBe(false);
     expect(report.components[0].state).toBe("needs-attention");
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_NOT_READY");
+    expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("hoklims-devkit setup /repo --host codex");
+    expect(report.nextActions.join("\n")).toContain("hoklims-devkit setup /repo --host codex");
     expect(rt.writes).toHaveLength(2);
   });
 });
