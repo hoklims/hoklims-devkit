@@ -6,7 +6,7 @@ import { createRuntime, parseJsonOutput, preferredBoundaryError, RunLockedError,
 const COMPONENTS = ["semctx", "assertledger", "latent-compass"];
 const HOSTS = ["codex", "claude"];
 const VERSION = packageJson.version;
-const MIN_SAFE_SEMCTX_VERSION = "0.3.6";
+const MIN_SAFE_SEMCTX_VERSION = "0.3.7";
 
 export function parseArgs(argv) {
   if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) return { help: true };
