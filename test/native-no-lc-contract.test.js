@@ -73,7 +73,7 @@ test("native snapshots detect permission-only mutations", () => {
 });
 
 test("real native startup accepts generated owned config and rejects wrong expected versions before network", () => {
-  const root = mkdtempSync(join(tmpdir(), "devkit-native-startup-"));
+  const root = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "devkit-native-startup-")));
   const source = join(root, "source");
   mkdirSync(source);
   writeFileSync(join(source, "README.md"), "fixture\n");
