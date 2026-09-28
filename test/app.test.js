@@ -1384,6 +1384,41 @@ describe("public CLI", () => {
     expect(setupWrites(repairable)).toBe(1);
   });
 
+  test("duplicate and inconsistent Semctx checks remain unknown for doctor and repeated setup", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.7", hosts: ["codex"] } },
+    };
+    const mutations = [
+      ["duplicate", (checks) => checks.push({ ...checks.find((check) => check.name === "index") })],
+      ["conflicting duplicate", (checks) => checks.push({ name: "index", ok: false, status: "corrupt" })],
+      ["unique corrupt index", (checks) => { checks.find((check) => check.name === "index").status = "corrupt"; }],
+    ];
+    for (const [name, mutate] of mutations) {
+      for (const command of ["doctor", "setup"]) {
+        const rt = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+        const nativeExec = rt.exec;
+        rt.exec = async (argv, cwd, timeout) => {
+          const result = await nativeExec(argv, cwd, timeout);
+          if (!argv.includes("doctor")) return result;
+          const body = JSON.parse(result.stdout);
+          mutate(body.checks);
+          return { ...result, stdout: JSON.stringify(body) };
+        };
+        const report = await execute(command === "doctor"
+          ? parseArgs(["doctor", "/repo", "--host", "codex"])
+          : setupOptions(), rt);
+        expect(report.ok, `${name}:${command}`).toBe(false);
+        expect(report.conflicts.map((item) => item.code), `${name}:${command}`)
+          .toContain(command === "doctor" ? "DOCTOR_NOT_READY" : "SEMCTX_WORKSPACE_STATUS_INVALID");
+        expect(report.components[0].configured, `${name}:${command}`).toBe("unknown");
+        expect(rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run")), `${name}:${command}`)
+          .toHaveLength(0);
+        expect(rt.writes, `${name}:${command}`).toHaveLength(0);
+      }
+    }
+  });
+
   test("release skew prevents writes", async () => {
     const rt = fakeRuntime({ version: "0.3.7", stable: "0.3.8" });
     const report = await execute(setupOptions(), rt);

@@ -753,18 +753,25 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
   const doctorCode = doctorResult.exitCode ?? doctorResult.code;
   const healthCode = healthResult.exitCode ?? healthResult.code;
   const requiredChecks = ["cli", "workspace", "config", "index", "runtime"];
+  const doctorChecks = Array.isArray(doctor?.checks) ? doctor.checks : [];
+  const checkNames = doctorChecks.map((check) => check?.name);
+  const indexCheck = doctorChecks.find((check) => check?.name === "index");
   const doctorStructured = [0, 1].includes(doctorCode) && typeof doctor?.healthy === "boolean"
-    && doctor.version === version && Array.isArray(doctor.checks)
-    && doctor.checks.every((check) => check && typeof check === "object"
-      && typeof check.name === "string" && typeof check.ok === "boolean")
-    && requiredChecks.every((name) => doctor.checks.some((check) => check.name === name && typeof check.ok === "boolean"));
+    && doctor.version === version && doctorChecks.length === requiredChecks.length
+    && doctorChecks.every((check) => check && typeof check === "object"
+      && requiredChecks.includes(check.name) && typeof check.ok === "boolean")
+    && new Set(checkNames).size === requiredChecks.length
+    && requiredChecks.every((name) => checkNames.includes(name))
+    && doctor.healthy === doctorChecks.every((check) => check.ok === true)
+    && (doctorCode === 0) === doctor.healthy
+    && (indexCheck?.ok === true ? indexCheck.status === "healthy" : indexCheck?.status !== "healthy");
   const healthStructured = [0, 2, 3].includes(healthCode) && health?.schemaVersion === 1
     && health.kind === "index_health" && ["valid", "invalid", "absent"].includes(health.binding?.status)
     && typeof health.freshness?.canRunHighRiskControl === "boolean"
     && ["complete", "partial", "insufficient"].includes(health.coverage?.status);
   if (!doctorStructured || !healthStructured) return "unknown";
   const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
-    && Array.isArray(doctor.checks) && requiredChecks.every((name) => doctor.checks.some((check) =>
+    && requiredChecks.every((name) => doctorChecks.some((check) =>
       check && typeof check === "object" && check.name === name && check.ok === true
       && (name !== "index" || check.status === "healthy")));
   const indexReady = healthCode === 0 && health?.schemaVersion === 1 && health.kind === "index_health"
