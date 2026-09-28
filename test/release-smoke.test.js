@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   RELEASE_SMOKE_STAGES,
@@ -63,19 +63,23 @@ function reportFor(argv) {
   });
 }
 
-function runner(calls, mutateOnUpgradeApply = false) {
+function runner(calls, options = {}) {
+  const settings = typeof options === "boolean" ? { mutateOnUpgradeApply: options } : options;
   let mutated = false;
   return (argv, context) => {
-    calls.push({ argv: [...argv], cwd: context.cwd });
+    calls.push({ argv: [...argv], cwd: context.cwd, env: context.env });
     if (argv[0] === "git") return "";
     if (argv[0] !== "bunx") throw new Error(`Unexpected native command: ${argv.join(" ")}`);
-    if (mutateOnUpgradeApply && argv[3] === "upgrade" && !argv.includes("--dry-run") && !mutated) {
+    settings.beforeReport?.(argv, context);
+    if (settings.mutateOnUpgradeApply && argv[3] === "upgrade" && !argv.includes("--dry-run") && !mutated) {
       const bin = join(context.env.HOME, "uv-bin");
       mkdirSync(bin, { recursive: true });
       writeFileSync(join(bin, "foreign-tool"), "unexpected\n");
       mutated = true;
     }
-    return reportFor(argv);
+    const report = JSON.parse(reportFor(argv));
+    settings.mutateReport?.(report, argv, context);
+    return JSON.stringify(report);
   };
 }
 
@@ -133,6 +137,16 @@ test("runReleaseSmoke executes and reports the seven-stage packaged sequence", (
     });
   }
   const native = calls.filter(({ argv }) => argv[0] === "bunx");
+  for (const { env } of native) {
+    const homePrefix = `${env.HOME}${sep}`;
+    for (const name of [
+      "XDG_CACHE_HOME", "npm_config_cache", "UV_CACHE_DIR",
+      "BUN_INSTALL_CACHE_DIR", "BUN_RUNTIME_TRANSPILER_CACHE_PATH", "TMPDIR", "TMP", "TEMP",
+    ]) {
+      expect(env[name], name).not.toBe(env.HOME);
+      expect(env[name].startsWith(homePrefix), name).toBe(false);
+    }
+  }
   expect(native.filter(({ argv }) => argv[3] === "setup" && argv.includes("--dry-run")))
     .toHaveLength(6);
   expect(native.filter(({ argv }) => argv[3] === "setup" && !argv.includes("--dry-run")))
@@ -174,6 +188,66 @@ test("runReleaseSmoke catches a same-version upgrade profile mutation", () => {
     runCommand: runner([], true),
     write: () => {},
   })).toThrow(/modified the host profile or devkit state/u);
+});
+
+test("runReleaseSmoke rejects version-changing upgrades in its no-op stage", () => {
+  const { consumer, smokeRoot } = fixture();
+  expect(() => runReleaseSmoke({
+    consumer,
+    root: smokeRoot,
+    runCommand: runner([], {
+      mutateReport: (report, argv) => {
+        if (argv[3] === "upgrade") report.components[0].version = "0.3.8";
+      },
+    }),
+    write: () => {},
+  })).toThrow(/requires a same-version no-op upgrade/u);
+});
+
+test("dry-run detects writes anywhere in the synthetic home", () => {
+  for (const relativePath of ["top-level.bin", join("AppData", "Roaming", "foreign", "settings.json")]) {
+    const { consumer, smokeRoot } = fixture();
+    let mutated = false;
+    expect(() => runReleaseSmoke({
+      consumer,
+      root: smokeRoot,
+      runCommand: runner([], {
+        beforeReport: (argv, context) => {
+          if (!mutated && argv[3] === "setup" && argv.includes("--dry-run")) {
+            const target = join(context.env.HOME, relativePath);
+            mkdirSync(join(target, ".."), { recursive: true });
+            writeFileSync(target, "unexpected\n");
+            mutated = true;
+          }
+        },
+      }),
+      write: () => {},
+    })).toThrow(/modified the host profile or devkit state/u);
+  }
+});
+
+test("repeat setup and doctor must retain the saved component versions", () => {
+  for (const leg of ["repeat", "doctor", "post-doctor"]) {
+    const { consumer, smokeRoot } = fixture();
+    let setupCalls = 0;
+    let doctorCalls = 0;
+    expect(() => runReleaseSmoke({
+      consumer,
+      root: smokeRoot,
+      runCommand: runner([], {
+        mutateReport: (report, argv) => {
+          if (!String(argv[4]).includes("repository-codex-default")) return;
+          if (argv[3] === "setup" && !argv.includes("--dry-run") && ++setupCalls === 2 && leg === "repeat") {
+            report.components[0].version = "0.3.8";
+          }
+          if (argv[3] === "doctor" && ++doctorCalls === (leg === "doctor" ? 1 : 2)) {
+            report.components[0].version = "0.3.8";
+          }
+        },
+      }),
+      write: () => {},
+    })).toThrow(/component versions differ/u);
+  }
 });
 
 test("the packed npm artifact exposes and executes the same release smoke module", async () => {

@@ -66,8 +66,26 @@ function validateReleaseGraph(workflow) {
     throw new Error("publish must use only the verified artifact without repository code");
   }
 
-  if (JSON.stringify([...needs(publicSmoke)]) !== JSON.stringify(["publish"])) {
-    throw new Error("public smoke must follow publication");
+  if (JSON.stringify([...needs(publicSmoke)].sort()) !== JSON.stringify(["build", "publish"])) {
+    throw new Error("public smoke must bind the built version and follow publication");
+  }
+  const publicStep = (publicSmoke.steps ?? []).find((step) => step.name?.startsWith("Verify public registry"));
+  const publicRun = publicStep?.run;
+  const publicLines = typeof publicRun === "string"
+    ? publicRun.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean) : [];
+  const requiredPublicLines = [
+    /^version="\$RELEASE_VERSION"$/u,
+    /^test "\$GITHUB_REF_NAME" = "v\$version"$/u,
+    /^npm install --prefix "\$consumer" --ignore-scripts "hoklims-devkit@\$version"(?:\s+#.*)?$/u,
+    /^test "\$\(node -p '.+' "\$consumer\/node_modules\/hoklims-devkit\/package\.json"\)" = "\$version"$/u,
+    /^bun scripts\/release-smoke\.js "\$consumer"$/u,
+  ];
+  if (publicStep?.shell !== "bash"
+    || publicStep?.env?.RELEASE_VERSION !== "${{ needs.build.outputs.version }}"
+    || publicRun.includes("set +e")
+    || requiredPublicLines.some((pattern) => publicLines.filter((line) => pattern.test(line)).length !== 1)
+    || publicLines.some((line) => /(?:\|\|\s*true|;\s*true|&\s*(?:#.*)?$)/u.test(line))) {
+    throw new Error("public smoke must install, attest, and smoke the exact built public version with failure propagation");
   }
   if (JSON.stringify([...needs(release)]) !== JSON.stringify(["public-smoke"])) {
     throw new Error("GitHub release must follow public registry smoke");
@@ -114,6 +132,19 @@ test("release graph tripwire rejects selected semantic mutants", () => {
   mutant = structuredClone(original);
   mutant.jobs["public-smoke"].needs = "verify";
   mutants.push(mutant);
+
+  for (const replacement of [
+    ["npm install --prefix", "true # npm install --prefix"],
+    ['"hoklims-devkit@$version"', '"hoklims-devkit@latest"'],
+    ["test \"$(node -p", "true # test \"$(node -p"],
+    ["bun scripts/release-smoke.js \"$consumer\"", "true # smoke disabled"],
+    ["bun scripts/release-smoke.js \"$consumer\"", "bun scripts/release-smoke.js \"$consumer\" || true"],
+  ]) {
+    mutant = structuredClone(original);
+    const step = mutant.jobs["public-smoke"].steps.find((candidate) => candidate.name?.startsWith("Verify public registry"));
+    step.run = step.run.replace(...replacement);
+    mutants.push(mutant);
+  }
 
   mutant = structuredClone(original);
   mutant.jobs.release.needs = "publish";

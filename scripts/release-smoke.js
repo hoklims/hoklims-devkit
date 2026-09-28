@@ -38,6 +38,14 @@ export function validSmokeDoctorReport(report, projectRoot, expectedNames) {
   return true;
 }
 
+function assertSameComponentVersions(actual, expected, label) {
+  for (let index = 0; index < expected.components.length; index += 1) {
+    if (actual.components[index].version !== expected.components[index].version) {
+      throw new Error(`${label} component versions differ from the saved installation`);
+    }
+  }
+}
+
 export function assertReleaseSmokeStages(scenarios) {
   if (!Array.isArray(scenarios) || scenarios.length === 0) {
     throw new Error("Release smoke did not report any scenarios");
@@ -74,8 +82,10 @@ const root = realpathSync(requestedRoot ?? mkdtempSync(join(tmpdir(), "hoklims-d
 const repository = join(root, "repository");
 const home = join(root, "home");
 const cache = join(root, "cache");
+const temporary = join(cache, "tmp");
 mkdirSync(repository);
 mkdirSync(cache);
+mkdirSync(temporary);
 mkdirSync(join(home, ".codex"), { recursive: true });
 mkdirSync(join(home, ".claude"), { recursive: true });
 mkdirSync(join(home, "AppData", "Local"), { recursive: true });
@@ -118,6 +128,9 @@ const env = {
   UV_PYTHON_NO_REGISTRY: "true",
   BUN_INSTALL_CACHE_DIR: join(cache, "bun"),
   BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(cache, "bun-runtime"),
+  TMPDIR: temporary,
+  TMP: temporary,
+  TEMP: temporary,
 };
 
 function run(argv, cwd = consumer, runEnv = env) {
@@ -192,6 +205,9 @@ for (const host of ["codex", "claude", "all"]) {
       UV_PYTHON_NO_REGISTRY: "true",
       BUN_INSTALL_CACHE_DIR: join(scenarioCache, "bun"),
       BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(scenarioCache, "bun-runtime"),
+      TMPDIR: temporary,
+      TMP: temporary,
+      TEMP: temporary,
     };
     const scenarioProtectedPaths = protectedProfilePaths(scenarioHome);
     const selectors = ["--host", host, ...withTools, "--json"];
@@ -212,6 +228,7 @@ for (const host of ["codex", "claude", "all"]) {
       expectedState: "configured",
       expectedFlags: CONFIGURED_FLAGS,
     })) throw new Error(`${host} repeated setup failed: ${JSON.stringify(repeated)}`);
+    assertSameComponentVersions(repeated, installed, `${host} repeated setup`);
     assertSnapshotUnchanged(targets, installedSnapshot, `${host} repeated setup`);
     recordStage(scenario, "repeated-setup", { snapshotVerified: true });
 
@@ -220,6 +237,7 @@ for (const host of ["codex", "claude", "all"]) {
     if (!validSmokeDoctorReport(diagnosed, resolve(scenarioRepository), expected)) {
       throw new Error(`${host} doctor did not confirm installation: ${JSON.stringify(diagnosed)}`);
     }
+    assertSameComponentVersions(diagnosed, installed, `${host} doctor`);
     assertSnapshotUnchanged(targets, beforeDoctor, `${host} doctor`);
     recordStage(scenario, "doctor", { snapshotVerified: true });
     const beforeUpgradePlan = targets.map(snapshot);
@@ -236,7 +254,9 @@ for (const host of ["codex", "claude", "all"]) {
     })) {
       throw new Error(`${host} upgrade did not configure every component: ${JSON.stringify(appliedUpgrade)}`);
     }
-    assertNoopUpgradeUnchanged(targets, beforeUpgradePlan, installed, upgrade, appliedUpgrade, `${host} same-version upgrade`);
+    if (!assertNoopUpgradeUnchanged(
+      targets, beforeUpgradePlan, installed, upgrade, appliedUpgrade, `${host} same-version upgrade`,
+    )) throw new Error(`${host} release smoke requires a same-version no-op upgrade`);
     recordStage(scenario, "upgrade-apply");
     recordStage(scenario, "no-op-snapshot", { snapshotVerified: true });
     const afterUpgrade = targets.map(snapshot);
@@ -244,6 +264,7 @@ for (const host of ["codex", "claude", "all"]) {
     if (!validSmokeDoctorReport(diagnosedUpgrade, resolve(scenarioRepository), expected)) {
       throw new Error(`${host} post-upgrade doctor did not confirm installation: ${JSON.stringify(diagnosedUpgrade)}`);
     }
+    assertSameComponentVersions(diagnosedUpgrade, appliedUpgrade, `${host} post-upgrade doctor`);
     assertSnapshotUnchanged(targets, afterUpgrade, `${host} post-upgrade doctor`);
     recordStage(scenario, "post-upgrade-doctor", { snapshotVerified: true });
     write(`PASS ${host} ${expected.join("+")} setup/repeat/doctor/upgrade\n`);

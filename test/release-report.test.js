@@ -12,8 +12,9 @@ function report(components, overrides = {}) {
 }
 
 function components(state = "configured") {
-  return expectedNames.map((name) => ({
+  return expectedNames.map((name, index) => ({
     name,
+    version: `1.${index}.0`,
     state,
     installed: "yes",
     configured: "yes",
@@ -123,6 +124,11 @@ describe("validComponentReport", () => {
     expect(validComponentReport(report(exact), projectRoot, expectedNames, configuredOptions)).toBe(true);
     for (const candidate of malformed) {
       expect(validComponentReport(candidate, projectRoot, expectedNames, configuredOptions)).toBe(false);
+    }
+    for (const version of [undefined, null, "", "v1.2.3", "1.2", "01.2.3"]) {
+      expect(validComponentReport(report([
+        { ...exact[0], version }, ...exact.slice(1),
+      ]), projectRoot, expectedNames, configuredOptions)).toBe(false);
     }
     expect(validComponentReport(report(exact), projectRoot, [], configuredOptions)).toBe(false);
     expect(validComponentReport(report(exact), projectRoot, ["semctx", "semctx"], configuredOptions)).toBe(false);

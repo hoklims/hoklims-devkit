@@ -25,12 +25,5 @@ export function assertSnapshotUnchanged(paths, before, label) {
 }
 
 export function protectedProfilePaths(profile) {
-  return [
-    join(profile, ".codex"), join(profile, ".claude"),
-    join(profile, ".config"),
-    join(profile, "uv-tools"), join(profile, "uv-bin"),
-    join(profile, "uv-python"), join(profile, "uv-python-bin"),
-    join(profile, "AppData", "Local", "hoklims-devkit"),
-    join(profile, ".local", "state", "hoklims-devkit"),
-  ];
+  return [profile];
 }

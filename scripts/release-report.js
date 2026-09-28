@@ -27,6 +27,8 @@ export function validComponentReport(report, projectRoot, expectedNames, options
       const component = report.components[index];
       if (!component || typeof component !== "object" || Array.isArray(component)) return false;
       if (component.name !== expectedNames[index]) return false;
+      if (typeof component.version !== "string"
+        || !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(component.version)) return false;
       if (expectedState === null ? Object.hasOwn(component, "state") : component.state !== expectedState) return false;
       if (flagNames.some((name) => component[name] !== expectedFlags[name])) return false;
     }

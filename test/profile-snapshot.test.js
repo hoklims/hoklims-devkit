@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "../scripts/profile-snapshot.js";
 
 test("release smoke rejects a host mutation despite a valid planned report", () => {
@@ -44,41 +44,23 @@ test("release smoke detects a persistent tool written outside host config folder
   const home = mkdtempSync(join(tmpdir(), "hoklims-devkit-tool-oracle-"));
   const paths = protectedProfilePaths(home);
   const bin = join(home, "uv-bin");
-  expect(paths).toContain(bin);
+  expect(paths).toEqual([home]);
   const before = paths.map(snapshot);
   mkdirSync(bin);
   writeFileSync(join(bin, "latent-compass"), "unexpected\n");
   expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow(/modified the host profile/u);
 });
 
-test("every protected profile path is named and independently detects changed bytes", () => {
-  const expected = [
-    ".codex",
-    ".claude",
-    ".config",
-    "uv-tools",
-    "uv-bin",
-    "uv-python",
-    "uv-python-bin",
-    "AppData/Local/hoklims-devkit",
-    ".local/state/hoklims-devkit",
-  ];
+test("the complete synthetic home is protected including top-level and roaming writes", () => {
   const inventoryHome = mkdtempSync(join(tmpdir(), "hoklims-devkit-protected-inventory-"));
-  expect(protectedProfilePaths(inventoryHome).map((path) => (
-    relative(inventoryHome, path).replaceAll("\\", "/")
-  ))).toEqual(expected);
+  expect(protectedProfilePaths(inventoryHome)).toEqual([inventoryHome]);
 
-  for (const protectedPath of expected) {
+  for (const protectedPath of ["top-level.bin", "AppData/Roaming/foreign/settings.json"]) {
     const home = mkdtempSync(join(tmpdir(), "hoklims-devkit-protected-path-"));
     const paths = protectedProfilePaths(home);
-    const selected = paths.find((path) => (
-      relative(home, path).replaceAll("\\", "/") === protectedPath
-    ));
-    expect(selected).toBeDefined();
-    mkdirSync(selected, { recursive: true });
-    const marker = join(selected, "managed.bin");
-    writeFileSync(marker, "before\n");
     const before = paths.map(snapshot);
+    const marker = join(home, ...protectedPath.split("/"));
+    mkdirSync(join(marker, ".."), { recursive: true });
     writeFileSync(marker, "after\n");
     expect(() => assertSnapshotUnchanged(paths, before, protectedPath))
       .toThrow(/modified the host profile or devkit state/u);
