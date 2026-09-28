@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "../scripts/profile-snapshot.js";
@@ -102,6 +102,18 @@ test("release smoke detects an executable permission change", () => {
   const before = paths.map(snapshot);
   chmodSync(executable, 0o644);
   expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
+});
+
+test("release smoke detects same-content child replacement by inode", () => {
+  const home = mkdtempSync(join(tmpdir(), "hoklims-devkit-inode-oracle-"));
+  const marker = join(home, "state.json");
+  writeFileSync(marker, "same\n");
+  const paths = protectedProfilePaths(home);
+  const before = paths.map(snapshot);
+  const displaced = mkdtempSync(join(tmpdir(), "hoklims-devkit-inode-displaced-"));
+  renameSync(marker, join(displaced, "state.json"));
+  writeFileSync(marker, "same\n");
+  expect(() => assertSnapshotUnchanged(paths, before, "inode replacement")).toThrow();
 });
 
 test("release smoke detects special permission-bit changes", () => {

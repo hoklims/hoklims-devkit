@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
@@ -487,6 +487,43 @@ async function runAssertLedgerDemo(lane) {
   const creator = realpathSync(path.join(packageRoot, "examples", "git-history", "create-demo.mjs"));
   const cli = realpathSync(path.join(packageRoot, "dist", "cli.js"));
   const nodeIdentity = realpathSync(process.execPath);
+  const expectedProvenance = JSON.parse(readFileSync(path.join(packageRoot,
+    "examples", "git-history", "escape-string-regexp", "provenance.json"), "utf8"));
+  const expectedRevisions = {
+    before: "be437c0ce8b155277f87d38c6519da85663a0890",
+    after: "3c46e97e26f497f7a3adcf2c209283fd424e42ca",
+    neutral: "6c703f810069afafdbe7562d454b26a7ae974557",
+  };
+  const expectedGit = {
+    before: {
+      parents: expectedRevisions.before,
+      tree: "c9ba3febfbba5eceef294ad8949010c74b5cf21e",
+      entries: [
+        "100644 blob e7af2f77107d73046421ef56c4684cbfdd3c1e89\tLICENSE",
+        "100644 blob 855625ddc60ab9faae61e8a1663741956ff90cdd\tREADME.md",
+        "100644 blob 33b18dc93d4e8057f61d7a5b820c7f27ba96de2c\tbase.test.mjs",
+        "100644 blob 63802e5cbdeb4098be4180e5d478c4e2a25ae34e\tcrash.test.mjs",
+        "100644 blob 9d30947a9b4f89db1ec6f10de18f5a1161187528\tpackage.json",
+        "100644 blob e39b9e7b14a9a1226533ce2c068afa92b8466b00\tstrong.test.mjs",
+        "100644 blob 58217a4efa3c835c532499a3dad887017dc70a6b\tsubject.cjs",
+        "100644 blob c4365c9655b940ab0d3049614c40df438f98e15f\tweak.test.mjs",
+      ],
+    },
+    after: {
+      parents: `${expectedRevisions.after} ${expectedRevisions.before}`,
+      tree: "878b78912efdeb0689bfac7c9fa80c08687d295f",
+      entries: null,
+    },
+    neutral: {
+      parents: `${expectedRevisions.neutral} ${expectedRevisions.after}`,
+      tree: "786fceacda932497b07e9ddbfaabfd089bb5a27a",
+      entries: null,
+    },
+  };
+  expectedGit.after.entries = expectedGit.before.entries.map((entry) => entry.includes("\tsubject.cjs")
+    ? "100644 blob e5bb9db7933b7230327c7d99cc8459575f090dd4\tsubject.cjs" : entry);
+  expectedGit.neutral.entries = expectedGit.after.entries.map((entry) => entry.includes("\tREADME.md")
+    ? "100644 blob 23fe9073fbb13f2134086b91f110a0cacfdbb66e\tREADME.md" : entry);
   const assertDemoPackageIdentity = () => {
     for (const [relativePath, digest] of Object.entries(contract)) {
       assert.equal(sha256File(path.join(packageRoot, ...relativePath.split("/"))), digest,
@@ -510,6 +547,13 @@ async function runAssertLedgerDemo(lane) {
       assert.equal(ownedRepository, path.resolve(demoRoot), "AssertLedger demo root escapes its owned lane");
       assert(!lstatSync(demoRoot).isSymbolicLink(), "AssertLedger demo root is a symbolic link");
       assert.equal(realpathSync(candidate.repository), ownedRepository, "AssertLedger demo repository is outside the owned fixture");
+      assert.equal(candidate.test, "strong.test.mjs", "AssertLedger demo selected another candidate test");
+      assert.deepEqual(candidate.baseTests, ["base.test.mjs"], "AssertLedger demo selected other base tests");
+      assert.equal(candidate.out, "evidence-strong", "AssertLedger demo selected another output path");
+      assert.equal(candidate.neutralReason,
+        "Documentation-only change to the corrected tree; no additional behavioral robustness claim",
+        "AssertLedger demo neutral reason differs from the reviewed fixture");
+      assert.deepEqual(candidate.provenance, expectedProvenance, "AssertLedger demo provenance differs from the reviewed fixture");
       for (const relative of [candidate.test, ...(candidate.baseTests ?? [])]) {
         assert(safeRelative(relative), "AssertLedger demo test path is not a safe owned relative path");
         const resolved = realpathSync(path.join(ownedRepository, ...relative.split("/")));
@@ -529,9 +573,27 @@ async function runAssertLedgerDemo(lane) {
         assert(!observed.isSymbolicLink(), "AssertLedger demo output ancestor is a symbolic link");
         assert(isWithin(ownedRepository, realpathSync(current)), "AssertLedger demo output ancestor escapes the owned fixture");
       }
-      for (const revision of [candidate.before, candidate.after, candidate.neutral]) assert.match(revision, /^[a-f0-9]{40}$/u);
-      assert.equal(typeof candidate.neutralReason, "string");
-      assert(candidate.neutralReason.length > 0, "AssertLedger demo neutral reason is missing");
+      assert.deepEqual({ before: candidate.before, after: candidate.after, neutral: candidate.neutral }, expectedRevisions,
+        "AssertLedger demo revisions differ from the reviewed fixture");
+      for (const [name, revision] of Object.entries(expectedRevisions)) {
+        const runGit = (args) => {
+          const result = spawnSync(config.runtime.gitExecutable,
+            ["-c", "core.autocrlf=false", "-c", "core.hooksPath=.git/no-hooks", ...args], {
+              cwd: ownedRepository, env: lane.env, encoding: "utf8", windowsHide: true,
+              timeout: 10_000, maxBuffer: 1_048_576,
+            });
+          assert.ifError(result.error);
+          assert.equal(result.signal, null);
+          assert.equal(result.status, 0, result.stderr);
+          return result.stdout.trim();
+        };
+        assert.equal(runGit(["rev-list", "--parents", "-n", "1", revision]), expectedGit[name].parents,
+          `AssertLedger demo ${name} parent relation differs`);
+        assert.equal(runGit(["rev-parse", `${revision}^{tree}`]), expectedGit[name].tree,
+          `AssertLedger demo ${name} tree differs`);
+        assert.deepEqual(runGit(["ls-tree", "-r", revision]).split(/\r?\n/u), expectedGit[name].entries,
+          `AssertLedger demo ${name} blobs differ`);
+      }
       assertDemoPackageIdentity();
     },
     checkDemo: async (candidate) => parseJsonOutput(await runCommand({

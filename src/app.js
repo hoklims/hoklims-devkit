@@ -1340,7 +1340,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
   }
   let hostJson = { ok: true, dryRun: true, hosts: {}, skipped: true };
   if (hostInstallNeeded) {
-    const host = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", "--dry-run", ...args], root);
+    const host = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", "--dry-run", ...args], root, 300_000);
     hostJson = nativeResult(host, "semctx install --dry-run", report);
     if (!hostJson) return null;
     if (host.code !== 0 || !validSemctxInstallReport(rt, hostJson, root, hosts, version, hostMode, true)) {
@@ -1485,7 +1485,8 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
     if (result.code !== 0 || !validCompassInstallReport(rt, parsed, root, host, version, true)) {
       problem(report, "COMPASS_HOOK_CONFLICT", JSON.stringify(parsed).slice(0, 600));
     }
-    previews.push({ host, files: parsed.files ?? [], conflicts: parsed.conflicts ?? [] });
+    previews.push({ host, files: parsed.files ?? [], conflicts: parsed.conflicts ?? [],
+      installed: parsed.states?.[host]?.installed ?? null, configured: parsed.states?.[host]?.configured ?? null });
   }
   report.plannedChanges.push({ component: "latent-compass", installTool: needsInstall, previews });
   return { current, needsInstall, previews };
@@ -1495,7 +1496,7 @@ async function applySemctx(rt, root, hosts, version, preflight) {
   const hostMode = hosts.length === 2 ? "all" : hosts[0];
   const args = ["--root", root, "--json"];
   if (preflight.hostInstallNeeded) {
-    const install = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", ...args], root);
+    const install = await rt.exec(["bunx", `semctx@${version}`, "install", "--host", hostMode, "--skip-setup", ...args], root, 300_000);
     const parsed = parseJsonOutput(install);
     if (install.code !== 0 || !validSemctxInstallReport(rt, parsed, root, hosts, version, hostMode, false)) {
       throw new Error(`Semctx host install: ${shortError(install)}`);
@@ -2113,8 +2114,23 @@ export async function execute(options, rt = createRuntime()) {
           persistedStateObserved = true;
         }
       };
-      if (options.command === "upgrade" || state?.inProgress || selected.some((name) => state?.components?.[name]?.version !== versions[name]
-        || hosts.some((host) => !state?.components?.[name]?.hosts?.includes(host)))) {
+      const configurationNeedsProgress = (name) => {
+        const preview = previews[name];
+        if (!preview) return true;
+        if (name === "semctx") return preview.hostInstallNeeded || !preview.skipSetup;
+        if (name === "assertledger") return preview.needsInstall || preview.previews.length !== hosts.length
+          || preview.previews.some((item) => item.status !== "UNCHANGED"
+            || item.artifacts.some((artifact) => artifact.state !== "UNCHANGED"));
+        return preview.needsInstall || preview.previews.length !== hosts.length
+          || preview.previews.some((item) => item.installed !== true || item.configured !== true
+            || item.conflicts.length !== 0 || item.files.some((file) => file.action !== "unchanged"));
+      };
+      const needsProgressCheckpoint = Boolean(state?.inProgress) || selected.some((name) => (
+        state?.components?.[name]?.version !== versions[name]
+        || hosts.some((host) => !state?.components?.[name]?.hosts?.includes(host))
+        || configurationNeedsProgress(name)
+      ));
+      if (needsProgressCheckpoint) {
         nextState.inProgress = {
           command: options.command,
           selected,

@@ -138,11 +138,11 @@ function laneRunnerOptions(overrides = {}) {
     captureProtected: () => ({
       repository: [
         { path: ".", kind: "directory", mode: 0o755, device: "1", inode: "2" },
-        { path: "package.json", kind: "file", mode: 0o644, bytes: 3, sha256: "a".repeat(64) },
+        { path: "package.json", kind: "file", mode: 0o644, bytes: 3, sha256: "a".repeat(64), device: "1", inode: "4" },
       ],
       profile: [
         { path: ".", kind: "directory", mode: 0o755, device: "1", inode: "3" },
-        { path: "home", kind: "directory", mode: 0o755 },
+        { path: "home", kind: "directory", mode: 0o755, device: "1", inode: "5" },
       ],
     }),
     recordSnapshot: () => {},
@@ -222,16 +222,23 @@ test("actual AssertLedger demo function validates owned paths and reauthenticate
     source.indexOf("function finalizeNativeSmokeResults"));
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const load = new AsyncFunction(
-    "assert", "config", "path", "readFileSync", "assertLedgerContract", "realpathSync", "sha256File", "process",
+    "assert", "config", "path", "readFileSync", "assertLedgerContract", "realpathSync", "sha256File", "process", "spawnSync",
     "runOwnedAssertLedgerDemo", "runCommand", "parseJsonOutput", "isWithin", "statSync", "existsSync", "lstatSync",
     "writeFileSync", "evidenceRoot", "JSON", `${body}\nreturn runAssertLedgerDemo;`,
   );
-  const execute = async ({ mutateDemo, mutateAsset, symlinkPath, danglingLink, redirectedRoot } = {}) => {
+  const execute = async ({ mutateDemo, mutateAsset, mutateGitOutput, symlinkPath, danglingLink, redirectedRoot } = {}) => {
     const lane = { name: "all-assertledger", root: path.join("/run", "lanes", "all-assertledger"),
       repository: path.join("/run", "lanes", "all-assertledger", "repository"), env: {} };
     const demoRoot = path.join(lane.root, "assertledger-demo");
-    const validDemo = { repository: demoRoot, before: "a".repeat(40), after: "b".repeat(40), neutral: "c".repeat(40),
-      neutralReason: "owned neutral", test: "strong.test.mjs", baseTests: ["base.test.mjs"], out: "evidence-strong" };
+    const provenance = JSON.parse(readFileSync(new URL(
+      "./fixtures/assertledger-assets/1.3.0/examples/git-history/escape-string-regexp/provenance.json", import.meta.url,
+    ), "utf8"));
+    const validDemo = { repository: demoRoot,
+      before: "be437c0ce8b155277f87d38c6519da85663a0890",
+      after: "3c46e97e26f497f7a3adcf2c209283fd424e42ca",
+      neutral: "6c703f810069afafdbe7562d454b26a7ae974557",
+      neutralReason: "Documentation-only change to the corrected tree; no additional behavioral robustness claim",
+      test: "strong.test.mjs", baseTests: ["base.test.mjs"], out: "evidence-strong", provenance };
     const demo = mutateDemo ? mutateDemo(structuredClone(validDemo)) : validDemo;
     let checks = 0;
     let created = false;
@@ -246,15 +253,50 @@ test("actual AssertLedger demo function validates owned paths and reauthenticate
     const realpath = (value) => redirectedRoot && path.resolve(value) === path.resolve(demoRoot)
       ? path.join("/foreign", "user-repo") : path.resolve(value);
     const fn = await load(
-      assert, { allowAssertLedgerUnsafeDemo: true, expected: { assertledger: "1.3.0" } }, path,
-      (file) => file.endsWith("package.json") ? JSON.stringify({ version: "1.3.0" }) : "bytes",
+      assert, { allowAssertLedgerUnsafeDemo: true, expected: { assertledger: "1.3.0" }, runtime: { gitExecutable: "git" } }, path,
+      (file) => file.endsWith("package.json") ? JSON.stringify({ version: "1.3.0" })
+        : file.endsWith("provenance.json") ? JSON.stringify(provenance) : "bytes",
       () => contract, realpath,
       (file) => {
         const relativePath = path.relative(packageRoot, file).split(path.sep).join("/");
         if (created && relativePath === mutateAsset) return "mutated";
         return contract[relativePath];
       },
-      fakeProcess, runOwnedAssertLedgerDemo, runCommand, (result) => JSON.parse(result.stdout),
+      fakeProcess, (_git, args) => {
+        const command = args.findIndex((argument) => ["rev-list", "rev-parse", "ls-tree"].includes(argument));
+        const operation = args[command];
+        const revision = args.at(-1).replace(/\^\{tree\}$/u, "");
+        const values = {
+          be437c0ce8b155277f87d38c6519da85663a0890: {
+            parents: "be437c0ce8b155277f87d38c6519da85663a0890", tree: "c9ba3febfbba5eceef294ad8949010c74b5cf21e",
+            subject: "58217a4efa3c835c532499a3dad887017dc70a6b", readme: "855625ddc60ab9faae61e8a1663741956ff90cdd",
+          },
+          "3c46e97e26f497f7a3adcf2c209283fd424e42ca": {
+            parents: "3c46e97e26f497f7a3adcf2c209283fd424e42ca be437c0ce8b155277f87d38c6519da85663a0890",
+            tree: "878b78912efdeb0689bfac7c9fa80c08687d295f", subject: "e5bb9db7933b7230327c7d99cc8459575f090dd4",
+            readme: "855625ddc60ab9faae61e8a1663741956ff90cdd",
+          },
+          "6c703f810069afafdbe7562d454b26a7ae974557": {
+            parents: "6c703f810069afafdbe7562d454b26a7ae974557 3c46e97e26f497f7a3adcf2c209283fd424e42ca",
+            tree: "786fceacda932497b07e9ddbfaabfd089bb5a27a", subject: "e5bb9db7933b7230327c7d99cc8459575f090dd4",
+            readme: "23fe9073fbb13f2134086b91f110a0cacfdbb66e",
+          },
+        };
+        const value = values[revision];
+        const common = [
+          "100644 blob e7af2f77107d73046421ef56c4684cbfdd3c1e89\tLICENSE",
+          `100644 blob ${value.readme}\tREADME.md`,
+          "100644 blob 33b18dc93d4e8057f61d7a5b820c7f27ba96de2c\tbase.test.mjs",
+          "100644 blob 63802e5cbdeb4098be4180e5d478c4e2a25ae34e\tcrash.test.mjs",
+          "100644 blob 9d30947a9b4f89db1ec6f10de18f5a1161187528\tpackage.json",
+          "100644 blob e39b9e7b14a9a1226533ce2c068afa92b8466b00\tstrong.test.mjs",
+          `100644 blob ${value.subject}\tsubject.cjs`,
+          "100644 blob c4365c9655b940ab0d3049614c40df438f98e15f\tweak.test.mjs",
+        ];
+        let stdout = operation === "rev-list" ? value.parents : operation === "rev-parse" ? value.tree : common.join("\n");
+        if (mutateGitOutput && operation === mutateGitOutput) stdout = `${stdout}mutated`;
+        return { status: 0, signal: null, stdout, stderr: "", error: undefined };
+      }, runOwnedAssertLedgerDemo, runCommand, (result) => JSON.parse(result.stdout),
       (parent, child) => { const relative = path.relative(parent, child); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); },
       () => ({ isFile: () => true }), (value) => !danglingLink && symlinkPath !== undefined && path.resolve(value) === path.resolve(symlinkPath),
       (value) => ({ isSymbolicLink: () => symlinkPath !== undefined && path.resolve(value) === path.resolve(symlinkPath) }),
@@ -268,12 +310,18 @@ test("actual AssertLedger demo function validates owned paths and reauthenticate
   for (const options of [
     { mutateDemo: (demo) => ({ ...demo, repository: path.join("/foreign", "user-repo") }) },
     { mutateDemo: (demo) => ({ ...demo, out: path.join("/foreign", "result") }) },
+    { mutateDemo: (demo) => ({ ...demo, out: "other-output" }) },
+    { mutateDemo: (demo) => ({ ...demo, test: "other.test.mjs" }) },
+    { mutateDemo: (demo) => ({ ...demo, baseTests: ["other-base.test.mjs"] }) },
+    { mutateDemo: (demo) => ({ ...demo, after: demo.before }) },
+    { mutateDemo: (demo) => ({ ...demo, neutral: "d".repeat(40) }) },
     { mutateDemo: (demo) => ({ ...demo, test: "../escape.test.mjs" }) },
     { mutateDemo: (demo) => ({ ...demo, out: "link/result" }),
       symlinkPath: path.join("/run", "lanes", "all-assertledger", "assertledger-demo", "link") },
     { mutateDemo: (demo) => ({ ...demo, out: "link/result" }), danglingLink: true,
       symlinkPath: path.join("/run", "lanes", "all-assertledger", "assertledger-demo", "link") },
     { redirectedRoot: true },
+    { mutateGitOutput: "ls-tree" },
   ]) {
     const result = await execute(options);
     expect(result.error).toBeTruthy();
@@ -291,6 +339,35 @@ test("actual AssertLedger demo function validates owned paths and reauthenticate
     expect(result.error, mutateAsset).toBeTruthy();
     expect(result.checks, mutateAsset).toBe(0);
   }
+});
+
+test("reviewed demo Git identities match the authentic creator output", () => {
+  const parent = mkdtempSync(join(tmpdir(), "devkit-assertledger-demo-git-"));
+  const repository = join(parent, "fixture");
+  const creator = fileURLToPath(new URL(
+    "./fixtures/assertledger-assets/1.3.0/examples/git-history/create-demo.mjs", import.meta.url,
+  ));
+  const created = Bun.spawnSync({ cmd: [process.execPath, creator, repository] });
+  expect(created.exitCode).toBe(0);
+  const demo = JSON.parse(created.stdout.toString());
+  expect({ before: demo.before, after: demo.after, neutral: demo.neutral }).toEqual({
+    before: "be437c0ce8b155277f87d38c6519da85663a0890",
+    after: "3c46e97e26f497f7a3adcf2c209283fd424e42ca",
+    neutral: "6c703f810069afafdbe7562d454b26a7ae974557",
+  });
+  const git = (args) => {
+    const result = Bun.spawnSync({ cmd: ["git", ...args], cwd: repository });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString().trim();
+  };
+  expect(git(["rev-list", "--parents", "-n", "1", demo.after])).toBe(`${demo.after} ${demo.before}`);
+  expect(git(["rev-list", "--parents", "-n", "1", demo.neutral])).toBe(`${demo.neutral} ${demo.after}`);
+  expect(git(["rev-parse", `${demo.before}^{tree}`])).toBe("c9ba3febfbba5eceef294ad8949010c74b5cf21e");
+  expect(git(["rev-parse", `${demo.after}^{tree}`])).toBe("878b78912efdeb0689bfac7c9fa80c08687d295f");
+  expect(git(["rev-parse", `${demo.neutral}^{tree}`])).toBe("786fceacda932497b07e9ddbfaabfd089bb5a27a");
+  expect(git(["rev-parse", `${demo.before}:subject.cjs`])).toBe("58217a4efa3c835c532499a3dad887017dc70a6b");
+  expect(git(["rev-parse", `${demo.after}:subject.cjs`])).toBe("e5bb9db7933b7230327c7d99cc8459575f090dd4");
+  expect(git(["rev-parse", `${demo.neutral}:README.md`])).toBe("23fe9073fbb13f2134086b91f110a0cacfdbb66e");
 });
 
 test("production smoke orchestration validates literal result completeness before finalization", async () => {
@@ -366,10 +443,27 @@ test("actual native smoke suffix executes four lanes and refuses disconnected PA
   rootOnly[0].evidence[0].protectedSnapshot.after.repository.splice(1);
   const malformedChild = structuredClone(validResults);
   malformedChild[0].evidence[0].protectedSnapshot.before.repository.push({
-    path: "../escape", kind: "file", mode: 0o644, bytes: -1, sha256: "invalid",
+    path: "../escape", kind: "file", mode: 0o644, bytes: -1, sha256: "invalid", device: "1", inode: "6",
   });
   malformedChild[0].evidence[0].protectedSnapshot.after = structuredClone(
     malformedChild[0].evidence[0].protectedSnapshot.before,
+  );
+  const missingChildIdentity = structuredClone(validResults);
+  delete missingChildIdentity[0].evidence[0].protectedSnapshot.before.repository[1].device;
+  missingChildIdentity[0].evidence[0].protectedSnapshot.after = structuredClone(
+    missingChildIdentity[0].evidence[0].protectedSnapshot.before,
+  );
+  const noncanonicalIdentity = structuredClone(validResults);
+  noncanonicalIdentity[0].evidence[0].protectedSnapshot.before.repository[1].device = 1;
+  noncanonicalIdentity[0].evidence[0].protectedSnapshot.after = structuredClone(
+    noncanonicalIdentity[0].evidence[0].protectedSnapshot.before,
+  );
+  const linkWithoutMode = structuredClone(validResults);
+  linkWithoutMode[0].evidence[0].protectedSnapshot.before.repository.push({
+    path: "same-link", kind: "symlink", target: "same-target", device: "1", inode: "7",
+  });
+  linkWithoutMode[0].evidence[0].protectedSnapshot.after = structuredClone(
+    linkWithoutMode[0].evidence[0].protectedSnapshot.before,
   );
   const duplicateRoot = structuredClone(validResults);
   duplicateRoot[0].evidence[0].protectedSnapshot.before.repository.push(structuredClone(
@@ -392,7 +486,8 @@ test("actual native smoke suffix executes four lanes and refuses disconnected PA
   const contradictoryDemo = structuredClone(validResults);
   contradictoryDemo[3].demo.evidence.report.decision = { status: "REJECTED" };
   for (const [name, results] of Object.entries({
-    labelOnly, missingReport, malformedReport, incompleteSnapshot, rootOnly, malformedChild, duplicateRoot,
+    labelOnly, missingReport, malformedReport, incompleteSnapshot, rootOnly, malformedChild, missingChildIdentity, noncanonicalIdentity,
+    linkWithoutMode, duplicateRoot,
     duplicateApply, forgedValidation, missingDemoReport, invalidDemoReport, contradictoryDemo,
   })) {
     const attempted = executeSuffix(suffix, async (options) => {
@@ -401,7 +496,7 @@ test("actual native smoke suffix executes four lanes and refuses disconnected PA
       await runNativeLaneMatrix(options);
       return results;
     });
-    await expect(attempted, name).rejects.toThrow();
+    await expect(attempted, name).rejects.toThrow(name === "noncanonicalIdentity" ? /identity is invalid/u : undefined);
   }
 
   const disconnected = suffix.replace(/await runNativeSmokeOrchestration\(\{[\s\S]*?\n\}\);\s*$/u,
@@ -427,6 +522,41 @@ test("native snapshots detect permission-only mutations", () => {
   const before = { source: snapshotTree(root) };
   chmodSync(file, 0o755);
   expect(diffSnapshots(before, { source: snapshotTree(root) })).not.toEqual([]);
+});
+
+test("native snapshots detect child inode replacement with unchanged bytes modes and targets", () => {
+  const makeIo = (changedKind = null) => ({
+    lstatSync(value, options) {
+      expect(options).toEqual({ bigint: true });
+      const name = path.basename(value);
+      const kind = value === "/fixture" ? "root" : name === "dir" ? "directory" : name;
+      const baseInode = { root: 1n, directory: 10n, file: 11n, link: 12n }[kind];
+      const inode = changedKind === kind ? baseInode + 100n : baseInode;
+      return {
+        mode: { root: 0o040755n, directory: 0o040755n, file: 0o100644n, link: 0o120777n }[kind],
+        dev: 7n, ino: inode, size: kind === "file" ? 7n : 0n,
+        isDirectory: () => ["root", "directory"].includes(kind), isFile: () => kind === "file", isSymbolicLink: () => kind === "link",
+      };
+    },
+    readdirSync(value) { return value === "/fixture" ? ["dir", "file", "link"] : []; },
+    readFileSync() { return Buffer.from("fixture"); },
+    readlinkSync() { return "same-target"; },
+  });
+  const before = { source: snapshotTree("/fixture", makeIo()) };
+  for (const kind of ["directory", "file", "link"]) {
+    expect(diffSnapshots(before, { source: snapshotTree("/fixture", makeIo(kind)) }), kind).not.toEqual([]);
+  }
+  const contentChanged = makeIo();
+  contentChanged.readFileSync = () => Buffer.from("changed");
+  expect(diffSnapshots(before, { source: snapshotTree("/fixture", contentChanged) })).not.toEqual([]);
+  const modeChanged = makeIo();
+  const nativeStat = modeChanged.lstatSync;
+  modeChanged.lstatSync = (value, options) => {
+    const stat = nativeStat(value, options);
+    if (path.basename(value) === "file") stat.mode = 0o100600n;
+    return stat;
+  };
+  expect(diffSnapshots(before, { source: snapshotTree("/fixture", modeChanged) })).not.toEqual([]);
 });
 
 test("native snapshots distinguish absent empty and linked roots", () => {

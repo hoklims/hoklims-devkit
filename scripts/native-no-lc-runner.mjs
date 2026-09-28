@@ -48,12 +48,16 @@ function assertSnapshotInventory(snapshot, label) {
     for (const record of records) {
       assert(validSnapshotPath(record?.path), `${label} ${scope} path is invalid`);
       assert(["directory", "file", "symlink", "other"].includes(record.kind), `${label} ${scope} kind is invalid`);
+      assert(Number.isInteger(record.mode) && record.mode >= 0 && record.mode <= 0o7777
+        && typeof record.device === "string" && /^(0|[1-9]\d*)$/u.test(record.device)
+        && typeof record.inode === "string" && /^(0|[1-9]\d*)$/u.test(record.inode),
+        `${label} ${scope} identity is invalid`);
       if (record.kind === "file") {
-        assert(Number.isInteger(record.mode) && Number.isInteger(record.bytes) && record.bytes >= 0
+        assert(Number.isInteger(record.bytes) && record.bytes >= 0
           && /^[a-f0-9]{64}$/u.test(record.sha256), `${label} ${scope} file record is invalid`);
       } else if (record.kind === "symlink") {
         assert.equal(typeof record.target, "string", `${label} ${scope} symlink target is invalid`);
-      } else assert(Number.isInteger(record.mode), `${label} ${scope} mode is invalid`);
+      }
     }
     const root = records.find((record) => record.path === ".");
     assert(root?.kind === "directory" && Number.isInteger(root.mode)

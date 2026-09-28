@@ -3422,7 +3422,7 @@ describe("public CLI", () => {
   });
 
   test("AssertLedger 1.3 setup is idempotent under the reviewed package contract", async () => {
-    const rt = fakeRuntime({ tools: ["node", "npm"], files: {
+    const rt = fakeRuntime({ tools: ["node", "npm"], workspaceReady: true, files: {
       [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
     } });
@@ -3733,6 +3733,39 @@ describe("public CLI", () => {
     expect(resumed.ok).toBe(true);
     expect(resumed.components[0].version).toBe("0.3.7");
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
+  });
+
+  test("a genuine same-state upgrade avoids state replacement while required progress remains checkpointed", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.7", hosts: ["codex"] },
+    } };
+    const noOp = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), noOp);
+    expect(report.ok).toBe(true);
+    expect(noOp.writes).toHaveLength(0);
+
+    const expanded = fakeRuntime({ state: structuredClone(state), workspaceReady: true, tools: ["claude"] });
+    const expandedReport = await execute(parseArgs(["upgrade", "/repo", "--host", "all"]), expanded);
+    expect(expandedReport.ok).toBe(true);
+    expect(expanded.writes[0].inProgress).toMatchObject({ command: "upgrade", hosts: ["codex", "claude"] });
+    expect(expanded.writes.at(-1).components.semctx.hosts).toEqual(["codex", "claude"]);
+  });
+
+  test("Semctx install alone receives the 300 second Devkit timeout margin", async () => {
+    const rt = fakeRuntime();
+    const nativeExec = rt.exec;
+    const observed = [];
+    rt.exec = async (argv, cwd, timeoutMs) => {
+      observed.push({ argv, timeoutMs });
+      return nativeExec(argv, cwd, timeoutMs);
+    };
+    const report = await execute(setupOptions(), rt);
+    expect(report.ok).toBe(true);
+    const installs = observed.filter(({ argv }) => argv[0] === "bunx" && argv.includes("install"));
+    expect(installs).toHaveLength(2);
+    expect(installs.map(({ timeoutMs }) => timeoutMs)).toEqual([300_000, 300_000]);
+    expect(observed.filter(({ argv }) => argv[0] === "bunx" && !argv.includes("install"))
+      .every(({ timeoutMs }) => timeoutMs === undefined)).toBe(true);
   });
 
   test("an interrupted upgrade can explicitly refresh a now-unavailable stable plan", async () => {
@@ -4544,9 +4577,9 @@ describe("public CLI", () => {
     const command = "hoklims-devkit setup /repo --host codex --with assertledger";
     expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
     expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
-    expect(report.nextActions).toEqual([`Restore Node, npm on PATH before running ${command}`]);
+    expect(report.nextActions).toEqual([`Resolve the reported native conflict, then restore Node, npm on PATH before running ${command}`]);
     for (const detail of report.conflicts.map((item) => item.detail)) {
-      expect(detail).toContain(`Restore Node, npm on PATH before running ${command}`);
+      expect(detail).toContain(command);
       expect(detail).not.toContain(`Run ${command}`);
     }
     expect(report.conflicts.map((item) => item.detail).join("\n")).toContain("native setup failed");
@@ -5382,13 +5415,13 @@ describe("public CLI", () => {
       expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_NOT_READY");
       if (releaseFailure) {
         expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
-        expect(recovery).toContain(`Restore Node, npm on PATH before running ${command}`);
+        expect(recovery).toContain(command);
         expect(recovery).not.toContain(`Run ${command}`);
         for (const detail of report.conflicts.map((item) => item.detail)) {
-          expect(detail).toContain(`Restore Node, npm on PATH before running ${command}`);
+          expect(detail).toContain(command);
         }
       } else {
-        expect(recovery.toLowerCase()).toContain(`run ${command}`.toLowerCase());
+        expect(recovery.toLowerCase()).toContain(command.toLowerCase());
         expect(recovery).not.toContain("Restore Node");
       }
     }
@@ -5633,7 +5666,7 @@ describe("public CLI", () => {
     expect(unconfiguredReport.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
     expect(unconfiguredReport.components.find((item) => item.name === "latent-compass"))
       .toMatchObject({ state: "partial", configured: "unknown", observed: "unknown" });
-    expect(unconfigured.writes).toHaveLength(0);
+    expect(unconfigured.writes[0].inProgress).toMatchObject({ command: "setup", selected: ["semctx", "latent-compass"] });
 
     for (const field of ["schema", "operation", "version", "host", "exit"]) {
       const rt = fakeRuntime({ state: structuredClone(state), tools: ["uv"], files: { [executable]: "shim" } });
@@ -5657,7 +5690,7 @@ describe("public CLI", () => {
       expect(report.ok, field).toBe(false);
       expect(report.conflicts.map((item) => item.code), field).toContain("APPLY_FAILED");
       expect(report.components.find((item) => item.name === "latent-compass").configured, field).toBe("unknown");
-      expect(rt.writes, field).toHaveLength(0);
+      expect(rt.writes[0].inProgress, field).toMatchObject({ command: "setup", selected: ["semctx", "latent-compass"] });
     }
   });
 

@@ -26,18 +26,19 @@ export function snapshotTree(root, io = { lstatSync, readFileSync, readdirSync, 
     for (const name of io.readdirSync(current).sort()) {
       const full = path.join(current, name);
       const rel = relative ? path.join(relative, name) : name;
-      const info = io.lstatSync(full);
+      const info = io.lstatSync(full, { bigint: true });
       const recordPath = rel.split(path.sep).join("/");
+      const mode = Number(info.mode & 0o7777n);
       if (info.isSymbolicLink()) {
-        result.push({ path: recordPath, kind: "symlink", target: io.readlinkSync(full) });
+        result.push({ path: recordPath, kind: "symlink", mode, target: io.readlinkSync(full), ...identity(info) });
       } else if (info.isDirectory()) {
-        result.push({ path: recordPath, kind: "directory", mode: info.mode & 0o7777 });
+        result.push({ path: recordPath, kind: "directory", mode, ...identity(info) });
         walk(full, rel);
       } else if (info.isFile()) {
-        result.push({ path: recordPath, kind: "file", mode: info.mode & 0o7777, bytes: info.size,
-          sha256: createHash("sha256").update(io.readFileSync(full)).digest("hex") });
+        result.push({ path: recordPath, kind: "file", mode, bytes: Number(info.size),
+          sha256: createHash("sha256").update(io.readFileSync(full)).digest("hex"), ...identity(info) });
       } else {
-        result.push({ path: recordPath, kind: "other", mode: info.mode & 0o7777 });
+        result.push({ path: recordPath, kind: "other", mode, ...identity(info) });
       }
     }
   }
