@@ -517,12 +517,18 @@ async function runAssertLedgerDemo(lane) {
     "AssertLedger strong fixture must verify",
   );
   writeFileSync(path.join(evidenceRoot, `${lane.name}-assertledger-demo.json`), `${JSON.stringify({ demo, report }, null, 2)}\n`);
-  return { verdict: "VERIFIED", report };
+  return { verdict: "VERIFIED", report, demo, packageVersion: packageJson.version };
 }
 
 function finalizeNativeSmokeResults(laneResults) {
   assertNativeSmokeResults(laneResults, { runRoot: physicalRunRoot,
-    versions: { semctx: config.expected.semctx, assertledger: config.expected.assertledger } });
+    versions: { semctx: config.expected.semctx, assertledger: config.expected.assertledger },
+    trustedBaselines,
+    captureCurrent: (name) => snapshotProtected({
+      repository: path.join(physicalRunRoot, "lanes", name, "repository"),
+      profileRoot: path.join(physicalRunRoot, "lanes", name, "profile"),
+    }),
+  });
   const sourceAfter = snapshotTree(sourceCheckout);
   writeFileSync(path.join(evidenceRoot, "source-after.json"), `${JSON.stringify(sourceAfter, null, 2)}\n`);
   const sourceDiff = diffSnapshots({ source: sourceBefore }, { source: sourceAfter });
@@ -570,9 +576,14 @@ function finalizeNativeSmokeResults(laneResults) {
   console.log(JSON.stringify(summary));
 }
 
+const trustedBaselines = new Map();
 const matrixOptions = {
   laneDefinitions: NATIVE_LANE_DEFINITIONS,
-  createLane,
+  createLane: async (definition) => {
+    const lane = await createLane(definition);
+    trustedBaselines.set(lane.name, snapshotProtected(lane));
+    return lane;
+  },
   executeDevkit: runDevkit,
   reportOptions: nativeReportOptions,
   captureProtected: snapshotProtected,
@@ -584,6 +595,12 @@ await runNativeSmokeOrchestration({
   runMatrix: runNativeLaneMatrix,
   matrixOptions,
   resultContext: { runRoot: physicalRunRoot,
-    versions: { semctx: config.expected.semctx, assertledger: config.expected.assertledger } },
+    versions: { semctx: config.expected.semctx, assertledger: config.expected.assertledger },
+    trustedBaselines,
+    captureCurrent: (name) => snapshotProtected({
+      repository: path.join(physicalRunRoot, "lanes", name, "repository"),
+      profileRoot: path.join(physicalRunRoot, "lanes", name, "profile"),
+    }),
+  },
   finalize: finalizeNativeSmokeResults,
 });

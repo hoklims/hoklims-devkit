@@ -588,15 +588,26 @@ function authenticateAssertEntry(rt, entry, expectedVersion) {
     throw new Error("AssertLedger executable is outside an admitted package layout");
   }
   const manifest = JSON.parse(rt.readPlainText(manifestPath));
+  const assetsAuthentic = Object.keys(contract).every((relativePath) => (
+    verifiedAssertAsset(rt, packageRoot, relativePath, contract) !== null
+  ));
   if (manifest?.name !== "assertledger" || manifest.version !== expectedVersion
     || manifest.bin?.assertledger !== "dist/cli.js" || manifest.bin?.testforge !== "dist/cli.js"
-    || verifiedAssertAsset(rt, packageRoot, "dist/cli.js", contract) === null
-    || verifiedAssertAsset(rt, packageRoot, "integrations/skill/SKILL.md", contract) === null) {
+    || !assetsAuthentic) {
     throw new Error("AssertLedger executable or packaged contract assets do not match the reviewed release");
   }
   const node = rt.which("node");
   if (!node) throw new Error("Node disappeared before AssertLedger execution");
   return { version: expectedVersion, packageRoot, contract, cliPath, nodePath: rt.realpath(node) };
+}
+
+function assertSameAssertIdentity(before, after) {
+  if (!before || !after || before.version !== after.version || before.nodePath !== after.nodePath
+    || before.cliPath !== after.cliPath || before.packageRoot !== after.packageRoot
+    || before.contract !== after.contract) {
+    throw new Error("AssertLedger invocation identity changed during native execution");
+  }
+  return before;
 }
 
 async function resolveCachedAssertEntry(rt, root, version) {
@@ -1396,6 +1407,8 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
     try {
       assertAssertAdmission(rt, root, manager, admittedVersions, admittedVersions, needsInstall);
+      const readbackIdentity = authenticateAssertEntry(rt, { version, cliPath: identity.cliPath }, version);
+      assertSameAssertIdentity(identity, readbackIdentity);
     } catch (error) {
       recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
       return null;
@@ -1522,29 +1535,31 @@ async function applyAssert(rt, root, hosts, version, preflight) {
     const client = host === "claude" ? "claude-code" : "codex";
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    let identity = authenticateAssertEntry(rt, admission.entry, version);
-    const preview = await rt.exec([identity.nodePath, identity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"], root);
+    const previewIdentity = authenticateAssertEntry(rt, admission.entry, version);
+    const preview = await rt.exec([previewIdentity.nodePath, previewIdentity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"], root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    identity = authenticateAssertEntry(rt, admission.entry, version);
+    assertSameAssertIdentity(previewIdentity, authenticateAssertEntry(rt, admission.entry, version));
     const previewReport = parseJsonOutput(preview);
-    if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"], { identity })) {
+    if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"], { identity: previewIdentity })) {
       throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
     }
-    const result = await rt.exec([identity.nodePath, identity.cliPath, "setup", root, "--client", client, "--write", "--json"], root);
+    const writeIdentity = authenticateAssertEntry(rt, admission.entry, version);
+    const result = await rt.exec([writeIdentity.nodePath, writeIdentity.cliPath, "setup", root, "--client", client, "--write", "--json"], root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    identity = authenticateAssertEntry(rt, admission.entry, version);
+    assertSameAssertIdentity(writeIdentity, authenticateAssertEntry(rt, admission.entry, version));
     const parsed = parseJsonOutput(result);
-    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"], { identity })) {
+    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"], { identity: writeIdentity })) {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
     }
-    const verify = await rt.exec([identity.nodePath, identity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"], root);
+    const verifyIdentity = authenticateAssertEntry(rt, admission.entry, version);
+    const verify = await rt.exec([verifyIdentity.nodePath, verifyIdentity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"], root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    identity = authenticateAssertEntry(rt, admission.entry, version);
+    assertSameAssertIdentity(verifyIdentity, authenticateAssertEntry(rt, admission.entry, version));
     const verified = parseJsonOutput(verify);
-    if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"], { identity })) {
+    if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"], { identity: verifyIdentity })) {
       throw new Error(`AssertLedger post-install verification (${client}): ${shortError(verify)}`);
     }
   }
@@ -1628,12 +1643,12 @@ async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [ve
     const client = host === "claude" ? "claude-code" : "codex";
     requireAssertLedgerTools(rt, project.manager);
     const admission = assertAssertAdmission(rt, root, project.manager, [version], [version]);
-    let identity = authenticateAssertEntry(rt, admission.entry, version);
+    const identity = authenticateAssertEntry(rt, admission.entry, version);
     const argv = [identity.nodePath, identity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"];
     const result = await rt.exec(argv, root);
     requireAssertLedgerTools(rt, project.manager);
     const readback = assertAssertAdmission(rt, root, project.manager, [version], [version]);
-    identity = authenticateAssertEntry(rt, readback.entry, version);
+    assertSameAssertIdentity(identity, authenticateAssertEntry(rt, readback.entry, version));
     checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result), identity });
   }
   requireAssertLedgerTools(rt, project.manager);

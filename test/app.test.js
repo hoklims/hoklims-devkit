@@ -3272,32 +3272,28 @@ describe("public CLI", () => {
 
   test("AssertLedger cached preflight binds manifest schemas and exact skill bytes", async () => {
     const packageRoot = process.platform === "win32" ? "C:\\cache\\assertledger" : "/cache/assertledger";
-    const mutations = [
-      (files) => { files[join(packageRoot, "package.json")] = JSON.stringify({
-        name: "assertledger", version: "9.9.9", bin: { assertledger: "dist/cli.js", testforge: "dist/cli.js" },
-      }); },
-      (files, result) => {
-        files[join(packageRoot, "schemas", "repository-init-result.v1.json")] = "{}\n";
-        const body = JSON.parse(result.stdout);
-        body.init.nextCommands[0].unexpected = true;
-        result.stdout = JSON.stringify(body);
-      },
-      (files) => { files[join(packageRoot, "integrations", "skill", "SKILL.md")] =
-        `${ASSERT_SKILL_CONTENT.slice(0, 220)}\nassertledger doctor assertledger replay UNSANDBOXED\n`; },
+    const assets = [
+      "dist/cli.js", "integrations/skill/SKILL.md",
+      "schemas/repository-init-config.v1.json", "schemas/repository-init-config.v2.json",
+      "schemas/repository-init-lock.v1.json", "schemas/repository-init-lock.v2.json",
+      "schemas/repository-init-result.v1.json", "schemas/repository-init-result.v2.json",
     ];
-    for (const mutate of mutations) {
+    for (const relativePath of assets) {
       const files = { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) };
       const rt = fakeRuntime({ tools: ["node", "npm"], files });
       const nativeExec = rt.exec;
       rt.exec = async (argv, cwd, timeout) => {
         const result = await nativeExec(argv, cwd, timeout);
-        if (argv[0] === "npm" && argv.includes("exec")) mutate(files, result);
+        if (argv[0] === "npm" && argv.includes("exec")) {
+          files[join(packageRoot, ...relativePath.split("/"))] = `${relativePath}:corrupted\n`;
+        }
         return result;
       };
       const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
-      expect(report.ok).toBe(false);
-      expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_CONTRACT_INVALID");
-      expect(rt.writes).toHaveLength(0);
+      expect(report.ok, relativePath).toBe(false);
+      expect(report.conflicts.map((item) => item.code), relativePath).toContain("ASSERTLEDGER_CONTRACT_INVALID");
+      expect(rt.calls.filter((argv) => argv[0] === "node" && argv.includes("setup")), relativePath).toHaveLength(0);
+      expect(rt.writes, relativePath).toHaveLength(0);
     }
   });
 
@@ -3319,6 +3315,36 @@ describe("public CLI", () => {
       expect(rt.calls.filter((argv) => argv[0] === "node" && String(argv[1]).endsWith("cli.js")
         && argv.includes("setup")), command).toHaveLength(0);
       expect(rt.writes, command).toHaveLength(0);
+    }
+  });
+
+  test("AssertLedger report validation retains the invocation identity across readback", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    for (const changeLookup of [false, true]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "placeholder",
+      };
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files });
+      const nativeWhich = rt.which;
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "node" && argv.includes("setup")) {
+          const body = JSON.parse(result.stdout);
+          const config = body.connection.artifacts.find((artifact) => artifact.kind === "configuration");
+          config.content = config.content.replace(/^command = .+$/mu, 'command = "/swapped/node"');
+          result.stdout = JSON.stringify(body);
+          if (changeLookup) rt.which = (name) => name === "node" ? "/swapped/node" : nativeWhich(name);
+        }
+        return result;
+      };
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      expect(report.ok, String(changeLookup)).toBe(false);
+      expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
     }
   });
 

@@ -134,12 +134,28 @@ function laneRunnerOptions(overrides = {}) {
       versions: { semctx: "0.3.7", assertledger: "1.3.0" }, dryRun,
     }),
     captureProtected: () => ({
-      repository: [{ path: ".", kind: "directory", mode: 0o755, device: "1", inode: "2" }],
-      profile: [{ path: ".", kind: "directory", mode: 0o755, device: "1", inode: "3" }],
+      repository: [
+        { path: ".", kind: "directory", mode: 0o755, device: "1", inode: "2" },
+        { path: "package.json", kind: "file", mode: 0o644, bytes: 3, sha256: "a".repeat(64) },
+      ],
+      profile: [
+        { path: ".", kind: "directory", mode: 0o755, device: "1", inode: "3" },
+        { path: "home", kind: "directory", mode: 0o755 },
+      ],
     }),
     recordSnapshot: () => {},
-    runAssertLedgerDemo: async () => ({ verdict: "VERIFIED", report: { verdict: "VERIFIED" } }),
+    runAssertLedgerDemo: async (lane) => ({ verdict: "VERIFIED", report: { verdict: "VERIFIED" },
+      packageVersion: "1.3.0", demo: { repository: path.join("/run", "lanes", lane.name, "assertledger-demo") } }),
     ...overrides,
+  };
+}
+
+function runnerResultContext(options) {
+  const baseline = options.captureProtected();
+  return {
+    runRoot: "/run", versions: { semctx: "0.3.7", assertledger: "1.3.0" },
+    trustedBaselines: new Map(NATIVE_LANE_DEFINITIONS.map((lane) => [lane.name, structuredClone(baseline)])),
+    captureCurrent: () => structuredClone(baseline),
   };
 }
 
@@ -177,18 +193,20 @@ test("production native runner cannot bypass protected snapshot comparison", asy
 
 test("production smoke orchestration validates literal result completeness before finalization", async () => {
   let finalized = false;
-  const valid = await runNativeLaneMatrix(laneRunnerOptions());
+  const validOptions = laneRunnerOptions();
+  const valid = await runNativeLaneMatrix(validOptions);
+  const resultContext = runnerResultContext(validOptions);
   await expect(runNativeSmokeOrchestration({
-    runMatrix: async () => [], matrixOptions: {}, resultContext: { runRoot: "/run", versions: { semctx: "0.3.7", assertledger: "1.3.0" } }, finalize: () => { finalized = true; },
+    runMatrix: async () => [], matrixOptions: {}, resultContext, finalize: () => { finalized = true; },
   })).rejects.toThrow(/exactly four/u);
   expect(finalized).toBe(false);
   await expect(runNativeSmokeOrchestration({
     runMatrix: async () => valid.map((lane, index) => index === 0 ? { ...lane, stages: lane.stages.slice(1) } : lane),
-    matrixOptions: {}, resultContext: { runRoot: "/run", versions: { semctx: "0.3.7", assertledger: "1.3.0" } }, finalize: () => { finalized = true; },
+    matrixOptions: {}, resultContext, finalize: () => { finalized = true; },
   })).rejects.toThrow(/stages are incomplete/u);
   expect(finalized).toBe(false);
   await runNativeSmokeOrchestration({
-    runMatrix: async () => valid, matrixOptions: {}, resultContext: { runRoot: "/run", versions: { semctx: "0.3.7", assertledger: "1.3.0" } }, finalize: () => { finalized = true; },
+    runMatrix: async () => valid, matrixOptions: {}, resultContext, finalize: () => { finalized = true; },
   });
   expect(finalized).toBe(true);
 });
@@ -241,6 +259,23 @@ test("actual native smoke suffix executes four lanes and refuses disconnected PA
   delete malformedReport[0].evidence[0].report.components[0].installed;
   const incompleteSnapshot = structuredClone(validResults);
   incompleteSnapshot[0].evidence[0].protectedSnapshot.before.profile = [];
+  const rootOnly = structuredClone(validResults);
+  rootOnly[0].evidence[0].protectedSnapshot.before.repository.splice(1);
+  rootOnly[0].evidence[0].protectedSnapshot.after.repository.splice(1);
+  const malformedChild = structuredClone(validResults);
+  malformedChild[0].evidence[0].protectedSnapshot.before.repository.push({
+    path: "../escape", kind: "file", mode: 0o644, bytes: -1, sha256: "invalid",
+  });
+  malformedChild[0].evidence[0].protectedSnapshot.after = structuredClone(
+    malformedChild[0].evidence[0].protectedSnapshot.before,
+  );
+  const duplicateRoot = structuredClone(validResults);
+  duplicateRoot[0].evidence[0].protectedSnapshot.before.repository.push(structuredClone(
+    duplicateRoot[0].evidence[0].protectedSnapshot.before.repository[0],
+  ));
+  duplicateRoot[0].evidence[0].protectedSnapshot.after = structuredClone(
+    duplicateRoot[0].evidence[0].protectedSnapshot.before,
+  );
   const duplicateApply = structuredClone(validResults);
   duplicateApply[0].evidence = Array.from({ length: 5 }, () => structuredClone(duplicateApply[0].evidence[1]));
   const forgedValidation = structuredClone(validResults);
@@ -252,11 +287,18 @@ test("actual native smoke suffix executes four lanes and refuses disconnected PA
   delete missingDemoReport[3].demo.evidence.report;
   const invalidDemoReport = structuredClone(validResults);
   invalidDemoReport[3].demo.evidence.report.verdict = "REJECTED";
+  const contradictoryDemo = structuredClone(validResults);
+  contradictoryDemo[3].demo.evidence.report.decision = { status: "REJECTED" };
   for (const [name, results] of Object.entries({
-    labelOnly, missingReport, malformedReport, incompleteSnapshot, duplicateApply, forgedValidation,
-    missingDemoReport, invalidDemoReport,
+    labelOnly, missingReport, malformedReport, incompleteSnapshot, rootOnly, malformedChild, duplicateRoot,
+    duplicateApply, forgedValidation, missingDemoReport, invalidDemoReport, contradictoryDemo,
   })) {
-    const attempted = executeSuffix(suffix, async () => results);
+    const attempted = executeSuffix(suffix, async (options) => {
+      // Populate the real outer capture context before substituting result evidence; otherwise
+      // every negative could fail at a missing baseline rather than its mutated boundary.
+      await runNativeLaneMatrix(options);
+      return results;
+    });
     await expect(attempted, name).rejects.toThrow();
   }
 
