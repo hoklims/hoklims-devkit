@@ -20,6 +20,18 @@ function uses(job, prefix) {
   ));
 }
 
+function assertExactJobGraph(workflow, expected) {
+  const jobs = workflow?.jobs;
+  if (!jobs || JSON.stringify(Object.keys(jobs)) !== JSON.stringify(Object.keys(expected))) {
+    throw new Error("workflow job set differs from the canonical graph");
+  }
+  for (const [name, dependencies] of Object.entries(expected)) {
+    if (JSON.stringify([...needs(jobs[name])]) !== JSON.stringify(dependencies)) {
+      throw new Error(`${name} dependencies differ from the canonical graph`);
+    }
+  }
+}
+
 function stepToken(step) {
   return step?.uses ?? step?.id ?? step?.name ?? (typeof step?.run === "string" ? "run" : null);
 }
@@ -94,6 +106,10 @@ function assertCanonicalStep(job, step, patterns, label, expectedJobIf) {
 
 function validateReleaseGraph(workflow) {
   assertNoShellStartupOverrides(workflow);
+  assertExactJobGraph(workflow, {
+    build: [], verify: ["build"], publish: ["build", "verify"],
+    "public-smoke": ["build", "publish"], release: ["public-smoke"],
+  });
   const jobs = workflow?.jobs;
   if (!jobs || typeof jobs !== "object") throw new Error("release jobs missing");
   const { build, verify, publish, "public-smoke": publicSmoke, release } = jobs;
@@ -282,6 +298,7 @@ function validateReleaseGraph(workflow) {
 
 function validateCiCheckout(workflow) {
   assertNoShellStartupOverrides(workflow);
+  assertExactJobGraph(workflow, { package: [] });
   const job = workflow?.jobs?.package;
   if (!job || job["runs-on"] !== "${{ matrix.os }}"
     || JSON.stringify(Object.keys(job.strategy?.matrix ?? {})) !== JSON.stringify(["os"])
@@ -319,6 +336,7 @@ function directCheckout(job) {
 
 function validateNativeNoLc(workflow, harnessSource) {
   assertNoShellStartupOverrides(workflow);
+  assertExactJobGraph(workflow, { build: [], native: ["build"] });
   const { build, native } = workflow?.jobs ?? {};
   if (workflow?.name !== "Native no-LC" || !build || !native
     || JSON.stringify(Object.keys(workflow.on ?? {})) !== JSON.stringify(["pull_request"])) {
@@ -539,6 +557,20 @@ test("CI direct-head checkout rejects merge-ref and reduced-matrix mutants", () 
     const mutant = structuredClone(original);
     mutate(mutant);
     expect(() => validateCiCheckout(mutant)).toThrow();
+  }
+});
+
+test("all workflow oracles reject skipped prerequisites on their entry job", () => {
+  const sources = [
+    [workflowPath, validateReleaseGraph, "build", null],
+    [ciPath, validateCiCheckout, "package", null],
+    [nativePath, (workflow) => validateNativeNoLc(workflow, readFileSync(nativeHarnessPath, "utf8")), "build", null],
+  ];
+  for (const [file, validate, entryJob] of sources) {
+    const workflow = Bun.YAML.parse(readFileSync(file, "utf8"));
+    workflow.jobs.omitted = { if: "${{ false }}", "runs-on": "ubuntu-latest", steps: [{ run: "true" }] };
+    workflow.jobs[entryJob].needs = ["omitted"];
+    expect(() => validate(workflow), file.pathname).toThrow(/job set|dependencies/u);
   }
 });
 

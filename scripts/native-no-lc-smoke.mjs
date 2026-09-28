@@ -16,7 +16,9 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { diffSnapshots, runtimeCachePaths, snapshotTree } from "./native-no-lc-contract.mjs";
-import { assertNativeSmokeResults, NATIVE_LANE_DEFINITIONS, runNativeLaneMatrix, runNativeSmokeOrchestration } from "./native-no-lc-runner.mjs";
+import { assertNativeSmokeResults, NATIVE_LANE_DEFINITIONS, runNativeLaneMatrix,
+  runNativeSmokeOrchestration, runOwnedAssertLedgerDemo } from "./native-no-lc-runner.mjs";
+import { assertLedgerContract } from "../src/assertledger-contracts.js";
 
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 const configPath = process.argv[2];
@@ -480,37 +482,70 @@ async function runAssertLedgerDemo(lane) {
   const packageRoot = path.join(lane.repository, "node_modules", "assertledger");
   const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
   assert.equal(packageJson.version, config.expected.assertledger);
+  const contract = assertLedgerContract(packageJson.version);
+  assert(contract, "AssertLedger demo package version has no reviewed contract");
+  const creator = realpathSync(path.join(packageRoot, "examples", "git-history", "create-demo.mjs"));
+  const cli = realpathSync(path.join(packageRoot, "dist", "cli.js"));
+  const nodeIdentity = realpathSync(process.execPath);
+  const assertDemoPackageIdentity = () => {
+    for (const [relativePath, digest] of Object.entries(contract)) {
+      assert.equal(sha256File(path.join(packageRoot, ...relativePath.split("/"))), digest,
+        `AssertLedger demo asset differs from reviewed ${relativePath}`);
+    }
+    assert.equal(sha256File(creator), "950c59f7c7b436c4071eee77aaf4ebcc8afe5a3b83cee5d57725af52fb2f0f00",
+      "AssertLedger demo creator differs from the reviewed public fixture");
+    assert.equal(realpathSync(process.execPath), nodeIdentity, "Node identity changed during AssertLedger demo");
+    assert.equal(realpathSync(cli), cli, "AssertLedger CLI identity changed during demo");
+  };
+  assertDemoPackageIdentity();
   const demoRoot = path.join(lane.root, "assertledger-demo");
-  const createResult = await runCommand({
-    name: `${lane.name}-assertledger-demo-create`,
-    executable: process.execPath,
-    args: [path.join(packageRoot, "examples", "git-history", "create-demo.mjs"), demoRoot],
-    cwd: lane.root,
-    env: lane.env,
-    timeoutMs: 120_000,
+  const safeRelative = (value) => typeof value === "string" && value.length > 0 && !path.isAbsolute(value)
+    && !value.includes("\\") && path.posix.normalize(value) === value
+    && !value.split("/").some((part) => part === "" || part === "." || part === "..");
+  const { demo, report } = await runOwnedAssertLedgerDemo({
+    createDemo: async () => parseJsonOutput(await runCommand({
+      name: `${lane.name}-assertledger-demo-create`, executable: nodeIdentity,
+      args: [creator, demoRoot], cwd: lane.root, env: lane.env, timeoutMs: 120_000,
+    }), "AssertLedger demo creation"),
+    validateDemo: (candidate) => {
+      const ownedRepository = realpathSync(demoRoot);
+      assert.equal(ownedRepository, path.resolve(demoRoot), "AssertLedger demo root escapes its owned lane");
+      assert(!lstatSync(demoRoot).isSymbolicLink(), "AssertLedger demo root is a symbolic link");
+      assert.equal(realpathSync(candidate.repository), ownedRepository, "AssertLedger demo repository is outside the owned fixture");
+      for (const relative of [candidate.test, ...(candidate.baseTests ?? [])]) {
+        assert(safeRelative(relative), "AssertLedger demo test path is not a safe owned relative path");
+        const resolved = realpathSync(path.join(ownedRepository, ...relative.split("/")));
+        assert(isWithin(ownedRepository, resolved) && statSync(resolved).isFile(), "AssertLedger demo test is outside the owned fixture");
+      }
+      assert(safeRelative(candidate.out), "AssertLedger demo output path is not a safe owned relative path");
+      const outputPath = path.resolve(ownedRepository, candidate.out);
+      assert(isWithin(ownedRepository, outputPath), "AssertLedger demo output is outside the owned fixture");
+      let current = ownedRepository;
+      for (const component of path.relative(ownedRepository, outputPath).split(path.sep).filter(Boolean)) {
+        current = path.join(current, component);
+        let observed;
+        try { observed = lstatSync(current); } catch (error) {
+          if (error?.code === "ENOENT") break;
+          throw error;
+        }
+        assert(!observed.isSymbolicLink(), "AssertLedger demo output ancestor is a symbolic link");
+        assert(isWithin(ownedRepository, realpathSync(current)), "AssertLedger demo output ancestor escapes the owned fixture");
+      }
+      for (const revision of [candidate.before, candidate.after, candidate.neutral]) assert.match(revision, /^[a-f0-9]{40}$/u);
+      assert.equal(typeof candidate.neutralReason, "string");
+      assert(candidate.neutralReason.length > 0, "AssertLedger demo neutral reason is missing");
+      assertDemoPackageIdentity();
+    },
+    checkDemo: async (candidate) => parseJsonOutput(await runCommand({
+      name: `${lane.name}-assertledger-demo-check`, executable: nodeIdentity,
+      args: [cli, "check", candidate.repository, "--before", candidate.before, "--after", candidate.after,
+        "--neutral", candidate.neutral, "--neutral-reason", candidate.neutralReason, "--test", candidate.test,
+        ...candidate.baseTests.flatMap((baseTest) => ["--base-test", baseTest]), "--out", candidate.out,
+        "--allow-unsafe-execution", "--json"],
+      cwd: candidate.repository, env: lane.env, timeoutMs: 300_000,
+    }), "AssertLedger fixture check"),
   });
-  const demo = parseJsonOutput(createResult, "AssertLedger demo creation");
-  const cli = path.join(packageRoot, "dist", "cli.js");
-  const checkResult = await runCommand({
-    name: `${lane.name}-assertledger-demo-check`,
-    executable: process.execPath,
-    args: [
-      cli, "check", demo.repository,
-      "--before", demo.before,
-      "--after", demo.after,
-      "--neutral", demo.neutral,
-      "--neutral-reason", demo.neutralReason,
-      "--test", demo.test,
-      ...demo.baseTests.flatMap((baseTest) => ["--base-test", baseTest]),
-      "--out", demo.out,
-      "--allow-unsafe-execution",
-      "--json",
-    ],
-    cwd: demo.repository,
-    env: lane.env,
-    timeoutMs: 300_000,
-  });
-  const report = parseJsonOutput(checkResult, "AssertLedger fixture check");
+  assertDemoPackageIdentity();
   assert.equal(
     report.verdict ?? report.decision?.verdict ?? report.decision?.status,
     "VERIFIED",

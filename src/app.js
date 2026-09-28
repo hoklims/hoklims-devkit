@@ -295,16 +295,22 @@ function exactUvVersion(result) {
 
 async function admitComponentRuntimes(rt, root, components, report) {
   const selected = new Set(components);
+  const identity = {};
   if (selected.has("assertledger")) {
-    if (!rt.which("node")) {
+    const node = rt.which("node");
+    if (!node) {
       problem(report, "NODE_REQUIRED", "AssertLedger needs Node >=22.15 on PATH", 3);
       return false;
     }
-    const nodeVersion = exactRuntimeVersion(await rt.exec(["node", "--version"], root), "v");
+    let nodePath;
+    try { nodePath = rt.realpath(node); } catch { nodePath = null; }
+    const nodeVersion = nodePath
+      ? exactRuntimeVersion(await rt.exec([nodePath, "--version"], root), "v") : null;
     if (!nodeVersion || compareVersions(nodeVersion, "22.15.0") < 0) {
       problem(report, "NODE_VERSION", "AssertLedger needs Node >=22.15", 3);
       return false;
     }
+    identity.nodePath = nodePath;
   }
   if (selected.has("latent-compass")) {
     if (!rt.which("uv")) {
@@ -316,7 +322,7 @@ async function admitComponentRuntimes(rt, root, components, report) {
       return false;
     }
   }
-  return true;
+  return identity;
 }
 
 function safeSemctxVersion(version) {
@@ -576,7 +582,7 @@ function localAssertEntry(rt, root) {
   return { version, cliPath };
 }
 
-function authenticateAssertEntry(rt, entry, expectedVersion) {
+function authenticateAssertEntry(rt, entry, expectedVersion, admittedNodePath) {
   if (!entry || entry.version !== expectedVersion) throw new Error("AssertLedger executable version is not admitted");
   const contract = assertLedgerContract(expectedVersion);
   if (!contract) throw new Error(`AssertLedger ${expectedVersion} has no Devkit-reviewed native contract`);
@@ -598,7 +604,11 @@ function authenticateAssertEntry(rt, entry, expectedVersion) {
   }
   const node = rt.which("node");
   if (!node) throw new Error("Node disappeared before AssertLedger execution");
-  return { version: expectedVersion, packageRoot, contract, cliPath, nodePath: rt.realpath(node) };
+  const nodePath = rt.realpath(node);
+  if (!admittedNodePath || nodePath !== admittedNodePath) {
+    throw new Error("Node executable identity changed after runtime admission");
+  }
+  return { version: expectedVersion, packageRoot, contract, cliPath, nodePath };
 }
 
 function assertSameAssertIdentity(before, after) {
@@ -610,7 +620,7 @@ function assertSameAssertIdentity(before, after) {
   return before;
 }
 
-async function resolveCachedAssertEntry(rt, root, version) {
+async function resolveCachedAssertEntry(rt, root, version, admittedNodePath) {
   const resolver = [
     "npm", "exec", "--yes", "--ignore-scripts", `--package=assertledger@${version}`, "--", "node", "-e",
     'const f=require("node:fs"),p=require("node:path");let cli=null;for(const b of (process.env.PATH||"").split(p.delimiter)){if(p.basename(b)!==".bin")continue;const c=p.join(p.dirname(b),"assertledger","dist","cli.js");if(f.existsSync(c)){cli=c;break}}if(cli)process.stdout.write(cli);else process.exitCode=2',
@@ -619,7 +629,7 @@ async function resolveCachedAssertEntry(rt, root, version) {
   if (result.code !== 0 || typeof result.stdout !== "string" || result.stdout.trim().length === 0) {
     throw new Error(`AssertLedger cache resolution failed: ${shortError(result)}`);
   }
-  return authenticateAssertEntry(rt, { version, cliPath: result.stdout.trim() }, version);
+  return authenticateAssertEntry(rt, { version, cliPath: result.stdout.trim() }, version, admittedNodePath);
 }
 
 function uvToolVersion(output, stderr = "") {
@@ -1350,7 +1360,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
   return { setup: setupJson, host: hostJson, hostInstallNeeded, skipSetup };
 }
 
-async function preflightAssert(rt, root, hosts, version, previous, command, report, pendingVersion) {
+async function preflightAssert(rt, root, hosts, version, previous, command, report, pendingVersion, runtimeIdentity) {
   if (recordMissingAssertLedgerTools(report, rt)) return null;
   let project;
   try {
@@ -1395,8 +1405,8 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     let identity;
     try {
       identity = needsInstall
-        ? await resolveCachedAssertEntry(rt, root, version)
-        : authenticateAssertEntry(rt, admission.entry, version);
+        ? await resolveCachedAssertEntry(rt, root, version, runtimeIdentity.nodePath)
+        : authenticateAssertEntry(rt, admission.entry, version, runtimeIdentity.nodePath);
     } catch (error) {
       problem(report, "ASSERTLEDGER_CONTRACT_INVALID", String(error.message ?? error), 3);
       return null;
@@ -1407,7 +1417,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
     try {
       assertAssertAdmission(rt, root, manager, admittedVersions, admittedVersions, needsInstall);
-      const readbackIdentity = authenticateAssertEntry(rt, { version, cliPath: identity.cliPath }, version);
+      const readbackIdentity = authenticateAssertEntry(rt, { version, cliPath: identity.cliPath }, version, runtimeIdentity.nodePath);
       assertSameAssertIdentity(identity, readbackIdentity);
     } catch (error) {
       recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
@@ -1428,7 +1438,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
   }
   if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
   report.plannedChanges.push({ component: "assertledger", packageManager: manager, installPackage: needsInstall, previews });
-  return { manager, current, needsInstall, previews, admittedVersions };
+  return { manager, current, needsInstall, previews, admittedVersions, runtimeIdentity };
 }
 
 async function preflightCompass(rt, root, hosts, version, previous, command, report, pendingVersion) {
@@ -1535,29 +1545,29 @@ async function applyAssert(rt, root, hosts, version, preflight) {
     const client = host === "claude" ? "claude-code" : "codex";
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    const previewIdentity = authenticateAssertEntry(rt, admission.entry, version);
+    const previewIdentity = authenticateAssertEntry(rt, admission.entry, version, preflight.runtimeIdentity.nodePath);
     const preview = await rt.exec([previewIdentity.nodePath, previewIdentity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"], root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    assertSameAssertIdentity(previewIdentity, authenticateAssertEntry(rt, admission.entry, version));
+    assertSameAssertIdentity(previewIdentity, authenticateAssertEntry(rt, admission.entry, version, preflight.runtimeIdentity.nodePath));
     const previewReport = parseJsonOutput(preview);
     if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"], { identity: previewIdentity })) {
       throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
     }
-    const writeIdentity = authenticateAssertEntry(rt, admission.entry, version);
+    const writeIdentity = authenticateAssertEntry(rt, admission.entry, version, preflight.runtimeIdentity.nodePath);
     const result = await rt.exec([writeIdentity.nodePath, writeIdentity.cliPath, "setup", root, "--client", client, "--write", "--json"], root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    assertSameAssertIdentity(writeIdentity, authenticateAssertEntry(rt, admission.entry, version));
+    assertSameAssertIdentity(writeIdentity, authenticateAssertEntry(rt, admission.entry, version, preflight.runtimeIdentity.nodePath));
     const parsed = parseJsonOutput(result);
     if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"], { identity: writeIdentity })) {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
     }
-    const verifyIdentity = authenticateAssertEntry(rt, admission.entry, version);
+    const verifyIdentity = authenticateAssertEntry(rt, admission.entry, version, preflight.runtimeIdentity.nodePath);
     const verify = await rt.exec([verifyIdentity.nodePath, verifyIdentity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"], root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    assertSameAssertIdentity(verifyIdentity, authenticateAssertEntry(rt, admission.entry, version));
+    assertSameAssertIdentity(verifyIdentity, authenticateAssertEntry(rt, admission.entry, version, preflight.runtimeIdentity.nodePath));
     const verified = parseJsonOutput(verify);
     if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"], { identity: verifyIdentity })) {
       throw new Error(`AssertLedger post-install verification (${client}): ${shortError(verify)}`);
@@ -1628,7 +1638,7 @@ async function diagnoseSemctx(rt, root, hosts, version) {
   };
 }
 
-async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [version]) {
+async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [version], runtimeIdentity) {
   const project = inspectAssertProject(rt, root);
   const admission = assertAssertAdmission(rt, root, project.manager, compatibleVersions, compatibleVersions, true);
   if (!admission.project.version && !admission.entry) {
@@ -1643,12 +1653,12 @@ async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [ve
     const client = host === "claude" ? "claude-code" : "codex";
     requireAssertLedgerTools(rt, project.manager);
     const admission = assertAssertAdmission(rt, root, project.manager, [version], [version]);
-    const identity = authenticateAssertEntry(rt, admission.entry, version);
+    const identity = authenticateAssertEntry(rt, admission.entry, version, runtimeIdentity.nodePath);
     const argv = [identity.nodePath, identity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"];
     const result = await rt.exec(argv, root);
     requireAssertLedgerTools(rt, project.manager);
     const readback = assertAssertAdmission(rt, root, project.manager, [version], [version]);
-    assertSameAssertIdentity(identity, authenticateAssertEntry(rt, readback.entry, version));
+    assertSameAssertIdentity(identity, authenticateAssertEntry(rt, readback.entry, version, runtimeIdentity.nodePath));
     checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result), identity });
   }
   requireAssertLedgerTools(rt, project.manager);
@@ -1886,7 +1896,8 @@ export async function execute(options, rt = createRuntime()) {
   }
   if (options.command === "doctor") {
     const names = new Set(["semctx", ...options.with, ...Object.keys(state?.components ?? {}), ...(state?.inProgress?.selected ?? [])]);
-    if (!await admitComponentRuntimes(rt, root, names, report)) return finalizeFailure(state);
+    const runtimeIdentity = await admitComponentRuntimes(rt, root, names, report);
+    if (!runtimeIdentity) return finalizeFailure(state);
     for (const name of COMPONENTS.filter((item) => names.has(item))) {
       const version = state?.components?.[name]?.version ?? state?.inProgress?.versions[name] ?? null;
       if (!version) {
@@ -1904,7 +1915,7 @@ export async function execute(options, rt = createRuntime()) {
       try {
         const diagnostic = name === "semctx" ? await diagnoseSemctx(rt, root, hosts, version)
           : name === "assertledger" ? await diagnoseAssert(rt, root, hosts, version,
-            [...new Set([state?.components?.[name]?.version, state?.inProgress?.versions[name]].filter(Boolean))])
+            [...new Set([state?.components?.[name]?.version, state?.inProgress?.versions[name]].filter(Boolean))], runtimeIdentity)
             : await diagnoseCompass(rt, root, hosts, version);
         const { ready, evidenceInvalid, ...publicDiagnostic } = diagnostic;
         report.components.push(publicDiagnostic);
@@ -1936,7 +1947,8 @@ export async function execute(options, rt = createRuntime()) {
     problem(report, "PENDING_PLAN_CONFLICT", `The saved plan must be completed before changing selectors. ${recoveryActionFor(state)}`, 4);
     return finalizeFailure(state);
   }
-  if (!await admitComponentRuntimes(rt, root, selected, report)) return finalizeFailure(state);
+  const runtimeIdentity = await admitComponentRuntimes(rt, root, selected, report);
+  if (!runtimeIdentity) return finalizeFailure(state);
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) {
     if (report.conflicts.some((item) => item.code === "SEMCTX_VERSION_UNSAFE")) {
@@ -1969,7 +1981,8 @@ export async function execute(options, rt = createRuntime()) {
     const version = versions[name];
     if (name === "semctx") previews[name] = await preflightSemctx(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.semctx);
     else if (name === "assertledger") {
-      previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.assertledger);
+      previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report,
+        state?.inProgress?.versions.assertledger, runtimeIdentity);
     }
     else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions["latent-compass"]);
     report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });

@@ -3348,6 +3348,29 @@ describe("public CLI", () => {
     }
   });
 
+  test("AssertLedger cached resolution cannot replace the admitted Node executable", async () => {
+    const files = { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) };
+    const rt = fakeRuntime({ tools: ["node", "npm"], files });
+    const nativeWhich = rt.which;
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "npm" && argv.includes("exec")) {
+        rt.which = (name) => name === "node" ? "/runtime/node-old" : nativeWhich(name);
+      }
+      if (argv[0] === "/runtime/node-old" && argv.includes("--version")) {
+        return { code: 0, stdout: "v20.0.0\n", stderr: "" };
+      }
+      return result;
+    };
+    const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_CONTRACT_INVALID");
+    expect(rt.calls.some((argv) => argv[0] === "/runtime/node-old" && argv.includes("--version"))).toBe(false);
+    expect(rt.calls.filter((argv) => argv.includes("setup") && String(argv[1]).endsWith("cli.js"))).toHaveLength(0);
+    expect(rt.writes).toHaveLength(0);
+  });
+
   test("unregistered AssertLedger versions fail closed with a Devkit compatibility action", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
       assertledger: { version: "1.4.0", hosts: ["codex"] },

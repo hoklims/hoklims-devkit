@@ -178,6 +178,16 @@ export async function runNativeSmokeOrchestration({ runMatrix, matrixOptions, re
   return finalize(results);
 }
 
+export async function runOwnedAssertLedgerDemo({ createDemo, validateDemo, checkDemo }) {
+  for (const callback of [createDemo, validateDemo, checkDemo]) {
+    assert.equal(typeof callback, "function", "AssertLedger demo boundary dependency missing");
+  }
+  const demo = await createDemo();
+  validateDemo(demo);
+  const report = await checkDemo(demo);
+  return { demo, report };
+}
+
 export function validateNativeSmokeEntrypointSource(source) {
   assert.equal(typeof source, "string", "native smoke source missing");
   assert.equal((source.match(/await runNativeSmokeOrchestration\(\{/gu) ?? []).length, 1,

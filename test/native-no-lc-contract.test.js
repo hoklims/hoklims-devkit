@@ -9,7 +9,8 @@ import { diffSnapshots, runtimeCachePaths, snapshotTree, validateNativeReport } 
 import { resolveBundledNpmCli } from "../scripts/native-runtime-paths.mjs";
 import { buildNativeConfig } from "../scripts/native-no-lc-config.mjs";
 import { NATIVE_LANE_DEFINITIONS, NATIVE_STAGE_IDS, runNativeLaneMatrix,
-  assertNativeSmokeResults, runNativeSmokeOrchestration, validateNativeSmokeEntrypointSource } from "../scripts/native-no-lc-runner.mjs";
+  assertNativeSmokeResults, runNativeSmokeOrchestration, runOwnedAssertLedgerDemo,
+  validateNativeSmokeEntrypointSource } from "../scripts/native-no-lc-runner.mjs";
 
 function touch(path, bytes = "fixture\n") {
   mkdirSync(dirname(path), { recursive: true });
@@ -189,6 +190,94 @@ test("production native runner cannot bypass protected snapshot comparison", asy
     captureProtected: () => ({ repository: [{ path: ".", kind: "directory", captures: captures++ }], profile: [] }),
   });
   await expect(runNativeLaneMatrix(changed)).rejects.toThrow(/changed protected profile or repository/u);
+});
+
+test("owned AssertLedger demo boundary refuses foreign creator output before unsafe check", async () => {
+  let checks = 0;
+  await expect(runOwnedAssertLedgerDemo({
+    createDemo: async () => ({ repository: "/foreign/user-repo", out: "/foreign/result" }),
+    validateDemo: (demo) => {
+      assert.equal(demo.repository, "/owned/assertledger-demo");
+      assert.equal(demo.out, "evidence-strong");
+    },
+    checkDemo: async () => { checks += 1; return { verdict: "VERIFIED" }; },
+  })).rejects.toThrow();
+  expect(checks).toBe(0);
+  const positive = await runOwnedAssertLedgerDemo({
+    createDemo: async () => ({ repository: "/owned/assertledger-demo", out: "evidence-strong" }),
+    validateDemo: (demo) => {
+      assert.equal(demo.repository, "/owned/assertledger-demo");
+      assert.equal(demo.out, "evidence-strong");
+    },
+    checkDemo: async () => { checks += 1; return { verdict: "VERIFIED" }; },
+  });
+  expect(positive.report.verdict).toBe("VERIFIED");
+  expect(checks).toBe(1);
+});
+
+test("actual AssertLedger demo function validates owned paths and reauthenticates before unsafe check", async () => {
+  const source = readFileSync(new URL("../scripts/native-no-lc-smoke.mjs", import.meta.url), "utf8");
+  const body = source.slice(source.indexOf("async function runAssertLedgerDemo"),
+    source.indexOf("function finalizeNativeSmokeResults"));
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const load = new AsyncFunction(
+    "assert", "config", "path", "readFileSync", "assertLedgerContract", "realpathSync", "sha256File", "process",
+    "runOwnedAssertLedgerDemo", "runCommand", "parseJsonOutput", "isWithin", "statSync", "existsSync", "lstatSync",
+    "writeFileSync", "evidenceRoot", "JSON", `${body}\nreturn runAssertLedgerDemo;`,
+  );
+  const execute = async ({ mutateDemo, mutateAfterCreate, symlinkPath, danglingLink, redirectedRoot } = {}) => {
+    const lane = { name: "all-assertledger", root: path.join("/run", "lanes", "all-assertledger"),
+      repository: path.join("/run", "lanes", "all-assertledger", "repository"), env: {} };
+    const demoRoot = path.join(lane.root, "assertledger-demo");
+    const validDemo = { repository: demoRoot, before: "a".repeat(40), after: "b".repeat(40), neutral: "c".repeat(40),
+      neutralReason: "owned neutral", test: "strong.test.mjs", baseTests: ["base.test.mjs"], out: "evidence-strong" };
+    const demo = mutateDemo ? mutateDemo(structuredClone(validDemo)) : validDemo;
+    let checks = 0;
+    let created = false;
+    const contract = { "dist/cli.js": "cli-hash", "schemas/repository-init-result.v1.json": "schema-hash" };
+    const fakeProcess = { execPath: path.join("/runtime", "node") };
+    const runCommand = async ({ name }) => {
+      if (name.endsWith("demo-create")) { created = true; return { stdout: JSON.stringify(demo) }; }
+      checks += 1;
+      return { stdout: JSON.stringify({ verdict: "VERIFIED" }) };
+    };
+    const realpath = (value) => redirectedRoot && path.resolve(value) === path.resolve(demoRoot)
+      ? path.join("/foreign", "user-repo") : path.resolve(value);
+    const fn = await load(
+      assert, { allowAssertLedgerUnsafeDemo: true, expected: { assertledger: "1.3.0" } }, path,
+      (file) => file.endsWith("package.json") ? JSON.stringify({ version: "1.3.0" }) : "bytes",
+      () => contract, realpath,
+      (file) => {
+        if (file.endsWith("create-demo.mjs")) return "950c59f7c7b436c4071eee77aaf4ebcc8afe5a3b83cee5d57725af52fb2f0f00";
+        if (created && mutateAfterCreate) return "mutated";
+        return file.endsWith(path.join("dist", "cli.js")) ? "cli-hash" : "schema-hash";
+      },
+      fakeProcess, runOwnedAssertLedgerDemo, runCommand, (result) => JSON.parse(result.stdout),
+      (parent, child) => { const relative = path.relative(parent, child); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); },
+      () => ({ isFile: () => true }), (value) => !danglingLink && symlinkPath !== undefined && path.resolve(value) === path.resolve(symlinkPath),
+      (value) => ({ isSymbolicLink: () => symlinkPath !== undefined && path.resolve(value) === path.resolve(symlinkPath) }),
+      () => {}, "/evidence", JSON,
+    );
+    let error = null;
+    try { await fn(lane); } catch (caught) { error = caught; }
+    return { error, checks };
+  };
+  expect((await execute()).checks).toBe(1);
+  for (const options of [
+    { mutateDemo: (demo) => ({ ...demo, repository: path.join("/foreign", "user-repo") }) },
+    { mutateDemo: (demo) => ({ ...demo, out: path.join("/foreign", "result") }) },
+    { mutateDemo: (demo) => ({ ...demo, test: "../escape.test.mjs" }) },
+    { mutateDemo: (demo) => ({ ...demo, out: "link/result" }),
+      symlinkPath: path.join("/run", "lanes", "all-assertledger", "assertledger-demo", "link") },
+    { mutateDemo: (demo) => ({ ...demo, out: "link/result" }), danglingLink: true,
+      symlinkPath: path.join("/run", "lanes", "all-assertledger", "assertledger-demo", "link") },
+    { redirectedRoot: true },
+    { mutateAfterCreate: true },
+  ]) {
+    const result = await execute(options);
+    expect(result.error).toBeTruthy();
+    expect(result.checks).toBe(0);
+  }
 });
 
 test("production smoke orchestration validates literal result completeness before finalization", async () => {
