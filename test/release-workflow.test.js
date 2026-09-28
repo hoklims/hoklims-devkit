@@ -85,10 +85,14 @@ function assertNoShellStartupOverrides(workflow) {
   }
 }
 
-function assertCanonicalStep(job, step, patterns, label, expectedJobIf) {
+function assertUnconditionalJob(job, label, expectedJobIf) {
   if (job?.if !== expectedJobIf || job?.["continue-on-error"] !== undefined) {
     throw new Error(`${label} job must be unconditional and fail closed`);
   }
+}
+
+function assertCanonicalStep(job, step, patterns, label, expectedJobIf) {
+  assertUnconditionalJob(job, label, expectedJobIf);
   if (step?.shell !== "bash" || step.if !== undefined || step["continue-on-error"] !== undefined
     || typeof step.run !== "string") {
     throw new Error(`${label} must be an unconditional fail-closed bash step`);
@@ -369,6 +373,7 @@ function validateBootstrapGraph(workflow) {
     /^bun scripts\/release-smoke\.js "\$consumer"$/u,
   ], "bootstrap verify");
   if (release.permissions?.contents !== "write") throw new Error("bootstrap release lacks contents write permission");
+  assertUnconditionalJob(release, "bootstrap release");
   assertExactRun(release.steps[1],
     "gh release view v0.1.0 >/dev/null 2>&1 || gh release create v0.1.0 --verify-tag --generate-notes",
     "bootstrap release", undefined);
@@ -813,6 +818,18 @@ test("bootstrap refuses integrity neutralization before smoke and GitHub release
   });
   mutate((workflow) => { workflow.jobs.release.needs = []; });
 });
+
+for (const [name, change] of [
+  ["always condition", (job) => { job.if = "${{ always() }}"; }],
+  ["false condition", (job) => { job.if = "${{ false }}"; }],
+  ["continue on error", (job) => { job["continue-on-error"] = true; }],
+]) {
+  test(`bootstrap release job rejects ${name}`, () => {
+    const workflow = Bun.YAML.parse(readFileSync(bootstrapPath, "utf8"));
+    change(workflow.jobs.release);
+    expect(() => validateBootstrapGraph(workflow)).toThrow(/bootstrap release job/u);
+  });
+}
 
 test("release graph tripwire rejects selected semantic mutants", () => {
   const original = Bun.YAML.parse(readFileSync(workflowPath, "utf8"));
