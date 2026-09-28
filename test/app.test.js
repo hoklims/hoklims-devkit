@@ -46,6 +46,20 @@ function assertSetupReport(argv, status, mode) {
   };
 }
 
+function mixedAssertSetupReport(argv, mode, mixedInit = false, mixedConnection = true) {
+  const report = assertSetupReport(argv, mode === "dry-run" ? "WOULD_CREATE" : "CREATED", mode);
+  const changed = mode === "dry-run" ? "WOULD_CREATE" : "CREATED";
+  report.init.status = mixedInit ? changed : "UNCHANGED";
+  report.connection.status = mode === "dry-run" ? "EMITTED" : mixedConnection ? "CREATED" : "UNCHANGED";
+  const initArtifacts = report.artifacts.filter((artifact) => artifact.owner === "init");
+  const connectionArtifacts = report.artifacts.filter((artifact) => artifact.owner === "connection");
+  initArtifacts[0].state = "UNCHANGED";
+  initArtifacts[1].state = mixedInit ? changed : "UNCHANGED";
+  connectionArtifacts[0].state = "UNCHANGED";
+  connectionArtifacts[1].state = mixedConnection ? changed : "UNCHANGED";
+  return report;
+}
+
 function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupPlan(), setupReady = true, workspaceReady = false, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false, semctxMissing = false, semctxContentDrift = false, semctxMarketplaceMatch = true, installedSemctxVersion } = {}) {
   const calls = [];
   const writes = [];
@@ -1547,6 +1561,56 @@ describe("public CLI", () => {
     expect(setupRt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run"))).toHaveLength(1);
   });
 
+  test("Semctx degraded and blocked index conclusions must agree exactly", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.7", hosts: ["codex"] } },
+    };
+    const make = (doctorStatus, healthStatus) => {
+      const rt = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv.includes("doctor") && doctorStatus !== "healthy") {
+          const body = JSON.parse(result.stdout);
+          body.healthy = false;
+          const index = body.checks.find((check) => check.name === "index");
+          index.ok = false;
+          index.status = doctorStatus;
+          return { ...result, code: 1, stdout: JSON.stringify(body) };
+        }
+        if (argv.includes("index-health") && healthStatus !== "healthy") {
+          const body = JSON.parse(result.stdout);
+          if (healthStatus === "degraded") body.coverage.status = "partial";
+          else {
+            body.freshness.verdict = "STALE";
+            body.freshness.canRunHighRiskControl = false;
+            body.coverage.status = "partial";
+          }
+          return { ...result, code: healthStatus === "degraded" ? 2 : 3, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      return rt;
+    };
+    for (const [doctorStatus, healthStatus] of [["degraded", "blocked"], ["blocked", "degraded"]]) {
+      for (const command of ["doctor", "setup"]) {
+        const rt = make(doctorStatus, healthStatus);
+        const report = await execute(command === "doctor"
+          ? parseArgs(["doctor", "/repo", "--host", "codex"])
+          : setupOptions(), rt);
+        expect(report.components[0].configured, `${doctorStatus}:${healthStatus}:${command}`).toBe("unknown");
+        expect(rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run"))).toHaveLength(0);
+      }
+    }
+    for (const status of ["degraded", "blocked"]) {
+      const rt = make(status, status);
+      const report = await execute(setupOptions(), rt);
+      expect(report.ok, status).toBe(true);
+      expect(rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run"))).toHaveLength(1);
+    }
+  });
+
   test("release skew prevents writes", async () => {
     const rt = fakeRuntime({ version: "0.3.7", stable: "0.3.8" });
     const report = await execute(setupOptions(), rt);
@@ -2887,6 +2951,39 @@ describe("public CLI", () => {
       expect(report.conflicts.map((item) => item.code), command)
         .toContain(command === "doctor" ? "NATIVE_REPORT_INVALID" : "ASSERTLEDGER_CONFLICT");
       expect(rt.writes, command).toHaveLength(0);
+    }
+  });
+
+  test("AssertLedger admits native mixed init and connection states across hosts", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.7", hosts: ["codex", "claude"] },
+      assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const [mixedInit, mixedConnection] of [[false, true], [true, false]]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm", "claude"], files: { ...files } });
+      const nativeExec = rt.exec;
+      const writtenClients = new Set();
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] !== "node" || !argv.includes("setup")) return nativeExec(argv, cwd, timeout);
+        const client = argv[argv.indexOf("--client") + 1];
+        const dryRun = argv.includes("--dry-run");
+        if (!dryRun) writtenClients.add(client);
+        const native = dryRun && writtenClients.has(client)
+          ? assertSetupReport(argv, "UNCHANGED", "dry-run")
+          : mixedAssertSetupReport(argv, dryRun ? "dry-run" : "write", mixedInit, mixedConnection);
+        return { code: 0, stdout: JSON.stringify(native), stderr: "" };
+      };
+      const doctor = await execute(parseArgs(["doctor", "/repo", "--host", "all"]), rt);
+      expect(doctor.components.find((item) => item.name === "assertledger").configured).toBe("no");
+      expect(doctor.conflicts.map((item) => item.code)).not.toContain("NATIVE_REPORT_INVALID");
+      const setup = await execute(parseArgs(["setup", "/repo", "--host", "all", "--with", "assertledger"]), rt);
+      expect(setup.ok).toBe(true);
+      expect(setup.components.find((item) => item.name === "assertledger").configured).toBe("yes");
     }
   });
 

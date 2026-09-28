@@ -655,11 +655,26 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
   ];
   const initStatuses = options.initStatuses ?? (mode === "dry-run" ? ["WOULD_CREATE", "UNCHANGED"] : ["CREATED", "UNCHANGED"]);
   const connectionStatuses = options.connectionStatuses ?? (mode === "dry-run" ? ["EMITTED"] : ["CREATED", "UNCHANGED"]);
-  const successShape = {
-    UNCHANGED: { init: "UNCHANGED", connection: mode === "dry-run" ? "EMITTED" : "UNCHANGED", artifact: "UNCHANGED" },
-    WOULD_CREATE: { init: "WOULD_CREATE", connection: "EMITTED", artifact: "WOULD_CREATE" },
-    CREATED: { init: "CREATED", connection: "CREATED", artifact: "CREATED" },
-  }[parsed?.status];
+  const initArtifacts = Array.isArray(parsed?.artifacts)
+    ? parsed.artifacts.filter((artifact) => artifact?.owner === "init") : [];
+  const connectionArtifacts = Array.isArray(parsed?.artifacts)
+    ? parsed.artifacts.filter((artifact) => artifact?.owner === "connection") : [];
+  const changedState = mode === "dry-run" ? "WOULD_CREATE" : "CREATED";
+  const allowedSuccessStates = ["UNCHANGED", changedState];
+  const initChanged = initArtifacts.some((artifact) => artifact.state === changedState);
+  const initConsistent = initArtifacts.every((artifact) => allowedSuccessStates.includes(artifact.state))
+    && parsed?.init?.status === (initChanged ? changedState : "UNCHANGED");
+  const connectionChanged = connectionArtifacts.some((artifact) => artifact.state === changedState);
+  const connectionConsistent = mode === "dry-run"
+    ? parsed?.connection?.status === "EMITTED"
+      && connectionArtifacts.every((artifact) => allowedSuccessStates.includes(artifact.state))
+    : connectionArtifacts.every((artifact) => allowedSuccessStates.includes(artifact.state))
+      && parsed?.connection?.status === (connectionChanged ? "CREATED" : "UNCHANGED");
+  const changed = initChanged || connectionChanged;
+  const successAggregate = ["UNCHANGED", changedState].includes(parsed?.status);
+  const aggregateConsistent = successAggregate
+    ? parsed.status === (changed ? changedState : "UNCHANGED")
+    : true;
   return statuses.includes(parsed?.status) && parsed.client === client && parsed.mode === mode
     && Array.isArray(parsed.artifacts) && parsed.artifacts.length === expected.length
     && parsed.artifacts.every((artifact) => artifact !== null && !Array.isArray(artifact) && typeof artifact === "object")
@@ -671,9 +686,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && initStatuses.includes(parsed.init?.status)
     && connectionStatuses.includes(parsed.connection?.status)
     && parsed.connection?.client === client
-    && (!successShape || (parsed.init.status === successShape.init
-      && parsed.connection.status === successShape.connection
-      && parsed.artifacts.every((artifact) => artifact.state === successShape.artifact)))
+    && (!successAggregate || (initConsistent && connectionConsistent && aggregateConsistent))
     && parsed.rollback?.status === "NOT_REQUIRED";
 }
 
@@ -794,15 +807,16 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
     && (health.binding.status === "valid" || health.coverage.status === "insufficient")
     && healthCode === expectedHealthCode;
   if (!doctorStructured || !healthStructured) return "unknown";
-  const doctorIndexReady = indexCheck.ok === true && indexCheck.status === "healthy";
-  const healthIndexReady = healthCode === 0 && health.binding.status === "valid"
-    && health.freshness.canRunHighRiskControl === true && health.coverage.status === "complete";
-  if (doctorIndexReady !== healthIndexReady) return "unknown";
+  const doctorIndexStatus = indexCheck.status;
+  const healthIndexStatus = health.binding.status !== "valid" || !health.freshness.canRunHighRiskControl
+    ? "blocked" : health.coverage.status === "complete" ? "healthy"
+      : health.coverage.status === "partial" ? "degraded" : "blocked";
+  if (doctorIndexStatus !== healthIndexStatus) return "unknown";
   const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
     && requiredChecks.every((name) => doctorChecks.some((check) =>
       check && typeof check === "object" && check.name === name && check.ok === true
       && (name !== "index" || check.status === "healthy")));
-  return doctorReady && healthIndexReady ? "yes" : "no";
+  return doctorReady && healthIndexStatus === "healthy" ? "yes" : "no";
 }
 
 async function resolveComponents(rt, options, state, root, report) {
