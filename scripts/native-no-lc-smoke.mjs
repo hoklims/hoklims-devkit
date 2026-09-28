@@ -16,7 +16,7 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { diffSnapshots, runtimeCachePaths, snapshotTree } from "./native-no-lc-contract.mjs";
-import { NATIVE_LANE_DEFINITIONS, runNativeLaneMatrix } from "./native-no-lc-runner.mjs";
+import { assertNativeSmokeResults, NATIVE_LANE_DEFINITIONS, runNativeLaneMatrix, runNativeSmokeOrchestration } from "./native-no-lc-runner.mjs";
 
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 const configPath = process.argv[2];
@@ -519,7 +519,55 @@ async function runAssertLedgerDemo(lane) {
   writeFileSync(path.join(evidenceRoot, `${lane.name}-assertledger-demo.json`), `${JSON.stringify({ demo, report }, null, 2)}\n`);
 }
 
-const laneResults = await runNativeLaneMatrix({
+function finalizeNativeSmokeResults(laneResults) {
+  assertNativeSmokeResults(laneResults);
+  const sourceAfter = snapshotTree(sourceCheckout);
+  writeFileSync(path.join(evidenceRoot, "source-after.json"), `${JSON.stringify(sourceAfter, null, 2)}\n`);
+  const sourceDiff = diffSnapshots({ source: sourceBefore }, { source: sourceAfter });
+  writeFileSync(path.join(evidenceRoot, "source-diff.json"), `${JSON.stringify(sourceDiff, null, 2)}\n`);
+  assert.deepEqual(sourceDiff, [], "Devkit source checkout changed during native smoke");
+
+  const summary = {
+    schemaVersion: 1,
+    kind: "devkit_no_lc_native_smoke",
+    platform: expectedPlatform,
+    artifact: {
+      path: artifactPath,
+      sha256: config.artifact.sha256,
+      sourceSha: config.artifact.sourceSha,
+      version: config.artifact.version,
+    },
+    publicVersions: {
+      semctx: config.expected.semctx,
+      semctxPublicationSha: config.expected.semctxPublicationSha,
+      assertledger: config.expected.assertledger,
+    },
+    hostTools: {
+      codex: {
+        version: codexPackage.version,
+        entrySha256: sha256File(codexBin),
+        packageTreeSha256: sha256Bytes(JSON.stringify(snapshotTree(path.join(toolsRoot, "node_modules", "@openai", "codex")))),
+      },
+      claude: {
+        version: claudePackage.version,
+        entrySha256: sha256File(claudeBin),
+        packageTreeSha256: sha256Bytes(JSON.stringify(snapshotTree(path.join(toolsRoot, "node_modules", "@anthropic-ai", "claude-code")))),
+      },
+    },
+    lanes: laneResults.map((lane) => ({ name: lane.name, host: lane.host,
+      withAssertLedger: lane.withAssertLedger, stages: lane.stages })),
+    protectedBoundaries: "full repository and full owned profile roots",
+    cachesAndTempOutsideProtectedProfiles: true,
+    actualUserProfilesUsed: false,
+    modelInvoked: false,
+    sourceCheckoutUnchanged: true,
+  };
+  writeFileSync(path.join(evidenceRoot, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
+  writeFileSync(path.join(evidenceRoot, "PASS"), `${sha256Bytes(JSON.stringify(summary))}\n`);
+  console.log(JSON.stringify(summary));
+}
+
+const matrixOptions = {
   laneDefinitions: NATIVE_LANE_DEFINITIONS,
   createLane,
   executeDevkit: runDevkit,
@@ -527,49 +575,10 @@ const laneResults = await runNativeLaneMatrix({
   captureProtected: snapshotProtected,
   recordSnapshot: recordProtectedSnapshots,
   runAssertLedgerDemo,
-});
-
-const sourceAfter = snapshotTree(sourceCheckout);
-writeFileSync(path.join(evidenceRoot, "source-after.json"), `${JSON.stringify(sourceAfter, null, 2)}\n`);
-const sourceDiff = diffSnapshots({ source: sourceBefore }, { source: sourceAfter });
-writeFileSync(path.join(evidenceRoot, "source-diff.json"), `${JSON.stringify(sourceDiff, null, 2)}\n`);
-assert.deepEqual(sourceDiff, [], "Devkit source checkout changed during native smoke");
-
-const summary = {
-  schemaVersion: 1,
-  kind: "devkit_no_lc_native_smoke",
-  platform: expectedPlatform,
-  artifact: {
-    path: artifactPath,
-    sha256: config.artifact.sha256,
-    sourceSha: config.artifact.sourceSha,
-    version: config.artifact.version,
-  },
-  publicVersions: {
-    semctx: config.expected.semctx,
-    semctxPublicationSha: config.expected.semctxPublicationSha,
-    assertledger: config.expected.assertledger,
-  },
-  hostTools: {
-    codex: {
-      version: codexPackage.version,
-      entrySha256: sha256File(codexBin),
-      packageTreeSha256: sha256Bytes(JSON.stringify(snapshotTree(path.join(toolsRoot, "node_modules", "@openai", "codex")))),
-    },
-    claude: {
-      version: claudePackage.version,
-      entrySha256: sha256File(claudeBin),
-      packageTreeSha256: sha256Bytes(JSON.stringify(snapshotTree(path.join(toolsRoot, "node_modules", "@anthropic-ai", "claude-code")))),
-    },
-  },
-  lanes: laneResults.map((lane) => ({ name: lane.name, host: lane.host,
-    withAssertLedger: lane.withAssertLedger, stages: lane.stages })),
-  protectedBoundaries: "full repository and full owned profile roots",
-  cachesAndTempOutsideProtectedProfiles: true,
-  actualUserProfilesUsed: false,
-  modelInvoked: false,
-  sourceCheckoutUnchanged: true,
 };
-writeFileSync(path.join(evidenceRoot, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
-writeFileSync(path.join(evidenceRoot, "PASS"), `${sha256Bytes(JSON.stringify(summary))}\n`);
-console.log(JSON.stringify(summary));
+
+await runNativeSmokeOrchestration({
+  runMatrix: runNativeLaneMatrix,
+  matrixOptions,
+  finalize: finalizeNativeSmokeResults,
+});

@@ -39,23 +39,7 @@ function fixtureDigest(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-const ASSERT_SKILL_CONTENT = "---\nname: assertledger\ndescription: Analyze a repository, submit candidate tests, and accept only deterministic AssertLedger evidence.\nmetadata:\n  version: \"1.0.0\"\n---\n\n# AssertLedger skill\n\nRun assertledger doctor, preserve assertledger replay, and never infer UNSANDBOXED authority.\n";
-
-function fakePublishedSchema(name) {
-  if (name.startsWith("repository-init-config.")) {
-    const version = name.includes(".v2.") ? "2.0.0" : "1.0.0";
-    return {
-      type: "object", additionalProperties: false,
-      required: ["schemaVersion", "repository", "packageManager", "framework", "testCommand", "adapter", "candidateRoots"],
-      properties: {
-        schemaVersion: { const: version }, repository: true, packageManager: true, framework: true,
-        testCommand: true, adapter: true,
-        candidateRoots: { type: "array", minItems: 1, maxItems: 100, items: { type: "string", minLength: 1, maxLength: 512 } },
-      },
-    };
-  }
-  return { type: "object" };
-}
+const ASSERT_SKILL_CONTENT = readFileSync(new URL("./fixtures/assertledger-assets/1.3.0/integrations/skill/SKILL.md", import.meta.url), "utf8");
 
 function installAssertPackageFixture(files, cli, version, forceVersion = false) {
   const packageRoot = dirname(dirname(cli));
@@ -73,11 +57,14 @@ function installAssertPackageFixture(files, cli, version, forceVersion = false) 
       }, ...manifest, ...(forceVersion ? { version } : {}) });
     } catch { /* Preserve malformed manifest fixtures. */ }
   }
-  files[join(packageRoot, "integrations", "skill", "SKILL.md")] ??= ASSERT_SKILL_CONTENT;
+  const fixtureVersion = ["1.2.0", "1.3.0"].includes(version) ? version : "1.3.0";
+  const fixtureRoot = new URL(`./fixtures/assertledger-assets/${fixtureVersion}/`, import.meta.url);
+  files[cli] = readFileSync(new URL("cli.js", fixtureRoot), "utf8");
+  files[join(packageRoot, "integrations", "skill", "SKILL.md")] = readFileSync(new URL("integrations/skill/SKILL.md", fixtureRoot), "utf8");
   for (const kind of ["config", "lock", "result"]) {
     for (const generation of ["v1", "v2"]) {
       const name = `repository-init-${kind}.${generation}.json`;
-      files[join(packageRoot, "schemas", name)] ??= JSON.stringify(fakePublishedSchema(name));
+      files[join(packageRoot, "schemas", name)] = readFileSync(new URL(`schemas/${name}`, fixtureRoot), "utf8");
     }
   }
 }
@@ -2391,7 +2378,7 @@ describe("public CLI", () => {
     }
   });
 
-  test("unmanaged AssertLedger upgrade admits its target and pending target", async () => {
+  test("unmanaged AssertLedger upgrade refuses an unregistered target and pending target", async () => {
     const files = {
       [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
@@ -2417,8 +2404,8 @@ describe("public CLI", () => {
       rt.fetchJson = async (url) => url.includes("registry.npmjs.org/assertledger")
         ? { version: "1.4.0" } : fetchJson(url);
       const report = await execute({ ...parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), dryRun: true }, rt);
-      expect(report.conflicts.map((item) => item.code)).not.toContain("INSTALLED_VERSION_DRIFT");
-      expect(report.components.find((item) => item.name === "assertledger")?.version).toBe("1.4.0");
+      expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_VERSION_UNSUPPORTED");
+      expect(report.components.find((item) => item.name === "assertledger")).toBeUndefined();
       expect(rt.writes).toHaveLength(0);
     }
   });
@@ -2765,8 +2752,13 @@ describe("public CLI", () => {
       const args = ["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--dry-run"];
       if (scenario.refresh) args.push("--refresh-pending");
       const report = await execute(parseArgs(args), rt);
-      expect(report.conflicts.map((item) => item.code)).not.toContain("INSTALLED_VERSION_DRIFT");
-      expect(report.components.find((item) => item.name === "assertledger")?.version).toBe(scenario.target);
+      if (scenario.target === "1.4.0") {
+        expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_VERSION_UNSUPPORTED");
+        expect(report.components.find((item) => item.name === "assertledger")).toBeUndefined();
+      } else {
+        expect(report.conflicts.map((item) => item.code)).not.toContain("INSTALLED_VERSION_DRIFT");
+        expect(report.components.find((item) => item.name === "assertledger")?.version).toBe(scenario.target);
+      }
       expect(rt.writes).toHaveLength(0);
     }
   });
@@ -3277,24 +3269,55 @@ describe("public CLI", () => {
     }
   });
 
-  test("AssertLedger cached preflight binds package manifest version bins and exact skill bytes", async () => {
-    const files = { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) };
-    const rt = fakeRuntime({ tools: ["node", "npm"], files });
+  test("AssertLedger cached preflight binds manifest schemas and exact skill bytes", async () => {
     const packageRoot = process.platform === "win32" ? "C:\\cache\\assertledger" : "/cache/assertledger";
-    const nativeExec = rt.exec;
-    rt.exec = async (argv, cwd, timeout) => {
-      const result = await nativeExec(argv, cwd, timeout);
-      if (argv[0] === "npm" && argv.includes("exec")) {
-        files[join(packageRoot, "package.json")] = JSON.stringify({
-          name: "assertledger", version: "9.9.9", bin: { assertledger: "dist/cli.js", testforge: "dist/cli.js" },
-        });
-      }
-      return result;
-    };
-    const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
-    expect(report.ok).toBe(false);
-    expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_CONFLICT");
-    expect(rt.writes).toHaveLength(0);
+    const mutations = [
+      (files) => { files[join(packageRoot, "package.json")] = JSON.stringify({
+        name: "assertledger", version: "9.9.9", bin: { assertledger: "dist/cli.js", testforge: "dist/cli.js" },
+      }); },
+      (files, result) => {
+        files[join(packageRoot, "schemas", "repository-init-result.v1.json")] = "{}\n";
+        const body = JSON.parse(result.stdout);
+        body.init.nextCommands[0].unexpected = true;
+        result.stdout = JSON.stringify(body);
+      },
+      (files) => { files[join(packageRoot, "integrations", "skill", "SKILL.md")] =
+        `${ASSERT_SKILL_CONTENT.slice(0, 220)}\nassertledger doctor assertledger replay UNSANDBOXED\n`; },
+    ];
+    for (const mutate of mutations) {
+      const files = { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) };
+      const rt = fakeRuntime({ tools: ["node", "npm"], files });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv[0] === "npm" && argv.includes("exec")) mutate(files, result);
+        return result;
+      };
+      const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.ok).toBe(false);
+      expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_CONFLICT");
+      expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("unregistered AssertLedger versions fail closed with a Devkit compatibility action", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      assertledger: { version: "1.4.0", hosts: ["codex"] },
+    } };
+    const doctorRuntime = fakeRuntime({ state, tools: ["node", "npm"] });
+    const doctor = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), doctorRuntime);
+    expect(doctor.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_VERSION_UNSUPPORTED");
+    expect(doctor.conflicts.map((item) => item.detail).join("\n")).toContain("update Devkit");
+    expect(doctorRuntime.calls.some((argv) => argv.includes("setup"))).toBe(false);
+
+    const setupRuntime = fakeRuntime({ tools: ["node", "npm"], files: {
+      [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }),
+    } });
+    setupRuntime.fetchJson = async (url) => ({ version: url.includes("assertledger") ? "1.4.0" : "0.3.7" });
+    const setup = await execute({ ...setupOptions(), with: ["assertledger"] }, setupRuntime);
+    expect(setup.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_VERSION_UNSUPPORTED");
+    expect(setupRuntime.calls.some((argv) => argv.includes("setup"))).toBe(false);
+    expect(setupRuntime.writes).toHaveLength(0);
   });
 
   test("AssertLedger rejects contradictory rollback and success reason evidence", async () => {

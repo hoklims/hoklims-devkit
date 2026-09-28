@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 import { createRuntime, parseJsonOutput, preferredBoundaryError, RunLockedError, shortError, validateState } from "./runtime.js";
+import { assertLedgerContract } from "./assertledger-contracts.js";
 
 const COMPONENTS = ["semctx", "assertledger", "latent-compass"];
 const HOSTS = ["codex", "claude"];
@@ -845,18 +846,31 @@ function jsonSchemaValue(value, schema, rootSchema) {
   return true;
 }
 
-function publishedSchema(rt, packageRoot, name) {
+function verifiedAssertAsset(rt, packageRoot, relativePath, contract) {
   try {
-    const path = join(packageRoot, "schemas", name);
+    const path = join(packageRoot, ...relativePath.split("/"));
     if (!rt.plainFilePresent(path)) return null;
-    const schema = JSON.parse(rt.readPlainText(path));
+    const bytes = rt.readPlainText(path);
+    if (typeof bytes !== "string"
+      || createHash("sha256").update(bytes).digest("hex") !== contract[relativePath]) return null;
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+function publishedSchema(rt, packageRoot, name, contract) {
+  try {
+    const bytes = verifiedAssertAsset(rt, packageRoot, `schemas/${name}`, contract);
+    if (bytes === null) return null;
+    const schema = JSON.parse(bytes);
     return schema && typeof schema === "object" ? schema : null;
   } catch {
     return null;
   }
 }
 
-function validPublishedInitSchemas(rt, packageRoot, init, config, lock) {
+function validPublishedInitSchemas(rt, packageRoot, contract, init, config, lock) {
   const suffix = init.schemaVersion === "2.0.0" ? "v2" : init.schemaVersion === "1.0.0" ? "v1" : null;
   if (!suffix) return false;
   const documents = [
@@ -865,17 +879,17 @@ function validPublishedInitSchemas(rt, packageRoot, init, config, lock) {
     [lock, `repository-init-lock.${suffix}.json`],
   ];
   return documents.every(([value, name]) => {
-    const schema = publishedSchema(rt, packageRoot, name);
+    const schema = publishedSchema(rt, packageRoot, name, contract);
     return schema !== null && jsonSchemaValue(value, schema, schema);
   });
 }
 
-function validAssertInitContent(rt, packageRoot, init) {
+function validAssertInitContent(rt, packageRoot, contract, init) {
   const configFile = init.files.find((file) => file.path === "assertledger.config.json");
   const lockFile = init.files.find((file) => file.path === "assertledger.lock.json");
   const config = parseCanonicalJson(configFile?.content);
   const lock = parseCanonicalJson(lockFile?.content);
-  if (!config || !lock || !validPublishedInitSchemas(rt, packageRoot, init, config, lock)
+  if (!config || !lock || !validPublishedInitSchemas(rt, packageRoot, contract, init, config, lock)
     || !jsonRecord(config, ["schemaVersion", "repository", "packageManager", "framework", "testCommand", "adapter", "candidateRoots"])
     || config.schemaVersion !== init.schemaVersion
     || !jsonRecord(config.repository, ["root", "exclude"]) || config.repository.root !== "."
@@ -946,7 +960,8 @@ function parsedAssertConnection(connection, client, root) {
 function assertPackageAnchor(rt, connection, client, root, version) {
   const invocation = parsedAssertConnection(connection, client, root);
   const skill = connection.artifacts.find((artifact) => artifact.kind === "skill")?.content;
-  if (!invocation || !isStableVersion(version) || typeof invocation.node !== "string" || typeof invocation.cli !== "string") return null;
+  const contract = assertLedgerContract(version);
+  if (!contract || !invocation || typeof invocation.node !== "string" || typeof invocation.cli !== "string") return null;
   try {
     const admittedNode = rt.which("node");
     const node = rt.realpath(invocation.node);
@@ -956,13 +971,13 @@ function assertPackageAnchor(rt, connection, client, root, version) {
     const packageRoot = dirname(dirname(cli));
     if (basename(packageRoot) !== "assertledger") return null;
     const manifestPath = join(packageRoot, "package.json");
-    const packagedSkillPath = join(packageRoot, "integrations", "skill", "SKILL.md");
-    if (!rt.plainFilePresent(cli) || !rt.plainFilePresent(manifestPath) || !rt.plainFilePresent(packagedSkillPath)) return null;
+    if (!rt.plainFilePresent(manifestPath)) return null;
     const manifest = JSON.parse(rt.readPlainText(manifestPath));
     if (manifest?.name !== "assertledger" || manifest.version !== version
       || manifest.bin?.assertledger !== "dist/cli.js" || manifest.bin?.testforge !== "dist/cli.js"
-      || skill !== rt.readPlainText(packagedSkillPath)) return null;
-    return packageRoot;
+      || verifiedAssertAsset(rt, packageRoot, "dist/cli.js", contract) === null
+      || skill !== verifiedAssertAsset(rt, packageRoot, "integrations/skill/SKILL.md", contract)) return null;
+    return { packageRoot, contract };
   } catch {
     return null;
   }
@@ -998,7 +1013,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     : true;
   const initFiles = parsed?.init?.files;
   const initActions = parsed?.init?.actions;
-  const packageRoot = Array.isArray(parsed?.connection?.artifacts)
+  const packageAnchor = Array.isArray(parsed?.connection?.artifacts)
     ? assertPackageAnchor(rt, parsed.connection, client, root, options.version) : null;
   const expectedInitPaths = ["assertledger.config.json", "assertledger.lock.json"];
   const nestedSuccess = ["UNCHANGED", mode === "dry-run" ? "WOULD_CREATE" : "CREATED"].includes(parsed?.status);
@@ -1015,7 +1030,8 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && initActions.every((action) => expectedInitPaths.includes(action?.path)
       && (action.kind === "CREATE" || (action.kind === "REGENERATE" && action.path === "assertledger.lock.json")))
     && new Set(initActions.map((action) => action.path)).size === initActions.length
-    && packageRoot !== null && validAssertInitContent(rt, packageRoot, parsed.init)
+    && packageAnchor !== null
+    && validAssertInitContent(rt, packageAnchor.packageRoot, packageAnchor.contract, parsed.init)
     && (!nestedSuccess || expectedInitPaths.every((relativePath, index) => (
       initActions.some((action) => action.path === relativePath) === (initArtifactByPath.get(relativePath)?.state === changedState)
     )));
@@ -1211,6 +1227,11 @@ async function resolveComponents(rt, options, state, root, report) {
         versions[name] = await resolveVersion(rt, name);
       }
       if (!isStableVersion(versions[name])) throw new Error(`Invalid ${name} version`);
+      if (name === "assertledger" && !assertLedgerContract(versions[name])) {
+        const error = new Error(`AssertLedger ${versions[name]} has no Devkit-reviewed native contract; update Devkit before using this release`);
+        error.problemCode = "ASSERTLEDGER_VERSION_UNSUPPORTED";
+        throw error;
+      }
       if (name === "semctx" && !safeSemctxVersion(versions[name])) {
         const error = new Error(`Semctx ${versions[name]} predates the safe host-diagnostic floor ${MIN_SAFE_SEMCTX_VERSION}`);
         error.problemCode = "SEMCTX_VERSION_UNSAFE";
@@ -1822,6 +1843,13 @@ export async function execute(options, rt = createRuntime()) {
       if (!version) {
         report.components.push({ name, installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
         problem(report, "DOCTOR_UNMANAGED", `${name} has no devkit installation record; run setup or inspect its native CLI`, 3);
+        continue;
+      }
+      if (name === "assertledger" && !assertLedgerContract(version)) {
+        report.components.push({ name, version, installed: "unknown", configured: "unknown",
+          loaded: "unknown", approved: "unknown", observed: "unknown" });
+        problem(report, "ASSERTLEDGER_VERSION_UNSUPPORTED",
+          `AssertLedger ${version} has no Devkit-reviewed native contract; update Devkit before diagnosing or applying it`, 3);
         continue;
       }
       try {
