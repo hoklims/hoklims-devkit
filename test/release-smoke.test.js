@@ -44,6 +44,8 @@ function fixture() {
 function reportFor(argv) {
   const command = argv[3];
   const repository = resolve(argv[4]);
+  const host = argv[argv.indexOf("--host") + 1];
+  const hosts = host === "all" ? ["codex", "claude"] : [host];
   const full = argv.includes("assertledger,latent-compass");
   const names = full ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
   const dryRun = argv.includes("--dry-run");
@@ -51,8 +53,12 @@ function reportFor(argv) {
   const flags = dryRun ? plannedFlags : configuredFlags;
   const state = dryRun ? "planned" : "configured";
   return JSON.stringify({
+    schemaVersion: 1,
+    command,
     ok: true,
     projectRoot: repository,
+    hosts,
+    conflicts: [],
     components: names.map((name) => ({
       name,
       version: versions[name],
@@ -97,15 +103,18 @@ test("doctor smoke admits only fresh Latent Compass no-or-unknown observation st
     })),
   });
 
-  expect(validSmokeDoctorReport(doctor("no"), projectRoot, names)).toBe(true);
-  expect(validSmokeDoctorReport(doctor("unknown"), projectRoot, names)).toBe(true);
-  expect(validSmokeDoctorReport(doctor("yes"), projectRoot, names)).toBe(false);
+  const envelope = { schemaVersion: 1, command: "doctor", hosts: ["codex"], conflicts: [] };
+  expect(validSmokeDoctorReport({ ...doctor("no"), ...envelope }, projectRoot, names, ["codex"])).toBe(true);
+  expect(validSmokeDoctorReport({ ...doctor("unknown"), ...envelope }, projectRoot, names, ["codex"])).toBe(true);
+  expect(validSmokeDoctorReport({ ...doctor("yes"), ...envelope }, projectRoot, names, ["codex"])).toBe(false);
   const semctxObserved = doctor("no");
+  Object.assign(semctxObserved, envelope);
   semctxObserved.components[0].observed = "no";
-  expect(validSmokeDoctorReport(semctxObserved, projectRoot, names)).toBe(false);
+  expect(validSmokeDoctorReport(semctxObserved, projectRoot, names, ["codex"])).toBe(false);
   const assertNotConfigured = doctor("unknown");
+  Object.assign(assertNotConfigured, envelope);
   assertNotConfigured.components[1].configured = "no";
-  expect(validSmokeDoctorReport(assertNotConfigured, projectRoot, names)).toBe(false);
+  expect(validSmokeDoctorReport(assertNotConfigured, projectRoot, names, ["codex"])).toBe(false);
 });
 
 test("runReleaseSmoke executes and reports the seven-stage packaged sequence", () => {
@@ -202,6 +211,20 @@ test("runReleaseSmoke rejects version-changing upgrades in its no-op stage", () 
     }),
     write: () => {},
   })).toThrow(/requires a same-version no-op upgrade/u);
+});
+
+test("upgrade smoke rejects a same-version setup envelope", () => {
+  const { consumer, smokeRoot } = fixture();
+  expect(() => runReleaseSmoke({
+    consumer,
+    root: smokeRoot,
+    runCommand: runner([], {
+      mutateReport: (report, argv) => {
+        if (argv[3] === "upgrade" && !argv.includes("--dry-run")) report.command = "setup";
+      },
+    }),
+    write: () => {},
+  })).toThrow(/upgrade did not configure every component/u);
 });
 
 test("dry-run detects writes anywhere in the synthetic home", () => {

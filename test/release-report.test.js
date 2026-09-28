@@ -5,10 +5,16 @@ const projectRoot = "/fixture/repository";
 const expectedNames = ["semctx", "assertledger", "latent-compass"];
 const configuredFlags = { installed: "yes", configured: "yes", loaded: "unknown", approved: "unknown", observed: "unknown" };
 const plannedFlags = { installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" };
-const configuredOptions = { expectedState: "configured", expectedFlags: configuredFlags };
+const configuredOptions = {
+  expectedState: "configured", expectedFlags: configuredFlags,
+  expectedCommand: "setup", expectedHosts: ["codex"],
+};
 
 function report(components, overrides = {}) {
-  return { ok: true, projectRoot, components, ...overrides };
+  return {
+    schemaVersion: 1, command: "setup", ok: true, projectRoot, hosts: ["codex"], conflicts: [],
+    components, ...overrides,
+  };
 }
 
 function components(state = "configured") {
@@ -32,11 +38,17 @@ describe("validComponentReport", () => {
     expect(validComponentReport(report(planned), projectRoot, expectedNames, {
       expectedState: "planned",
       expectedFlags: plannedFlags,
+      expectedCommand: "setup",
+      expectedHosts: ["codex"],
     })).toBe(true);
     expect(validComponentReport(report(components()), projectRoot, expectedNames, configuredOptions)).toBe(true);
-    expect(validComponentReport(report(components().map(({ state: _state, ...component }) => component)), projectRoot, expectedNames, {
+    expect(validComponentReport(report(
+      components().map(({ state: _state, ...component }) => component), { command: "doctor" },
+    ), projectRoot, expectedNames, {
       expectedState: null,
       expectedFlags: configuredFlags,
+      expectedCommand: "doctor",
+      expectedHosts: ["codex"],
     })).toBe(true);
   });
 
@@ -44,10 +56,14 @@ describe("validComponentReport", () => {
     expect(validComponentReport(report([{ name: "semctx", state: "planned" }]), projectRoot, ["semctx"], {
       expectedState: "planned",
       expectedFlags: plannedFlags,
+      expectedCommand: "setup",
+      expectedHosts: ["codex"],
     })).toBe(false);
     expect(validComponentReport(report([{ ...components()[0], state: "planned" }]), projectRoot, ["semctx"], {
       expectedState: null,
       expectedFlags: configuredFlags,
+      expectedCommand: "doctor",
+      expectedHosts: ["codex"],
     })).toBe(false);
   });
 
@@ -90,22 +106,29 @@ describe("validComponentReport", () => {
           ...component,
           ...plannedFlags,
         })),
-        options: { expectedState: "planned", expectedFlags: plannedFlags },
+        options: {
+          expectedState: "planned", expectedFlags: plannedFlags,
+          expectedCommand: "setup", expectedHosts: ["codex"],
+        },
       },
       { name: "configured", exact: components(), options: configuredOptions },
       {
         name: "doctor",
         exact: components().map(({ state: _state, ...component }) => component),
-        options: { expectedState: null, expectedFlags: configuredFlags },
+        overrides: { command: "doctor" },
+        options: {
+          expectedState: null, expectedFlags: configuredFlags,
+          expectedCommand: "doctor", expectedHosts: ["codex"],
+        },
       },
     ];
     for (const mode of modes) {
-      expect(validComponentReport(report(mode.exact), projectRoot, expectedNames, mode.options), mode.name)
+      expect(validComponentReport(report(mode.exact, mode.overrides), projectRoot, expectedNames, mode.options), mode.name)
         .toBe(true);
       for (const flag of ["installed", "configured", "loaded", "approved", "observed"]) {
         const changed = mode.exact[0][flag] === "unknown" ? "yes" : "no";
         const mutant = [{ ...mode.exact[0], [flag]: changed }, ...mode.exact.slice(1)];
-        expect(validComponentReport(report(mutant), projectRoot, expectedNames, mode.options), `${mode.name}:${flag}`)
+        expect(validComponentReport(report(mutant, mode.overrides), projectRoot, expectedNames, mode.options), `${mode.name}:${flag}`)
           .toBe(false);
       }
     }
@@ -118,6 +141,10 @@ describe("validComponentReport", () => {
       [],
       {},
       report(exact, { ok: false }),
+      report(exact, { schemaVersion: 999 }),
+      report(exact, { command: "upgrade" }),
+      report(exact, { hosts: ["claude"] }),
+      report(exact, { conflicts: [{ code: "APPLY_FAILED" }] }),
       report(null),
       report([null, ...exact.slice(1)]),
     ];

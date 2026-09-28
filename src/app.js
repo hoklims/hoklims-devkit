@@ -670,13 +670,18 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
 }
 
 function recognizableCompassStatus(rt, parsed, root, host, version) {
+  const status = parsed?.hosts?.[0]?.status;
+  const observed = parsed?.states?.[host]?.observed;
+  const observationConsistent = (status === "NO_OBSERVATIONS" && observed === false)
+    || (status === "OBSERVING" && observed === true)
+    || (status === "OBSERVATION_UNKNOWN" && observed === "UNKNOWN")
+    || (status === "DEGRADED" && typeof observed === "boolean");
   if (parsed?.schema_version !== 1 || parsed.operation !== "status" || parsed.version !== version
     || typeof parsed.project_root !== "string" || !Array.isArray(parsed.hosts) || parsed.hosts.length !== 1
     || parsed.hosts[0]?.host !== host
     || !["NO_OBSERVATIONS", "OBSERVING", "OBSERVATION_UNKNOWN", "DEGRADED"].includes(parsed.hosts[0].status)
     || typeof parsed.states?.[host]?.installed !== "boolean"
-    || typeof parsed.states?.[host]?.configured !== "boolean"
-    || (parsed.hosts[0].status === "OBSERVATION_UNKNOWN" && parsed.states[host].observed !== "UNKNOWN")) return false;
+    || typeof parsed.states?.[host]?.configured !== "boolean" || !observationConsistent) return false;
   try {
     return rt.realpath(parsed.project_root) === root;
   } catch {
@@ -765,10 +770,20 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
     && doctor.healthy === doctorChecks.every((check) => check.ok === true)
     && (doctorCode === 0) === doctor.healthy
     && (indexCheck?.ok === true ? indexCheck.status === "healthy" : indexCheck?.status !== "healthy");
+  const freshnessVerdict = health?.freshness?.verdict;
+  const freshnessCapable = ["FRESH", "DIRTY_KNOWN"].includes(freshnessVerdict);
+  const expectedHealthCode = health?.binding?.status !== "valid" || !freshnessCapable
+    ? 3 : health?.coverage?.status === "complete" ? 0 : health?.coverage?.status === "partial" ? 2 : 3;
   const healthStructured = [0, 2, 3].includes(healthCode) && health?.schemaVersion === 1
     && health.kind === "index_health" && ["valid", "invalid", "absent"].includes(health.binding?.status)
+    && ["FRESH", "DIRTY_KNOWN", "STALE", "UNSEALED"].includes(freshnessVerdict)
     && typeof health.freshness?.canRunHighRiskControl === "boolean"
-    && ["complete", "partial", "insufficient"].includes(health.coverage?.status);
+    && health.freshness.canRunHighRiskControl === freshnessCapable
+    && Array.isArray(health.freshness.reasons)
+    && health.freshness.reasons.every((reason) => typeof reason === "string")
+    && ["complete", "partial", "insufficient"].includes(health.coverage?.status)
+    && (health.binding.status === "valid" || health.coverage.status === "insufficient")
+    && healthCode === expectedHealthCode;
   if (!doctorStructured || !healthStructured) return "unknown";
   const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
     && requiredChecks.every((name) => doctorChecks.some((check) =>

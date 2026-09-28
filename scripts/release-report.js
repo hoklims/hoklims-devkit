@@ -2,7 +2,7 @@ export function validComponentReport(report, projectRoot, expectedNames, options
   try {
     if (!report || typeof report !== "object" || Array.isArray(report)) return false;
     if (typeof projectRoot !== "string" || projectRoot.length === 0) return false;
-    if (report.ok !== true || typeof report.projectRoot !== "string"
+    if (report.schemaVersion !== 1 || report.ok !== true || typeof report.projectRoot !== "string"
       || report.projectRoot.length === 0 || report.projectRoot !== projectRoot) return false;
     if (!Array.isArray(expectedNames) || expectedNames.length === 0) return false;
     for (let index = 0; index < expectedNames.length; index += 1) {
@@ -14,7 +14,14 @@ export function validComponentReport(report, projectRoot, expectedNames, options
     if (!options || typeof options !== "object" || Array.isArray(options)
       || Object.getPrototypeOf(options) !== Object.prototype) return false;
 
-    const { expectedState, expectedFlags } = options;
+    const { expectedState, expectedFlags, expectedCommand, expectedHosts } = options;
+    if (!["setup", "doctor", "upgrade"].includes(expectedCommand)
+      || report.command !== expectedCommand) return false;
+    if (!Array.isArray(expectedHosts) || expectedHosts.length === 0
+      || new Set(expectedHosts).size !== expectedHosts.length
+      || expectedHosts.some((host) => !["codex", "claude"].includes(host))
+      || JSON.stringify(report.hosts) !== JSON.stringify(expectedHosts)) return false;
+    if (!Array.isArray(report.conflicts) || report.conflicts.length !== 0) return false;
     if (expectedState !== null && expectedState !== "planned" && expectedState !== "configured") return false;
     if (!expectedFlags || typeof expectedFlags !== "object" || Array.isArray(expectedFlags)
       || Object.getPrototypeOf(expectedFlags) !== Object.prototype) return false;

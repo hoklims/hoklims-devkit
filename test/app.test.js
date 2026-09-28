@@ -125,8 +125,8 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
         checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({ name, ok: name !== "workspace", ...(name === "index" ? { status: "healthy" } : {}) })),
       }), stderr: "" };
       if (argv.includes("index-health")) return workspaceReady
-        ? { code: 0, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { canRunHighRiskControl: true }, coverage: { status: "complete" } }), stderr: "" }
-        : { code: 2, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "absent" }, freshness: { canRunHighRiskControl: false }, coverage: { status: "partial" } }), stderr: "" };
+        ? { code: 0, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: "FRESH", canRunHighRiskControl: true, reasons: [] }, coverage: { status: "complete" } }), stderr: "" }
+        : { code: 3, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "absent" }, freshness: { verdict: "UNSEALED", canRunHighRiskControl: false, reasons: ["REPOSITORY_NOT_INITIALIZED"] }, coverage: { status: "insufficient" } }), stderr: "" };
       if (argv.includes("install")) {
         if (!argv.includes("--dry-run")) semctxInstalledVersion = version;
         const dryRun = argv.includes("--dry-run");
@@ -1212,7 +1212,9 @@ describe("public CLI", () => {
       ? { code: 0, stdout: JSON.stringify({ schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo", hosts: [{ host: "codex", status: "OBSERVING" }], states: { codex: { installed: true, configured: true } } }), stderr: "" }
       : nativeExec(argv, cwd);
     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
-    expect(report.components.find((item) => item.name === "latent-compass")).toMatchObject({ configured: "yes", observed: "unknown" });
+    expect(report.ok).toBe(false);
+    expect(report.components.find((item) => item.name === "latent-compass"))
+      .toMatchObject({ configured: "unknown", observed: "unknown" });
   });
 
   test("doctor accepts configured Compass status when Windows observation enumeration is unavailable", async () => {
@@ -1259,6 +1261,21 @@ describe("public CLI", () => {
         schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo",
         hosts: [{ host: "codex", status: "OBSERVATION_UNKNOWN" }],
         states: { codex: { installed: true, configured: true } },
+      },
+      {
+        schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo",
+        hosts: [{ host: "codex", status: "NO_OBSERVATIONS" }],
+        states: { codex: { installed: true, configured: true, observed: true } },
+      },
+      {
+        schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo",
+        hosts: [{ host: "codex", status: "OBSERVING" }],
+        states: { codex: { installed: true, configured: true, observed: false } },
+      },
+      {
+        schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo",
+        hosts: [{ host: "codex", status: "DEGRADED" }],
+        states: { codex: { installed: true, configured: false, observed: "UNKNOWN" } },
       },
     ];
     for (const nativeReport of reports) {
@@ -1416,6 +1433,32 @@ describe("public CLI", () => {
           .toHaveLength(0);
         expect(rt.writes, `${name}:${command}`).toHaveLength(0);
       }
+    }
+  });
+
+  test("contradictory Semctx index health remains unknown before doctor or repeated setup", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.7", hosts: ["codex"] } },
+    };
+    for (const command of ["doctor", "setup"]) {
+      const rt = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (!argv.includes("index-health")) return result;
+        const body = JSON.parse(result.stdout);
+        body.binding.status = "invalid";
+        return { ...result, stdout: JSON.stringify(body) };
+      };
+      const report = await execute(command === "doctor"
+        ? parseArgs(["doctor", "/repo", "--host", "codex"])
+        : setupOptions(), rt);
+      expect(report.ok, command).toBe(false);
+      expect(report.components[0].configured, command).toBe("unknown");
+      expect(rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run")), command)
+        .toHaveLength(0);
+      expect(rt.writes, command).toHaveLength(0);
     }
   });
 
@@ -4875,8 +4918,6 @@ describe("public CLI", () => {
           const body = JSON.parse(result.stdout);
           if (field === "index-kind") body.kind = "other";
           else {
-            body.binding.status = "absent";
-            body.freshness.canRunHighRiskControl = false;
             body.coverage.status = "partial";
           }
           return { ...result, code: field === "index-partial" ? 2 : result.code, stdout: JSON.stringify(body) };

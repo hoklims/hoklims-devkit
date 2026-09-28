@@ -17,7 +17,7 @@ export const RELEASE_SMOKE_STAGES = [
   "post-upgrade-doctor",
 ];
 
-export function validSmokeDoctorReport(report, projectRoot, expectedNames) {
+export function validSmokeDoctorReport(report, projectRoot, expectedNames, expectedHosts) {
   if (!Array.isArray(expectedNames) || expectedNames.length === 0
     || new Set(expectedNames).size !== expectedNames.length
     || !Array.isArray(report?.components)
@@ -32,7 +32,12 @@ export function validSmokeDoctorReport(report, projectRoot, expectedNames) {
       { ...report, components: [component] },
       projectRoot,
       [name],
-      { expectedState: null, expectedFlags: { ...CONFIGURED_FLAGS, observed } },
+      {
+        expectedState: null,
+        expectedFlags: { ...CONFIGURED_FLAGS, observed },
+        expectedCommand: "doctor",
+        expectedHosts,
+      },
     )) return false;
   }
   return true;
@@ -169,7 +174,10 @@ for (const host of ["codex", "claude", "all"]) {
     const output = run(["bunx", "--no-install", "hoklims-devkit", "setup", repository, "--host", host, ...withTools, "--dry-run", "--json"]);
     const report = JSON.parse(output);
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
-    if (!validComponentReport(report, resolve(repository), expected, { expectedState: "planned", expectedFlags: PLANNED_FLAGS })) {
+    const expectedHosts = host === "all" ? ["codex", "claude"] : [host];
+    if (!validComponentReport(report, resolve(repository), expected, {
+      expectedState: "planned", expectedFlags: PLANNED_FLAGS, expectedCommand: "setup", expectedHosts,
+    })) {
       throw new Error(`Unexpected ${host} preflight: ${output}`);
     }
     if (run(["git", "-C", repository, "status", "--porcelain"]).trim()) {
@@ -212,10 +220,13 @@ for (const host of ["codex", "claude", "all"]) {
     const scenarioProtectedPaths = protectedProfilePaths(scenarioHome);
     const selectors = ["--host", host, ...withTools, "--json"];
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
+    const expectedHosts = host === "all" ? ["codex", "claude"] : [host];
     const installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
     if (!validComponentReport(installed, resolve(scenarioRepository), expected, {
       expectedState: "configured",
       expectedFlags: CONFIGURED_FLAGS,
+      expectedCommand: "setup",
+      expectedHosts,
     })) {
       throw new Error(`Unexpected ${host} installation: ${JSON.stringify(installed)}`);
     }
@@ -227,6 +238,8 @@ for (const host of ["codex", "claude", "all"]) {
     if (!validComponentReport(repeated, resolve(scenarioRepository), expected, {
       expectedState: "configured",
       expectedFlags: CONFIGURED_FLAGS,
+      expectedCommand: "setup",
+      expectedHosts,
     })) throw new Error(`${host} repeated setup failed: ${JSON.stringify(repeated)}`);
     assertSameComponentVersions(repeated, installed, `${host} repeated setup`);
     assertSnapshotUnchanged(targets, installedSnapshot, `${host} repeated setup`);
@@ -234,7 +247,7 @@ for (const host of ["codex", "claude", "all"]) {
 
     const beforeDoctor = targets.map(snapshot);
     const diagnosed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (!validSmokeDoctorReport(diagnosed, resolve(scenarioRepository), expected)) {
+    if (!validSmokeDoctorReport(diagnosed, resolve(scenarioRepository), expected, expectedHosts)) {
       throw new Error(`${host} doctor did not confirm installation: ${JSON.stringify(diagnosed)}`);
     }
     assertSameComponentVersions(diagnosed, installed, `${host} doctor`);
@@ -242,7 +255,9 @@ for (const host of ["codex", "claude", "all"]) {
     recordStage(scenario, "doctor", { snapshotVerified: true });
     const beforeUpgradePlan = targets.map(snapshot);
     const upgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "upgrade", scenarioRepository, ...selectors.slice(0, -1), "--dry-run", "--json"], consumer, scenarioEnv));
-    if (!validComponentReport(upgrade, resolve(scenarioRepository), expected, { expectedState: "planned", expectedFlags: PLANNED_FLAGS })) {
+    if (!validComponentReport(upgrade, resolve(scenarioRepository), expected, {
+      expectedState: "planned", expectedFlags: PLANNED_FLAGS, expectedCommand: "upgrade", expectedHosts,
+    })) {
       throw new Error(`${host} upgrade plan failed: ${JSON.stringify(upgrade)}`);
     }
     assertSnapshotUnchanged(targets, beforeUpgradePlan, `${host} upgrade plan`);
@@ -251,6 +266,8 @@ for (const host of ["codex", "claude", "all"]) {
     if (!validComponentReport(appliedUpgrade, resolve(scenarioRepository), expected, {
       expectedState: "configured",
       expectedFlags: CONFIGURED_FLAGS,
+      expectedCommand: "upgrade",
+      expectedHosts,
     })) {
       throw new Error(`${host} upgrade did not configure every component: ${JSON.stringify(appliedUpgrade)}`);
     }
@@ -261,7 +278,7 @@ for (const host of ["codex", "claude", "all"]) {
     recordStage(scenario, "no-op-snapshot", { snapshotVerified: true });
     const afterUpgrade = targets.map(snapshot);
     const diagnosedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
-    if (!validSmokeDoctorReport(diagnosedUpgrade, resolve(scenarioRepository), expected)) {
+    if (!validSmokeDoctorReport(diagnosedUpgrade, resolve(scenarioRepository), expected, expectedHosts)) {
       throw new Error(`${host} post-upgrade doctor did not confirm installation: ${JSON.stringify(diagnosedUpgrade)}`);
     }
     assertSameComponentVersions(diagnosedUpgrade, appliedUpgrade, `${host} post-upgrade doctor`);
