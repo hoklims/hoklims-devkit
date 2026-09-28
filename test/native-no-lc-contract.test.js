@@ -11,6 +11,7 @@ import { buildNativeConfig } from "../scripts/native-no-lc-config.mjs";
 import { NATIVE_LANE_DEFINITIONS, NATIVE_STAGE_IDS, runNativeLaneMatrix,
   assertNativeSmokeResults, runNativeSmokeOrchestration, runOwnedAssertLedgerDemo,
   validateNativeSmokeEntrypointSource } from "../scripts/native-no-lc-runner.mjs";
+import { assertLedgerContract } from "../src/assertledger-contracts.js";
 
 function touch(path, bytes = "fixture\n") {
   mkdirSync(dirname(path), { recursive: true });
@@ -225,7 +226,7 @@ test("actual AssertLedger demo function validates owned paths and reauthenticate
     "runOwnedAssertLedgerDemo", "runCommand", "parseJsonOutput", "isWithin", "statSync", "existsSync", "lstatSync",
     "writeFileSync", "evidenceRoot", "JSON", `${body}\nreturn runAssertLedgerDemo;`,
   );
-  const execute = async ({ mutateDemo, mutateAfterCreate, symlinkPath, danglingLink, redirectedRoot } = {}) => {
+  const execute = async ({ mutateDemo, mutateAsset, symlinkPath, danglingLink, redirectedRoot } = {}) => {
     const lane = { name: "all-assertledger", root: path.join("/run", "lanes", "all-assertledger"),
       repository: path.join("/run", "lanes", "all-assertledger", "repository"), env: {} };
     const demoRoot = path.join(lane.root, "assertledger-demo");
@@ -234,7 +235,8 @@ test("actual AssertLedger demo function validates owned paths and reauthenticate
     const demo = mutateDemo ? mutateDemo(structuredClone(validDemo)) : validDemo;
     let checks = 0;
     let created = false;
-    const contract = { "dist/cli.js": "cli-hash", "schemas/repository-init-result.v1.json": "schema-hash" };
+    const contract = assertLedgerContract("1.3.0");
+    const packageRoot = path.join(lane.repository, "node_modules", "assertledger");
     const fakeProcess = { execPath: path.join("/runtime", "node") };
     const runCommand = async ({ name }) => {
       if (name.endsWith("demo-create")) { created = true; return { stdout: JSON.stringify(demo) }; }
@@ -248,9 +250,9 @@ test("actual AssertLedger demo function validates owned paths and reauthenticate
       (file) => file.endsWith("package.json") ? JSON.stringify({ version: "1.3.0" }) : "bytes",
       () => contract, realpath,
       (file) => {
-        if (file.endsWith("create-demo.mjs")) return "950c59f7c7b436c4071eee77aaf4ebcc8afe5a3b83cee5d57725af52fb2f0f00";
-        if (created && mutateAfterCreate) return "mutated";
-        return file.endsWith(path.join("dist", "cli.js")) ? "cli-hash" : "schema-hash";
+        const relativePath = path.relative(packageRoot, file).split(path.sep).join("/");
+        if (created && relativePath === mutateAsset) return "mutated";
+        return contract[relativePath];
       },
       fakeProcess, runOwnedAssertLedgerDemo, runCommand, (result) => JSON.parse(result.stdout),
       (parent, child) => { const relative = path.relative(parent, child); return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative)); },
@@ -272,11 +274,22 @@ test("actual AssertLedger demo function validates owned paths and reauthenticate
     { mutateDemo: (demo) => ({ ...demo, out: "link/result" }), danglingLink: true,
       symlinkPath: path.join("/run", "lanes", "all-assertledger", "assertledger-demo", "link") },
     { redirectedRoot: true },
-    { mutateAfterCreate: true },
   ]) {
     const result = await execute(options);
     expect(result.error).toBeTruthy();
     expect(result.checks).toBe(0);
+  }
+  for (const mutateAsset of [
+    "dist/engine/setup.js",
+    "examples/git-history/create-demo.mjs",
+    "examples/git-history/escape-string-regexp/before.cjs.txt",
+    "examples/git-history/escape-string-regexp/fixed.cjs.txt",
+    "examples/git-history/escape-string-regexp/LICENSE",
+    "examples/git-history/escape-string-regexp/provenance.json",
+  ]) {
+    const result = await execute({ mutateAsset });
+    expect(result.error, mutateAsset).toBeTruthy();
+    expect(result.checks, mutateAsset).toBe(0);
   }
 });
 

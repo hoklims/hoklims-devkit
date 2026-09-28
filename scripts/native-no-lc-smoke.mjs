@@ -492,8 +492,6 @@ async function runAssertLedgerDemo(lane) {
       assert.equal(sha256File(path.join(packageRoot, ...relativePath.split("/"))), digest,
         `AssertLedger demo asset differs from reviewed ${relativePath}`);
     }
-    assert.equal(sha256File(creator), "950c59f7c7b436c4071eee77aaf4ebcc8afe5a3b83cee5d57725af52fb2f0f00",
-      "AssertLedger demo creator differs from the reviewed public fixture");
     assert.equal(realpathSync(process.execPath), nodeIdentity, "Node identity changed during AssertLedger demo");
     assert.equal(realpathSync(cli), cli, "AssertLedger CLI identity changed during demo");
   };

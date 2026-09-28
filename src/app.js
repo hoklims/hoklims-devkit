@@ -1268,7 +1268,10 @@ async function resolveComponents(rt, options, state, root, report) {
       }
       if (!isStableVersion(versions[name])) throw new Error(`Invalid ${name} version`);
       if (name === "assertledger" && !assertLedgerContract(versions[name])) {
-        const error = new Error(`AssertLedger ${versions[name]} has no Devkit-reviewed native contract; update Devkit before using this release`);
+        const guidance = versions[name] === "1.2.0"
+          ? "this historical state is readable, but its CLI has no native setup command; run upgrade to select AssertLedger 1.3.0"
+          : "update Devkit before using this release";
+        const error = new Error(`AssertLedger ${versions[name]} has no Devkit-reviewed native contract; ${guidance}`);
         error.problemCode = "ASSERTLEDGER_VERSION_UNSUPPORTED";
         throw error;
       }
@@ -1908,8 +1911,11 @@ export async function execute(options, rt = createRuntime()) {
       if (name === "assertledger" && !assertLedgerContract(version)) {
         report.components.push({ name, version, installed: "unknown", configured: "unknown",
           loaded: "unknown", approved: "unknown", observed: "unknown" });
+        const guidance = version === "1.2.0"
+          ? "the historical state remains readable, but its CLI has no native setup command; run upgrade to select AssertLedger 1.3.0"
+          : "update Devkit before diagnosing or applying it";
         problem(report, "ASSERTLEDGER_VERSION_UNSUPPORTED",
-          `AssertLedger ${version} has no Devkit-reviewed native contract; update Devkit before diagnosing or applying it`, 3);
+          `AssertLedger ${version} has no Devkit-reviewed native contract; ${guidance}`, 3);
         continue;
       }
       try {

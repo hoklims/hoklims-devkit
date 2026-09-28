@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { execute, main, parseArgs, quoteShellToken } from "../src/app.js";
+import { assertLedgerContract } from "../src/assertledger-contracts.js";
 import { createRuntime, validateState } from "../src/runtime.js";
 
 function compassInstallReport(argv, { installed = false, configured = false } = {}) {
@@ -59,13 +60,13 @@ function installAssertPackageFixture(files, cli, version, forceVersion = false) 
   }
   const fixtureVersion = ["1.2.0", "1.3.0"].includes(version) ? version : "1.3.0";
   const fixtureRoot = new URL(`./fixtures/assertledger-assets/${fixtureVersion}/`, import.meta.url);
-  files[cli] = readFileSync(new URL("cli.js", fixtureRoot), "utf8");
-  files[join(packageRoot, "integrations", "skill", "SKILL.md")] = readFileSync(new URL("integrations/skill/SKILL.md", fixtureRoot), "utf8");
-  for (const kind of ["config", "lock", "result"]) {
-    for (const generation of ["v1", "v2"]) {
-      const name = `repository-init-${kind}.${generation}.json`;
-      files[join(packageRoot, "schemas", name)] = readFileSync(new URL(`schemas/${name}`, fixtureRoot), "utf8");
+  const contract = assertLedgerContract(fixtureVersion);
+  if (contract) {
+    for (const relativePath of Object.keys(contract)) {
+      files[join(packageRoot, ...relativePath.split("/"))] = readFileSync(new URL(relativePath, fixtureRoot), "utf8");
     }
+  } else {
+    files[cli] = readFileSync(new URL("cli.js", fixtureRoot), "utf8");
   }
 }
 
@@ -169,7 +170,7 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
   const calls = [];
   const writes = [];
   const cachedCli = process.platform === "win32" ? "C:\\cache\\assertledger\\dist\\cli.js" : "/cache/assertledger/dist/cli.js";
-  installAssertPackageFixture(files, cachedCli, "1.2.0");
+  installAssertPackageFixture(files, cachedCli, "1.3.0");
   const localCli = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
   if (Object.hasOwn(files, localCli)) {
     let localVersion = "1.2.0";
@@ -201,7 +202,7 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
         if (failPyPi) throw new Error("PyPI offline");
         return { info: { version: "0.3.0" } };
       }
-      return { version: url.includes("assertledger") ? "1.2.0" : version };
+      return { version: url.includes("assertledger") ? "1.3.0" : version };
     },
     exec: async (argv) => {
       calls.push(argv);
@@ -225,7 +226,7 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
       if (argv[0] === "npm" && argv.includes("exec")) {
         const spec = argv.find((argument) => /^(?:--package=)?assertledger@/u.test(argument));
         const cli = process.platform === "win32" ? "C:\\cache\\assertledger\\dist\\cli.js" : "/cache/assertledger/dist/cli.js";
-        installAssertPackageFixture(files, cli, spec?.replace(/^--package=assertledger@|^assertledger@/u, "") ?? "1.2.0", true);
+        installAssertPackageFixture(files, cli, spec?.replace(/^--package=assertledger@|^assertledger@/u, "") ?? "1.3.0", true);
         return { code: 0, stdout: cli, stderr: "" };
       }
       const assertSpec = argv.find((arg) => /^assertledger@/u.test(arg));
@@ -1042,11 +1043,11 @@ describe("public CLI", () => {
   });
 
   test("doctor rejects AssertLedger native CONFLICT even when JSON is returned", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.3.0", hosts: ["codex"] } } };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const rt = fakeRuntime({ state, tools: ["node", "npm"], files, assertStatus: "CONFLICT" });
@@ -1060,13 +1061,13 @@ describe("public CLI", () => {
   test("doctor keeps invalid AssertLedger artifact evidence unknown", async () => {
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { assertledger: { version: "1.2.0", hosts: ["codex"] } },
-      inProgress: { command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"], versions: { semctx: "0.3.7", assertledger: "1.2.0" } },
+      components: { assertledger: { version: "1.3.0", hosts: ["codex"] } },
+      inProgress: { command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"], versions: { semctx: "0.3.7", assertledger: "1.3.0" } },
     };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const variants = [
@@ -1100,11 +1101,11 @@ describe("public CLI", () => {
   });
 
   test("doctor does not infer AssertLedger configuration from empty artifacts", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.3.0", hosts: ["codex"] } } };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
@@ -1119,17 +1120,17 @@ describe("public CLI", () => {
   });
 
   test("doctor applies AssertLedger project admission before native preview", async () => {
-    const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } };
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: { assertledger: { version: "1.3.0", hosts: ["codex"] } } };
     const localFiles = {
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     for (const scenario of ["null", "drift", "unsafe-lock"]) {
       const files = {
         ...localFiles,
         [join("/repo", "package.json")]: scenario === "null" ? "null"
-          : JSON.stringify({ devDependencies: { assertledger: scenario === "drift" ? "9.9.9" : "1.2.0" }, packageManager: "npm@10.9.8" }),
+          : JSON.stringify({ devDependencies: { assertledger: scenario === "drift" ? "9.9.9" : "1.3.0" }, packageManager: "npm@10.9.8" }),
       };
       const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
       if (scenario === "unsafe-lock") {
@@ -1148,7 +1149,7 @@ describe("public CLI", () => {
 
     const valid = fakeRuntime({ state, tools: ["node", "npm"], files: {
       ...localFiles,
-      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
     } });
     const admitted = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), valid);
     expect(admitted.components.find((item) => item.name === "assertledger").configured).toBe("yes");
@@ -1160,8 +1161,8 @@ describe("public CLI", () => {
     const manifestPath = join("/repo", "package.json");
     const localManifestPath = join("/repo", "node_modules", "assertledger", "package.json");
     const nodeModulesPath = join("/repo", "node_modules");
-    const manifestBytes = JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" });
-    const localManifestBytes = JSON.stringify({ version: "1.2.0" });
+    const manifestBytes = JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" });
+    const localManifestBytes = JSON.stringify({ version: "1.3.0" });
     const baseFiles = () => ({
       [manifestPath]: manifestBytes,
       [join("/repo", "package-lock.json")]: "{}",
@@ -1170,7 +1171,7 @@ describe("public CLI", () => {
     });
     const state = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { semctx: { version: "0.3.7", hosts: ["codex"] }, assertledger: { version: "1.2.0", hosts: ["codex"] } },
+      components: { semctx: { version: "0.3.7", hosts: ["codex"] }, assertledger: { version: "1.3.0", hosts: ["codex"] } },
     };
     for (const phase of ["doctor", "preflight", "apply"]) {
       for (const scenario of ["read-only", "read-close", "read-close-ancestry-io", "ownership-ancestry-io"]) {
@@ -1247,7 +1248,7 @@ describe("public CLI", () => {
   test("doctor distinguishes an absent AssertLedger install from drift, partial metadata, and I/O failure", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
       semctx: { version: "0.3.7", hosts: ["codex"] },
-      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
     } };
     const manifestPath = join("/repo", "package.json");
     const localManifest = join("/repo", "node_modules", "assertledger", "package.json");
@@ -1257,8 +1258,8 @@ describe("public CLI", () => {
       {
         name: "matching", files: {
           ...baseFiles,
-          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
-          [localManifest]: JSON.stringify({ version: "1.2.0" }), [localCli]: "cli",
+          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
+          [localManifest]: JSON.stringify({ version: "1.3.0" }), [localCli]: "cli",
         }, installed: "yes", code: null, exitCode: 0, native: true,
       },
       {
@@ -1269,20 +1270,20 @@ describe("public CLI", () => {
       {
         name: "foreign", files: {
           ...baseFiles,
-          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
           [localManifest]: JSON.stringify({ version: "9.9.9" }), [localCli]: "cli",
         }, installed: "unknown", code: "INSTALLED_VERSION_DRIFT", exitCode: 4, native: false,
       },
       {
         name: "partial", files: {
-          ...baseFiles, [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+          ...baseFiles, [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
         }, installed: "unknown", code: "PACKAGE_MANIFEST_CONFLICT", exitCode: 4, native: false,
       },
       {
         name: "io", files: {
           ...baseFiles,
-          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
-          [localManifest]: JSON.stringify({ version: "1.2.0" }), [localCli]: "cli",
+          [manifestPath]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
+          [localManifest]: JSON.stringify({ version: "1.3.0" }), [localCli]: "cli",
         }, installed: "unknown", code: "STATE_IO_ERROR", exitCode: 5, native: false,
       },
     ];
@@ -1814,13 +1815,13 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo", components: {},
       inProgress: {
         command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
-        versions: { semctx: "0.3.7", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.7", assertledger: "1.3.0" },
       },
     };
     const baseFiles = {
-      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     for (const failedPath of [join("/repo", "package.json"), join("/repo", "node_modules", "assertledger", "package.json")]) {
@@ -1850,7 +1851,7 @@ describe("public CLI", () => {
     expect(invalidJson.writes).toHaveLength(0);
 
     const freshFiles = {
-      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
     };
     const fresh = fakeRuntime({ tools: ["node", "npm"], files: freshFiles });
@@ -1869,14 +1870,14 @@ describe("public CLI", () => {
 
   test("AssertLedger doctor and apply share manifest error classification", async () => {
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const managed = {
       schemaVersion: 1, projectRoot: "/repo",
-      components: { assertledger: { version: "1.2.0", hosts: ["codex"] } },
+      components: { assertledger: { version: "1.3.0", hosts: ["codex"] } },
     };
     const malformedDoctor = fakeRuntime({
       state: managed,
@@ -1934,9 +1935,9 @@ describe("public CLI", () => {
 
   test("AssertLedger apply revalidates project admission before native writes", async () => {
     const baseFiles = () => ({
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     });
     const cases = [
@@ -1982,7 +1983,7 @@ describe("public CLI", () => {
   });
 
   test("AssertLedger apply revalidates local metadata before install and write", async () => {
-    const filesAt = (version = "1.2.0") => ({
+    const filesAt = (version = "1.3.0") => ({
       [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: version }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version }),
@@ -1999,7 +2000,7 @@ describe("public CLI", () => {
         versions: { semctx: "0.3.7", assertledger: "1.3.0" },
       },
     };
-    const beforeInstallFiles = filesAt();
+    const beforeInstallFiles = filesAt("1.2.0");
     const beforeInstall = fakeRuntime({ state: pendingUpgrade, tools: ["node", "npm"], files: beforeInstallFiles });
     const beforeInstallExec = beforeInstall.exec;
     beforeInstall.exec = async (argv, cwd, timeout) => {
@@ -2051,7 +2052,7 @@ describe("public CLI", () => {
       expect(rt.writes.at(-1).inProgress.selected).toEqual(["semctx", "assertledger"]);
     }
 
-    const validUpgrade = fakeRuntime({ state: structuredClone(pendingUpgrade), tools: ["node", "npm"], files: filesAt() });
+    const validUpgrade = fakeRuntime({ state: structuredClone(pendingUpgrade), tools: ["node", "npm"], files: filesAt("1.2.0") });
     const upgraded = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), validUpgrade);
     expect(upgraded.ok).toBe(true);
     expect(validUpgrade.calls.filter((argv) => argv[0] === "npm" && argv.includes("install"))).toHaveLength(1);
@@ -2064,13 +2065,13 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
         semctx: { version: "0.3.7", hosts: ["codex", "claude"] },
-        assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+        assertledger: { version: "1.3.0", hosts: ["codex", "claude"] },
       },
     };
     const filesAt = () => ({
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     });
     const mutations = [
@@ -2140,9 +2141,9 @@ describe("public CLI", () => {
       { manager: "pnpm", missing: "pnpm", afterClient: "claude-code", code: "PACKAGE_MANAGER_MISSING" },
     ];
     const filesFor = (manager) => ({
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: `${manager}@10.0.0` }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: `${manager}@10.0.0` }),
       [join("/repo", manager === "pnpm" ? "pnpm-lock.yaml" : "bun.lock")]: "lock",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     });
     for (const scenario of scenarios) {
@@ -2150,11 +2151,11 @@ describe("public CLI", () => {
         schemaVersion: 1, projectRoot: "/repo",
         components: {
           semctx: { version: "0.3.7", hosts: ["codex", "claude"] },
-          assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+          assertledger: { version: "1.3.0", hosts: ["codex", "claude"] },
         },
         inProgress: {
           command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex", "claude"],
-          versions: { semctx: "0.3.7", assertledger: "1.2.0" },
+          versions: { semctx: "0.3.7", assertledger: "1.3.0" },
         },
       } : null;
       const rt = fakeRuntime({ state, tools: ["node", "npm", scenario.manager, "claude"], files: filesFor(scenario.manager) });
@@ -2193,9 +2194,9 @@ describe("public CLI", () => {
   test("global preflight rechecks AssertLedger tools after later component previews", async () => {
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "pnpm@10.0.0" }),
       [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
       [executable]: "shim",
     };
@@ -2221,12 +2222,12 @@ describe("public CLI", () => {
   test("doctor refuses readiness when AssertLedger prerequisites change between host previews", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
       semctx: { version: "0.3.7", hosts: ["codex", "claude"] },
-      assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+      assertledger: { version: "1.3.0", hosts: ["codex", "claude"] },
     } };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "pnpm@10.0.0" }),
       [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const rt = fakeRuntime({ state, tools: ["node", "npm", "pnpm", "claude"], files, workspaceReady: true });
@@ -2319,7 +2320,7 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo", components: {},
       inProgress: {
         command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
-        versions: { semctx: "0.3.7", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.7", assertledger: "1.3.0" },
       },
     };
     for (const artifacts of [[null], {}]) {
@@ -2355,7 +2356,7 @@ describe("public CLI", () => {
   test("a declared AssertLedger version without installed executable still plans installation", async () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],
-      files: { [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" } }) },
+      files: { [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" } }) },
     });
     const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
     expect(report.ok).toBe(true);
@@ -2364,7 +2365,10 @@ describe("public CLI", () => {
   });
 
   test("unmanaged AssertLedger setup rejects declaration and executable version mismatch", async () => {
-    for (const [declared, installed] of [["1.2.0", "1.3.0"], ["1.3.0", "1.4.0"]]) {
+    for (const [declared, installed] of [
+      ["1.2.0", "1.3.0"],
+      ["1.3.0", "1.4.0"],
+    ]) {
       const files = {
         [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: declared }, packageManager: "npm@10.9.8" }),
         [join("/repo", "package-lock.json")]: "{}",
@@ -2373,7 +2377,7 @@ describe("public CLI", () => {
       };
       const rt = fakeRuntime({ tools: ["node", "npm"], files });
       const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
-      expect(report.conflicts.map((item) => item.code)).toContain("INSTALLED_VERSION_DRIFT");
+      expect(report.conflicts.some((item) => ["INSTALLED_VERSION_DRIFT", "ASSERTLEDGER_VERSION_UNSUPPORTED"].includes(item.code))).toBe(true);
       expect(rt.calls.some((argv) => argv[0] === "npm" && argv.includes("install"))).toBe(false);
       expect(rt.writes).toHaveLength(0);
     }
@@ -2467,9 +2471,9 @@ describe("public CLI", () => {
 
   test("AssertLedger dist ancestry distinguishes structural conflicts from I/O errors", async () => {
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const distPath = join("/repo", "node_modules", "assertledger", "dist");
@@ -2582,9 +2586,9 @@ describe("public CLI", () => {
     const cliPath = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
     for (const phase of ["metadata", "open", "read"]) {
       const files = {
-        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
         [join("/repo", "package-lock.json")]: "{}",
-        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
         [cliPath]: "cli",
       };
       const rt = fakeRuntime({ tools: ["node", "npm"], files });
@@ -2635,7 +2639,7 @@ describe("public CLI", () => {
   test("unsafe or empty AssertLedger package entries block every native preview", async () => {
     for (const shape of ["dangling-parent", "empty-package"]) {
       const files = {
-        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
         [join("/repo", "package-lock.json")]: "{}",
       };
       const rt = fakeRuntime({ tools: ["node", "npm"], files });
@@ -2657,9 +2661,9 @@ describe("public CLI", () => {
 
   test("a valid pnpm-linked AssertLedger package remains locally executable", async () => {
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "pnpm@10.0.0" }),
       [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const rt = fakeRuntime({ tools: ["node", "npm", "pnpm"], files });
@@ -2681,13 +2685,13 @@ describe("public CLI", () => {
     const rt = fakeRuntime({
       tools: ["node", "npm"],
       files: { [join("/repo", "package.json")]: JSON.stringify({
-        dependencies: { assertledger: "1.2.0" },
-        devDependencies: { assertledger: "1.2.0" },
+        dependencies: { assertledger: "1.3.0" },
+        devDependencies: { assertledger: "1.3.0" },
       }) },
     });
     const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
     expect(report.ok).toBe(true);
-    expect(report.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
+    expect(report.components.find((item) => item.name === "assertledger").version).toBe("1.3.0");
     expect(rt.writes).toHaveLength(0);
   });
 
@@ -2830,7 +2834,7 @@ describe("public CLI", () => {
       },
       {
         packageManager: "npm@10.9.8",
-        dependencies: { assertledger: "1.2.0" },
+        dependencies: { assertledger: "1.3.0" },
         devDependencies: {}, optionalDependencies: {}, peerDependencies: {},
       },
     ]) {
@@ -2840,7 +2844,7 @@ describe("public CLI", () => {
       });
       const report = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
       expect(report.ok).toBe(true);
-      expect(report.components.find((item) => item.name === "assertledger")?.version).toBe("1.2.0");
+      expect(report.components.find((item) => item.name === "assertledger")?.version).toBe("1.3.0");
       expect(rt.writes).toHaveLength(0);
     }
   });
@@ -2849,19 +2853,19 @@ describe("public CLI", () => {
     const matching = fakeRuntime({
       tools: ["node", "npm"],
       files: { [join("/repo", "package.json")]: JSON.stringify({
-        optionalDependencies: { assertledger: "1.2.0" },
-        peerDependencies: { assertledger: "1.2.0" },
+        optionalDependencies: { assertledger: "1.3.0" },
+        peerDependencies: { assertledger: "1.3.0" },
       }) },
     });
     const accepted = await execute({ ...setupOptions(), with: ["assertledger"], dryRun: true }, matching);
     expect(accepted.ok).toBe(true);
-    expect(accepted.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
+    expect(accepted.components.find((item) => item.name === "assertledger").version).toBe("1.3.0");
 
     const conflicting = fakeRuntime({
       tools: ["node", "npm"],
       files: { [join("/repo", "package.json")]: JSON.stringify({
-        optionalDependencies: { assertledger: "1.2.0" },
-        peerDependencies: { assertledger: "1.3.0" },
+        optionalDependencies: { assertledger: "1.3.0" },
+        peerDependencies: { assertledger: "1.4.0" },
       }) },
     });
     const rejected = await execute({ ...setupOptions(), with: ["assertledger"] }, conflicting);
@@ -3004,7 +3008,7 @@ describe("public CLI", () => {
     expect(report.ok).toBe(false);
     expect(report.components.map((item) => item.state)).toEqual(["configured", "partial"]);
     expect(rt.writes).toHaveLength(2);
-    expect(rt.writes[0].inProgress.versions.assertledger).toBe("1.2.0");
+    expect(rt.writes[0].inProgress.versions.assertledger).toBe("1.3.0");
     expect(rt.writes.at(-1).components.semctx.version).toBe("0.3.7");
     expect(rt.writes.at(-1).components.assertledger).toBeUndefined();
   });
@@ -3012,11 +3016,11 @@ describe("public CLI", () => {
   test("AssertLedger write needs an unchanged native post-install preview", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
       semctx: { version: "0.3.7", hosts: ["codex"] },
-      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
     } };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
@@ -3038,11 +3042,11 @@ describe("public CLI", () => {
   test("AssertLedger cannot report configured when nested native outcomes conflict", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
       semctx: { version: "0.3.7", hosts: ["codex"] },
-      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
     } };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
@@ -3062,11 +3066,11 @@ describe("public CLI", () => {
   test("AssertLedger unchanged evidence requires unchanged nested initialization", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
       semctx: { version: "0.3.7", hosts: ["codex"] },
-      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
     } };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     for (const command of ["doctor", "setup"]) {
@@ -3094,11 +3098,11 @@ describe("public CLI", () => {
   test("AssertLedger admits native mixed init and connection states across hosts", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
       semctx: { version: "0.3.7", hosts: ["codex", "claude"] },
-      assertledger: { version: "1.2.0", hosts: ["codex", "claude"] },
+      assertledger: { version: "1.3.0", hosts: ["codex", "claude"] },
     } };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     for (const [mixedInit, mixedConnection] of [[false, true], [true, false]]) {
@@ -3126,11 +3130,11 @@ describe("public CLI", () => {
 
   test("AssertLedger rejects contradictory nested init actions and connection artifacts", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
     } };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     for (const mutate of [
@@ -3162,11 +3166,11 @@ describe("public CLI", () => {
 
   test("AssertLedger validates canonical init semantics and rooted connection content", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
     } };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const replaceJsonFile = (report, index, value) => {
@@ -3252,11 +3256,11 @@ describe("public CLI", () => {
   test("AssertLedger admits faithful schema v1 and Bun schema v2 native content", async () => {
     for (const schemaVersion of ["1.0.0", "2.0.0"]) {
       const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-        assertledger: { version: "1.2.0", hosts: ["codex"] },
+        assertledger: { version: "1.3.0", hosts: ["codex"] },
       } };
       const files = {
-        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
-        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
         [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
       };
       const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
@@ -3270,14 +3274,13 @@ describe("public CLI", () => {
     }
   });
 
-  test("AssertLedger cached preflight binds manifest schemas and exact skill bytes", async () => {
+  test("AssertLedger cached preflight authenticates every reviewed public package asset", async () => {
     const packageRoot = process.platform === "win32" ? "C:\\cache\\assertledger" : "/cache/assertledger";
-    const assets = [
-      "dist/cli.js", "integrations/skill/SKILL.md",
-      "schemas/repository-init-config.v1.json", "schemas/repository-init-config.v2.json",
-      "schemas/repository-init-lock.v1.json", "schemas/repository-init-lock.v2.json",
-      "schemas/repository-init-result.v1.json", "schemas/repository-init-result.v2.json",
-    ];
+    const assets = [...new Set([
+      ...Object.keys(assertLedgerContract("1.3.0")),
+      // Independent execution-closure sentinel: removing the setup engine from the registry must stay red.
+      "dist/engine/setup.js",
+    ])];
     for (const relativePath of assets) {
       const files = { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) };
       const rt = fakeRuntime({ tools: ["node", "npm"], files });
@@ -3299,12 +3302,12 @@ describe("public CLI", () => {
 
   test("AssertLedger authenticates the actual local CLI before doctor and preflight execution", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
     } };
     for (const command of ["doctor", "setup"]) {
       const files = {
-        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
-        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
         [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "placeholder",
       };
       const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files });
@@ -3320,12 +3323,12 @@ describe("public CLI", () => {
 
   test("AssertLedger report validation retains the invocation identity across readback", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
-      assertledger: { version: "1.2.0", hosts: ["codex"] },
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
     } };
     for (const changeLookup of [false, true]) {
       const files = {
-        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
-        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
         [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "placeholder",
       };
       const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files });
@@ -3391,13 +3394,54 @@ describe("public CLI", () => {
     expect(setupRuntime.writes).toHaveLength(0);
   });
 
-  test("AssertLedger rejects contradictory rollback and success reason evidence", async () => {
+  test("AssertLedger 1.2 remains historical state and upgrades to the reviewed 1.3 contract", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: {
       assertledger: { version: "1.2.0", hosts: ["codex"] },
     } };
-    const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+    const historicalFiles = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
       [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "historical-cli",
+    };
+    for (const command of ["doctor", "setup"]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files: { ...historicalFiles } });
+      const report = await execute(command === "doctor" ? parseArgs(["doctor", "/repo", "--host", "codex"])
+        : parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+      expect(report.conflicts.map((item) => item.code), command).toContain("ASSERTLEDGER_VERSION_UNSUPPORTED");
+      expect(report.conflicts.map((item) => item.detail).join("\n"), command).toContain("run upgrade to select AssertLedger 1.3.0");
+      expect(rt.calls.filter((argv) => argv.includes("setup") && String(argv[1]).endsWith("cli.js")), command).toHaveLength(0);
+      expect(rt.writes, command).toHaveLength(0);
+    }
+
+    const upgrade = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files: { ...historicalFiles } });
+    const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger"]), upgrade);
+    expect(report.ok).toBe(true);
+    expect(upgrade.calls.filter((argv) => argv[0] === "npm" && argv.includes("install"))).toHaveLength(1);
+    expect(upgrade.writes.at(-1).components.assertledger).toEqual({ version: "1.3.0", hosts: ["codex"] });
+  });
+
+  test("AssertLedger 1.3 setup is idempotent under the reviewed package contract", async () => {
+    const rt = fakeRuntime({ tools: ["node", "npm"], files: {
+      [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+      [join("/repo", "package-lock.json")]: "{}",
+    } });
+    const options = parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]);
+    expect((await execute(options, rt)).ok).toBe(true);
+    const writes = rt.writes.length;
+    const installs = rt.calls.filter((argv) => argv[0] === "npm" && argv.includes("install")).length;
+    expect((await execute(options, rt)).ok).toBe(true);
+    expect(rt.writes).toHaveLength(writes);
+    expect(rt.calls.filter((argv) => argv[0] === "npm" && argv.includes("install"))).toHaveLength(installs);
+  });
+
+  test("AssertLedger rejects contradictory rollback and success reason evidence", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      assertledger: { version: "1.3.0", hosts: ["codex"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const mutations = [
@@ -3472,13 +3516,13 @@ describe("public CLI", () => {
           const withComponents = spec.component === "semctx" ? [] : [spec.component];
           const state = command === "doctor" && spec.component !== "semctx" ? {
             schemaVersion: 1, projectRoot: "/repo", components: {
-              [spec.component]: { version: spec.component === "assertledger" ? "1.2.0" : "0.3.0", hosts: ["codex"] },
+              [spec.component]: { version: spec.component === "assertledger" ? "1.3.0" : "0.3.0", hosts: ["codex"] },
             },
           } : null;
           const files = spec.component === "assertledger" ? {
-            [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+            [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" } }),
             [join("/repo", "package-lock.json")]: "{}",
-            [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+            [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
             [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
           } : spec.component === "latent-compass" ? {
             [join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass")]: "shim",
@@ -3560,7 +3604,7 @@ describe("public CLI", () => {
     const rt = fakeRuntime({ tools: ["node", "npm"], files });
     const nativeExec = rt.exec;
     const nativeFetch = rt.fetchJson;
-    let assertLatest = "1.2.0";
+    let assertLatest = "1.3.0";
     let failOnce = true;
     rt.fetchJson = async (url) => url.includes("registry.npmjs.org/assertledger")
       ? { version: assertLatest } : nativeFetch(url);
@@ -3569,9 +3613,9 @@ describe("public CLI", () => {
         if (failOnce) { failOnce = false; return { code: 5, stdout: "", stderr: "simulated interruption" }; }
         files[join("/repo", "package.json")] = JSON.stringify({
           name: "fixture",
-          devDependencies: { assertledger: "1.2.0" },
+          devDependencies: { assertledger: "1.3.0" },
         });
-        files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "1.2.0" });
+        files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: "1.3.0" });
         files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")] = "cli";
       }
       return nativeExec(argv, cwd, timeout);
@@ -3579,12 +3623,12 @@ describe("public CLI", () => {
     const options = { ...setupOptions(), with: ["assertledger"] };
     const interrupted = await execute(options, rt);
     expect(interrupted.ok).toBe(false);
-    expect(rt.writes.at(-1).inProgress.versions.assertledger).toBe("1.2.0");
-    assertLatest = "1.2.1";
+    expect(rt.writes.at(-1).inProgress.versions.assertledger).toBe("1.3.0");
+    assertLatest = "1.3.1";
     const resumed = await execute(options, rt);
     expect(resumed.ok).toBe(true);
-    expect(resumed.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
-    expect(rt.writes.at(-1).components.assertledger.version).toBe("1.2.0");
+    expect(resumed.components.find((item) => item.name === "assertledger").version).toBe("1.3.0");
+    expect(rt.writes.at(-1).components.assertledger.version).toBe("1.3.0");
     expect(rt.writes.at(-1).inProgress).toBeUndefined();
   });
 
@@ -3996,19 +4040,19 @@ describe("public CLI", () => {
       projectRoot: "/repo",
       components: {
         semctx: { version: "0.3.7", hosts: ["codex", "claude"] },
-        assertledger: { version: "1.2.0", hosts: ["codex"] },
+        assertledger: { version: "1.3.0", hosts: ["codex"] },
       },
       inProgress: {
         command: "upgrade",
         selected: ["semctx", "assertledger"],
         hosts: ["codex"],
-        versions: { semctx: "0.3.7", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.7", assertledger: "1.3.0" },
       },
     };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const rt = fakeRuntime({ state, version: "0.3.8", stable: "0.3.8", tools: ["node", "npm", "claude"], files });
@@ -4024,7 +4068,7 @@ describe("public CLI", () => {
     expect(retried.ok).toBe(true);
     expect(retried.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
     expect(rt.writes.at(-1).components.semctx).toEqual({ version: "0.3.7", hosts: ["codex", "claude"] });
-    expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.2.0", hosts: ["codex"] });
+    expect(rt.writes.at(-1).components.assertledger).toEqual({ version: "1.3.0", hosts: ["codex"] });
   });
 
   test("concurrent host setups cannot overwrite a completed state record", async () => {
@@ -4387,9 +4431,9 @@ describe("public CLI", () => {
     ];
     for (const scenario of cases) {
       const files = {
-        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
         [join("/repo", "package-lock.json")]: "{}",
-        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
         [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
       };
       const rt = fakeRuntime({ tools: ["node", "npm", "uv", "claude"], files });
@@ -4427,9 +4471,9 @@ describe("public CLI", () => {
 
   test("late authority loss removes the exact previously authored prerequisite instruction", async () => {
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const rt = fakeRuntime({ tools: ["node", "npm"], files });
@@ -4470,13 +4514,13 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
         semctx: { version: "0.3.7", hosts: ["codex"] },
-        assertledger: { version: "1.2.0", hosts: ["codex"] },
+        assertledger: { version: "1.3.0", hosts: ["codex"] },
       },
     };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
@@ -4514,13 +4558,13 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
         semctx: { version: "0.3.7", hosts: ["codex"] },
-        assertledger: { version: "1.2.0", hosts: ["codex"] },
+        assertledger: { version: "1.3.0", hosts: ["codex"] },
       },
     };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "pnpm@10.0.0" }),
       [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     for (const closeConflict of [false, true]) {
@@ -4575,13 +4619,13 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo", components: {},
       inProgress: {
         command: "setup", selected: ["semctx", "assertledger"], hosts: ["codex"],
-        versions: { semctx: "0.3.7", assertledger: "1.2.0" },
+        versions: { semctx: "0.3.7", assertledger: "1.3.0" },
       },
     };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "pnpm@10.0.0" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "pnpm@10.0.0" }),
       [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const missingPnpm = fakeRuntime({ state: savedAssert, tools: ["node", "npm"], files });
@@ -5311,13 +5355,13 @@ describe("public CLI", () => {
       schemaVersion: 1, projectRoot: "/repo",
       components: {
         semctx: { version: "0.3.7", hosts: ["codex"] },
-        assertledger: { version: "1.2.0", hosts: ["codex"] },
+        assertledger: { version: "1.3.0", hosts: ["codex"] },
       },
     };
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const command = "hoklims-devkit setup /repo --host codex --with assertledger";
@@ -5353,9 +5397,9 @@ describe("public CLI", () => {
   test("global preflight blocks writes for last-component and second-host conflicts", async () => {
     const executable = join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass");
     const files = {
-      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       [join("/repo", "package-lock.json")]: "{}",
-      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.3.0" }),
       [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
     };
     const scenarios = [
@@ -5414,13 +5458,13 @@ describe("public CLI", () => {
     expect(semctx.calls.some((argv) => argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
 
     const assertledger = fakeRuntime({ tools: ["node", "npm"], files: {
-      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+      [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
     } });
     const fetch = assertledger.fetchJson;
     assertledger.fetchJson = async (url) => url.includes("assertledger") ? Promise.reject(new Error("registry queried")) : fetch(url);
     const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger", "--dry-run"]), assertledger);
     expect(report.ok).toBe(true);
-    expect(report.components.find((item) => item.name === "assertledger").version).toBe("1.2.0");
+    expect(report.components.find((item) => item.name === "assertledger").version).toBe("1.3.0");
   });
 
   test("native report guards reject one invalid field at a time", async () => {
@@ -5472,7 +5516,7 @@ describe("public CLI", () => {
   test("AssertLedger report guards reject independent client state and exit mismatches", async () => {
     for (const field of ["client", "state", "exit"]) {
       const rt = fakeRuntime({ tools: ["node", "npm"], files: {
-        [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       } });
       const nativeExec = rt.exec;
       rt.exec = async (argv, cwd, timeout) => {
@@ -5717,7 +5761,7 @@ describe("public CLI", () => {
   test("AssertLedger connection mode owner and count guards fail independently", async () => {
     for (const field of ["connection-client", "mode", "owner", "count"]) {
       const rt = fakeRuntime({ tools: ["node", "npm"], files: {
-        [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.2.0" }, packageManager: "npm@10.9.8" }),
+        [join("/repo", "package.json")]: JSON.stringify({ devDependencies: { assertledger: "1.3.0" }, packageManager: "npm@10.9.8" }),
       } });
       const nativeExec = rt.exec;
       rt.exec = async (argv, cwd, timeout) => {

@@ -4,3 +4,4 @@
 *.yml text eol=lf
 *.md text eol=lf
 LICENSE text eol=lf
+test/fixtures/assertledger-assets/** text eol=lf
