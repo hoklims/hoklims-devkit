@@ -688,6 +688,193 @@ function fileBelongsToRoot(rt, path, relativePath, root) {
   }
 }
 
+function jsonRecord(value, keys) {
+  return value !== null && !Array.isArray(value) && typeof value === "object"
+    && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  throw new Error("non-canonical JSON value");
+}
+
+function sha256(value) {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function sortedUniqueStrings(values, nonempty = false) {
+  return Array.isArray(values) && (!nonempty || values.length > 0)
+    && values.every((value) => typeof value === "string" && value.length > 0)
+    && values.every((value, index) => index === 0 || values[index - 1] < value);
+}
+
+function portableInitPath(value) {
+  if (typeof value !== "string" || value.length === 0 || value.includes("\0") || value.includes("\\")
+    || /^(?:[A-Za-z]:|\/{1,2})/u.test(value) || value.includes(":")) return false;
+  const segments = value.split("/");
+  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== ".."
+    && segment.normalize("NFC") === segment && !/[<>"|?*]/u.test(segment) && !/[. ]$/u.test(segment)
+    && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(segment)
+    && ![...segment].some((character) => {
+      const code = character.codePointAt(0);
+      return code !== undefined && (code <= 0x1f || code === 0x7f);
+    }));
+}
+
+function safeInitCommand(command) {
+  const unsafe = (value) => /^(?:[A-Za-z]:|[\\/]{1,2})/u.test(value)
+    || [...value].some((character) => {
+      const code = character.codePointAt(0);
+      return code !== undefined && (code <= 0x1f || code === 0x7f);
+    });
+  return validStructuredCommand(command) && !unsafe(command.executable) && !/[\s;&|<>`]/u.test(command.executable)
+    && command.arguments.every((argument) => !unsafe(argument));
+}
+
+function expectedInitEvidenceKind(path) {
+  if (["package.json", "pyproject.toml", "requirements.txt"].includes(path)) return "PACKAGE_MANIFEST";
+  if (["pnpm-lock.yaml", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "bun.lock", "bun.lockb",
+    "uv.lock", "poetry.lock", "Pipfile.lock"].includes(path)) return "LOCKFILE";
+  if (path.startsWith(".github/workflows/") || [".gitlab-ci.yml", "azure-pipelines.yml", ".circleci/config.yml"].includes(path)) return "CI_CONFIG";
+  if (/((^|\/)test[^/]*|\.test|\.spec)\.(?:[cm]?[jt]s|tsx?|py)$/u.test(path)) return "TEST_SOURCE";
+  return undefined;
+}
+
+function validStructuredCommand(value) {
+  return jsonRecord(value, ["executable", "arguments"])
+    && typeof value.executable === "string" && value.executable.length > 0
+    && Array.isArray(value.arguments) && value.arguments.every((argument) => typeof argument === "string");
+}
+
+function validInitDetections(value, schemaVersion) {
+  const recommendations = schemaVersion === "2.0.0"
+    ? ["node-test", "bun-test", "operator-supplied", "unavailable"]
+    : ["node-test", "operator-supplied", "unavailable"];
+  return jsonRecord(value, ["packageManager", "framework", "testCommand", "ciProviders", "adapterRecommendation", "reasonCodes"])
+    && ["pnpm", "npm", "yarn", "bun", "uv", "poetry", "pip"].includes(value.packageManager)
+    && ["node:test", "vitest", "jest", "bun:test", "pytest"].includes(value.framework)
+    && safeInitCommand(value.testCommand)
+    && sortedUniqueStrings(value.ciProviders)
+    && value.ciProviders.every((provider) => ["github-actions", "gitlab-ci", "azure-pipelines", "circleci"].includes(provider))
+    && recommendations.includes(value.adapterRecommendation)
+    && Array.isArray(value.reasonCodes) && value.reasonCodes.length === 0;
+}
+
+function validInitAdapter(adapter, config) {
+  if (adapter?.kind === "node-test" || adapter?.kind === "bun-test") {
+    const expected = adapter.kind === "node-test"
+      ? { schemas: ["1.0.0", "2.0.0"], framework: "node:test", executable: "node" }
+      : { schemas: ["2.0.0"], framework: "bun:test", executable: "bun" };
+    return expected.schemas.includes(config.schemaVersion) && config.framework === expected.framework
+      && jsonRecord(adapter, ["kind", "executable", "baseTestFiles"])
+      && adapter.executable === expected.executable && sortedUniqueStrings(adapter.baseTestFiles, true)
+      && adapter.baseTestFiles.every((path) => portableInitPath(path) && expectedInitEvidenceKind(path) === "TEST_SOURCE");
+  }
+  return adapter?.kind === "testforge-command"
+    && jsonRecord(adapter, ["kind", "executable", "arguments", "protocolVersion"])
+    && safeInitCommand({ executable: adapter.executable, arguments: adapter.arguments })
+    && Array.isArray(adapter.arguments) && adapter.arguments.every((argument) => typeof argument === "string")
+    && adapter.protocolVersion === "1.0.0";
+}
+
+function parseCanonicalJson(content) {
+  try {
+    const value = JSON.parse(content);
+    return `${canonicalJson(value)}\n` === content ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function validAssertInitContent(init) {
+  const configFile = init.files.find((file) => file.path === "assertledger.config.json");
+  const lockFile = init.files.find((file) => file.path === "assertledger.lock.json");
+  const config = parseCanonicalJson(configFile?.content);
+  const lock = parseCanonicalJson(lockFile?.content);
+  if (!config || !lock || !jsonRecord(config, ["schemaVersion", "repository", "packageManager", "framework", "testCommand", "adapter", "candidateRoots"])
+    || config.schemaVersion !== init.schemaVersion
+    || !jsonRecord(config.repository, ["root", "exclude"]) || config.repository.root !== "."
+    || !sortedUniqueStrings(config.repository.exclude) || config.repository.exclude.some((entry) => !portableInitPath(entry) || entry.includes("/"))
+    || !sortedUniqueStrings(config.candidateRoots, true) || config.candidateRoots.some((entry) => !portableInitPath(entry))
+    || !safeInitCommand(config.testCommand) || !validInitAdapter(config.adapter, config)
+    || !jsonRecord(lock, ["schemaVersion", "configDigest", "detector", "evidence", "detections", "lockDigest"])
+    || lock.schemaVersion !== init.schemaVersion || lock.configDigest !== sha256(canonicalJson(config))
+    || !jsonRecord(lock.detector, ["name", "version"]) || lock.detector.name !== "assertledger-init"
+    || lock.detector.version !== (init.schemaVersion === "2.0.0" ? "2.0.0" : "1.0.0")
+    || !validInitDetections(init.detections, init.schemaVersion)
+    || canonicalJson(lock.detections) !== canonicalJson(init.detections)
+    || lock.detections.packageManager !== config.packageManager || lock.detections.framework !== config.framework
+    || canonicalJson(lock.detections.testCommand) !== canonicalJson(config.testCommand)
+    || !Array.isArray(lock.evidence) || !sortedUniqueStrings(lock.evidence.map((entry) => entry?.path))
+    || lock.evidence.some((entry) => !jsonRecord(entry, ["path", "digest", "kind"]) || !portableInitPath(entry.path)
+      || !/^sha256:[a-f0-9]{64}$/u.test(entry.digest)
+      || (entry.kind === "ADAPTER_CONFIG" ? expectedInitEvidenceKind(entry.path) !== undefined
+        : expectedInitEvidenceKind(entry.path) !== entry.kind))
+    || (config.adapter.kind === "node-test" && init.detections.adapterRecommendation !== "node-test")
+    || (config.adapter.kind === "bun-test" && init.detections.adapterRecommendation !== "bun-test")
+    || (config.adapter.kind === "testforge-command" && init.detections.adapterRecommendation !== "operator-supplied")
+    || (init.detections.adapterRecommendation === "operator-supplied"
+      ? lock.evidence.filter((entry) => entry.kind === "ADAPTER_CONFIG").length !== 1
+      : lock.evidence.some((entry) => entry.kind === "ADAPTER_CONFIG"))
+    || ((config.adapter.kind === "node-test" || config.adapter.kind === "bun-test")
+      && config.adapter.baseTestFiles.some((path) => !lock.evidence.some((entry) => entry.path.toLowerCase() === path.toLowerCase()
+        && entry.kind === "TEST_SOURCE") || config.candidateRoots.some((root) => path.toLowerCase() === root.toLowerCase()
+          || path.toLowerCase().startsWith(`${root.toLowerCase()}/`))))) return false;
+  const lockBase = { schemaVersion: lock.schemaVersion, configDigest: lock.configDigest,
+    detector: lock.detector, evidence: lock.evidence, detections: lock.detections };
+  return lock.lockDigest === sha256(canonicalJson(lockBase))
+    && init.files.every((file) => file.digest === sha256(file.content))
+    && JSON.stringify(init.reasonCodes) === JSON.stringify(init.detections.reasonCodes)
+    && JSON.stringify(init.requiredOperatorInputs) === JSON.stringify(["worlds", "candidates"])
+    && Array.isArray(init.nextCommands) && init.nextCommands.length === 1
+    && init.nextCommands[0]?.executable === "assertledger"
+    && JSON.stringify(init.nextCommands[0]?.arguments) === JSON.stringify(["audit", ".", "--json"]);
+}
+
+function validAssertSkill(content) {
+  return typeof content === "string" && content.startsWith("---\nname: assertledger\ndescription: Analyze a repository, submit candidate tests, and accept only deterministic AssertLedger evidence.\nmetadata:\n  version: \"1.0.0\"\n---\n")
+    && content.includes("\n# AssertLedger skill\n") && content.includes("assertledger doctor")
+    && content.includes("assertledger replay") && content.includes("UNSANDBOXED");
+}
+
+function validNodeAndCli(node, cli) {
+  return typeof node === "string" && /(?:^|[/\\])node(?:\.exe)?$/iu.test(node)
+    && typeof cli === "string" && /(?:^|[/\\])assertledger[/\\]dist[/\\]cli\.js$/u.test(cli);
+}
+
+function validAssertConnectionContent(connection, client, root) {
+  const config = connection.artifacts.find((artifact) => artifact.kind === "configuration")?.content;
+  const skill = connection.artifacts.find((artifact) => artifact.kind === "skill")?.content;
+  if (!validAssertSkill(skill) || typeof config !== "string") return false;
+  if (client === "claude-code") {
+    let value;
+    try { value = JSON.parse(config); } catch { return false; }
+    if (`${JSON.stringify(value, null, 2)}\n` !== config) return false;
+    const server = value?.mcpServers?.assertledger;
+    return jsonRecord(value, ["mcpServers"]) && jsonRecord(value.mcpServers, ["assertledger"])
+      && jsonRecord(server, ["type", "command", "args"]) && server.type === "stdio"
+      && validNodeAndCli(server.command, server.args?.[0])
+      && JSON.stringify(server.args.slice(1)) === JSON.stringify(["mcp", "--root", root]);
+  }
+  const lines = config.split("\n");
+  if (lines.length !== 5 || lines[0] !== "[mcp_servers.assertledger]" || lines[4] !== ""
+    || !lines[1].startsWith("command = ") || !lines[2].startsWith("args = ") || !lines[3].startsWith("cwd = ")) return false;
+  try {
+    const node = JSON.parse(lines[1].replace(/^command = /u, ""));
+    const args = JSON.parse(lines[2].replace(/^args = /u, ""));
+    const cwd = JSON.parse(lines[3].replace(/^cwd = /u, ""));
+    return validNodeAndCli(node, args?.[0]) && JSON.stringify(args.slice(1)) === JSON.stringify(["mcp", "--root", root])
+      && cwd === root;
+  } catch {
+    return false;
+  }
+}
+
 function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifactStates, options = {}) {
   const expected = [
     ["init", "assertledger.config.json"], ["init", "assertledger.lock.json"],
@@ -733,6 +920,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && initActions.every((action) => expectedInitPaths.includes(action?.path)
       && (action.kind === "CREATE" || (action.kind === "REGENERATE" && action.path === "assertledger.lock.json")))
     && new Set(initActions.map((action) => action.path)).size === initActions.length
+    && validAssertInitContent(parsed.init)
     && (!nestedSuccess || expectedInitPaths.every((relativePath, index) => (
       initActions.some((action) => action.path === relativePath) === (initArtifactByPath.get(relativePath)?.state === changedState)
     )));
@@ -753,7 +941,8 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && connectionArtifacts.every((outer) => nestedConnectionArtifacts.filter((nested) => (
       nested?.path === outer.path && nested.kind === expectedConnectionKinds.get(outer.path)
         && typeof nested.content === "string"
-    )).length === 1);
+    )).length === 1)
+    && validAssertConnectionContent(parsed.connection, client, root);
   const rollbackConsistent = parsed?.rollback !== null && !Array.isArray(parsed?.rollback)
     && typeof parsed?.rollback === "object" && parsed.rollback.status === "NOT_REQUIRED"
     && Array.isArray(parsed.rollback.removed) && parsed.rollback.removed.length === 0

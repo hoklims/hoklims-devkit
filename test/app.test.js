@@ -29,7 +29,17 @@ function semctxSetupPlan() {
   };
 }
 
-function assertSetupReport(argv, status, mode) {
+function canonicalFixtureJson(value) {
+  if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalFixtureJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalFixtureJson(value[key])}`).join(",")}}`;
+}
+
+function fixtureDigest(value) {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function assertSetupReport(argv, status, mode, schemaVersion = "1.0.0") {
   const client = argv[argv.indexOf("--client") + 1];
   const artifactState = status === "CREATED" ? "CREATED" : status === "UNCHANGED" ? "UNCHANGED"
     : status === "CONFLICT" ? "CONFLICT" : "WOULD_CREATE";
@@ -37,24 +47,62 @@ function assertSetupReport(argv, status, mode) {
   const connectionPaths = client === "codex"
     ? ["/repo/.codex/config.toml", "/repo/.agents/skills/assertledger/SKILL.md"]
     : ["/repo/.mcp.json", "/repo/.claude/skills/assertledger/SKILL.md"];
+  const bun = schemaVersion === "2.0.0";
+  const detections = {
+    packageManager: bun ? "bun" : "npm",
+    framework: bun ? "bun:test" : "node:test",
+    testCommand: { executable: bun ? "bun" : "node", arguments: bun ? ["test"] : ["--test"] },
+    ciProviders: [], adapterRecommendation: bun ? "bun-test" : "node-test", reasonCodes: [],
+  };
+  const config = {
+    schemaVersion,
+    repository: { root: ".", exclude: [".git", ".testforge", "node_modules"] },
+    packageManager: detections.packageManager,
+    framework: detections.framework,
+    testCommand: detections.testCommand,
+    adapter: { kind: bun ? "bun-test" : "node-test", executable: bun ? "bun" : "node", baseTestFiles: ["test/answer.test.js"] },
+    candidateRoots: ["tests/candidates"],
+  };
+  const configContent = `${canonicalFixtureJson(config)}\n`;
+  const lockBase = {
+    schemaVersion,
+    configDigest: fixtureDigest(canonicalFixtureJson(config)),
+    detector: { name: "assertledger-init", version: bun ? "2.0.0" : "1.0.0" },
+    evidence: [{ path: "test/answer.test.js", digest: fixtureDigest("fixture\n"), kind: "TEST_SOURCE" }],
+    detections,
+  };
+  const lockContent = `${canonicalFixtureJson({ ...lockBase, lockDigest: fixtureDigest(canonicalFixtureJson(lockBase)) })}\n`;
+  const node = process.platform === "win32" ? "C:\\runtime\\node.exe" : "/runtime/node";
+  const cli = process.platform === "win32" ? "C:\\cache\\assertledger\\dist\\cli.js" : "/cache/assertledger/dist/cli.js";
+  const configuration = client === "codex" ? [
+    "[mcp_servers.assertledger]",
+    `command = ${JSON.stringify(node)}`,
+    `args = [${[cli, "mcp", "--root", "/repo"].map(JSON.stringify).join(", ")}]`,
+    `cwd = ${JSON.stringify("/repo")}`,
+    "",
+  ].join("\n") : `${JSON.stringify({ mcpServers: { assertledger: {
+    type: "stdio", command: node, args: [cli, "mcp", "--root", "/repo"],
+  } } }, null, 2)}\n`;
+  const skill = "---\nname: assertledger\ndescription: Analyze a repository, submit candidate tests, and accept only deterministic AssertLedger evidence.\nmetadata:\n  version: \"1.0.0\"\n---\n\n# AssertLedger skill\n\nRun assertledger doctor, preserve assertledger replay, and never infer UNSANDBOXED authority.\n";
   return {
     status, client, mode,
     init: {
       status: mode === "write" ? status : status === "UNCHANGED" ? "UNCHANGED" : "WOULD_CREATE",
-      schemaVersion: "1.0.0",
+      schemaVersion,
       reasonCodes: [],
-      detections: { reasonCodes: [] },
-      requiredOperatorInputs: [],
+      detections,
+      requiredOperatorInputs: ["worlds", "candidates"],
       actions: artifactState === "UNCHANGED" ? [] : initPaths.map((path) => ({ kind: "CREATE", path })),
-      files: initPaths.map((path) => {
-        const content = "{}\n";
-        return { path, digest: `sha256:${createHash("sha256").update(content).digest("hex")}`, content };
-      }),
+      files: [
+        { path: initPaths[0], digest: fixtureDigest(configContent), content: configContent },
+        { path: initPaths[1], digest: fixtureDigest(lockContent), content: lockContent },
+      ],
+      nextCommands: [{ executable: "assertledger", arguments: ["audit", ".", "--json"] }],
     },
     connection: {
       client, status: mode === "write" ? status : "EMITTED",
       artifacts: connectionPaths.map((path, index) => ({
-        kind: index === 0 ? "configuration" : "skill", path, content: "owned\n",
+        kind: index === 0 ? "configuration" : "skill", path, content: index === 0 ? configuration : skill,
       })),
     },
     artifacts: [
@@ -3049,6 +3097,84 @@ describe("public CLI", () => {
         expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
         expect(rt.writes).toHaveLength(0);
       }
+    }
+  });
+
+  test("AssertLedger validates canonical init semantics and rooted connection content", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const replaceJsonFile = (report, index, value) => {
+      const content = `${canonicalFixtureJson(value)}\n`;
+      report.init.files[index].content = content;
+      report.init.files[index].digest = fixtureDigest(content);
+    };
+    const mutations = [
+      (report) => {
+        report.init.files[0].content = "not JSON";
+        report.init.files[0].digest = fixtureDigest("not JSON");
+      },
+      (report) => { report.init.schemaVersion = "2.0.0"; },
+      (report) => {
+        const config = JSON.parse(report.init.files[0].content);
+        config.framework = "bun:test";
+        replaceJsonFile(report, 0, config);
+      },
+      (report) => {
+        const lock = JSON.parse(report.init.files[1].content);
+        lock.lockDigest = `sha256:${"0".repeat(64)}`;
+        replaceJsonFile(report, 1, lock);
+      },
+      (report) => { report.init.detections.packageManager = "bun"; },
+      (report) => { report.connection.artifacts[0].content = ""; },
+      (report) => { report.connection.artifacts[0].content = report.connection.artifacts[0].content.replaceAll("/repo", "/foreign"); },
+      (report) => { report.connection.artifacts[1].content = "---\nname: foreign\n---\n"; },
+    ];
+    for (const mutate of mutations) {
+      for (const command of ["doctor", "setup"]) {
+        const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files: { ...files } });
+        const nativeExec = rt.exec;
+        rt.exec = async (argv, cwd, timeout) => {
+          if (argv[0] === "node" && argv.includes("setup") && argv.includes("--dry-run")) {
+            const report = assertSetupReport(argv, "UNCHANGED", "dry-run");
+            mutate(report);
+            return { code: 0, stdout: JSON.stringify(report), stderr: "" };
+          }
+          return nativeExec(argv, cwd, timeout);
+        };
+        const report = await execute(command === "doctor" ? parseArgs(["doctor", "/repo", "--host", "codex"])
+          : { ...setupOptions(), with: ["assertledger"] }, rt);
+        expect(report.ok, `${command}:${mutate}`).toBe(false);
+        expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+        expect(rt.calls.some((argv) => argv[0] === "node" && argv.includes("setup") && !argv.includes("--dry-run"))).toBe(false);
+        expect(rt.writes).toHaveLength(0);
+      }
+    }
+  });
+
+  test("AssertLedger admits faithful schema v1 and Bun schema v2 native content", async () => {
+    for (const schemaVersion of ["1.0.0", "2.0.0"]) {
+      const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+        assertledger: { version: "1.2.0", hosts: ["codex"] },
+      } };
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+      };
+      const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => argv[0] === "node" && argv.includes("setup")
+        ? { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "UNCHANGED", "dry-run", schemaVersion)), stderr: "" }
+        : nativeExec(argv, cwd, timeout);
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+      expect(report.conflicts.map((item) => item.code), schemaVersion).not.toContain("NATIVE_REPORT_INVALID");
+      expect(report.components.find((item) => item.name === "assertledger").configured).toBe("yes");
     }
   });
 

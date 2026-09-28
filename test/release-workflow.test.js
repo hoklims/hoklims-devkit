@@ -138,6 +138,13 @@ function validateReleaseGraph(workflow) {
   const hostInstall = "npm install --global @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229";
   assertExactRun(verify.steps[5], hostInstall, "verify host CLI install", undefined);
   assertExactRun(publicSmoke.steps[5], hostInstall, "public host CLI install", undefined);
+  for (const [name, job] of [["build", build], ["verify", verify], ["public smoke", publicSmoke]]) {
+    const checkout = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"));
+    if (checkout?.with?.ref !== "${{ github.sha }}" || checkout.with["persist-credentials"] !== false
+      || checkout.with["fetch-depth"] !== 0) {
+      throw new Error(`${name} checkout must bind the full tagged source at github.sha`);
+    }
+  }
   if (build["runs-on"] !== "ubuntu-latest" || verify["runs-on"] !== "${{ matrix.os }}"
     || publish["runs-on"] !== "ubuntu-latest" || publicSmoke["runs-on"] !== "ubuntu-latest"
     || release["runs-on"] !== "ubuntu-latest") {
@@ -157,6 +164,7 @@ function validateReleaseGraph(workflow) {
   assertCanonicalStep(build, buildStep, [
     /^test "\$\(git cat-file -t "refs\/tags\/\$\{GITHUB_REF_NAME\}"\)" = "tag"$/u,
     /^test "\$\(git rev-list -n 1 "refs\/tags\/\$\{GITHUB_REF_NAME\}"\)" = "\$GITHUB_SHA"$/u,
+    /^test "\$\(git rev-parse HEAD\)" = "\$GITHUB_SHA"$/u,
     /^git merge-base --is-ancestor HEAD origin\/main$/u,
     String.raw`version="$(node -p 'require("./package.json").version')"`,
     /^test "\$GITHUB_REF_NAME" = "v\$version"$/u,
@@ -189,6 +197,8 @@ function validateReleaseGraph(workflow) {
   }
   assertCanonicalStep(verify, verifyStep, [
     /^test "\$\(git cat-file -t "refs\/tags\/\$\{GITHUB_REF_NAME\}"\)" = "tag"$/u,
+    /^test "\$\(git rev-list -n 1 "refs\/tags\/\$\{GITHUB_REF_NAME\}"\)" = "\$GITHUB_SHA"$/u,
+    /^test "\$\(git rev-parse HEAD\)" = "\$GITHUB_SHA"$/u,
     /^git merge-base --is-ancestor HEAD origin\/main$/u,
     /^test "\$\{GITHUB_REF_NAME\}" = "v\$RELEASE_VERSION"$/u,
     /^test "\$\(node -p 'require\("\.\/package\.json"\)\.version'\)" = "\$RELEASE_VERSION"$/u,
@@ -243,6 +253,9 @@ function validateReleaseGraph(workflow) {
   }
   const publicStep = (publicSmoke.steps ?? []).find((step) => step.name?.startsWith("Verify public registry"));
   const requiredPublicLines = [
+    /^test "\$\(git cat-file -t "refs\/tags\/\$\{GITHUB_REF_NAME\}"\)" = "tag"$/u,
+    /^test "\$\(git rev-list -n 1 "refs\/tags\/\$\{GITHUB_REF_NAME\}"\)" = "\$GITHUB_SHA"$/u,
+    /^test "\$\(git rev-parse HEAD\)" = "\$GITHUB_SHA"$/u,
     /^version="\$RELEASE_VERSION"$/u,
     /^test "\$GITHUB_REF_NAME" = "v\$version"$/u,
     /^consumer="\$\(mktemp -d\)"$/u,
@@ -481,6 +494,26 @@ test("release critical jobs reject runner, condition, and inert-script bypasses"
     const mutant = structuredClone(original);
     mutate(mutant);
     expect(() => validateReleaseGraph(mutant), name).toThrow();
+  }
+});
+
+test("release source checkouts bind build verify and public smoke to github.sha", () => {
+  const original = Bun.YAML.parse(readFileSync(workflowPath, "utf8"));
+  for (const jobName of ["build", "verify", "public-smoke"]) {
+    const oldRef = structuredClone(original);
+    oldRef.jobs[jobName].steps[0].with.ref = "31be7ba18da0397391bb55d5db12afcb65893c0f";
+    expect(() => validateReleaseGraph(oldRef), `${jobName}:old-ref`).toThrow(/checkout/u);
+  }
+});
+
+test("release executable steps bind HEAD to the tagged github.sha before source execution", () => {
+  const original = Bun.YAML.parse(readFileSync(workflowPath, "utf8"));
+  for (const jobName of ["build", "verify", "public-smoke"]) {
+    const bypass = structuredClone(original);
+    const step = bypass.jobs[jobName].steps.find((item) => typeof item.run === "string"
+      && item.run.includes("git rev-parse HEAD"));
+    step.run = step.run.replace('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', "true");
+    expect(() => validateReleaseGraph(bypass), `${jobName}:head-binding`).toThrow(/commands/u);
   }
 });
 
