@@ -20,6 +20,36 @@ function uses(job, prefix) {
   ));
 }
 
+function stepToken(step) {
+  return step?.uses ?? step?.id ?? step?.name ?? (typeof step?.run === "string" ? "run" : null);
+}
+
+function assertOrderedSteps(job, expected, label, allowedIf = {}) {
+  if (JSON.stringify((job?.steps ?? []).map(stepToken)) !== JSON.stringify(expected)) {
+    throw new Error(`${label} step graph differs from the canonical order`);
+  }
+  for (const step of job.steps) {
+    if (step["continue-on-error"] !== undefined || step.if !== allowedIf[stepToken(step)]) {
+      throw new Error(`${label} step conditions must be canonical and fail closed`);
+    }
+  }
+}
+
+function assertNoShellStartupOverrides(workflow) {
+  const forbidden = new Set(["BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "PROMPT_COMMAND"]);
+  const inspect = (owner) => {
+    for (const name of Object.keys(owner?.env ?? {})) {
+      if (forbidden.has(name.toUpperCase())) throw new Error(`forbidden shell startup override: ${name}`);
+    }
+    if (owner?.defaults?.run?.shell !== undefined) throw new Error("custom default shell is forbidden");
+  };
+  inspect(workflow);
+  for (const job of Object.values(workflow?.jobs ?? {})) {
+    inspect(job);
+    for (const step of job.steps ?? []) inspect(step);
+  }
+}
+
 function assertCanonicalStep(job, step, patterns, label, expectedJobIf) {
   if (job?.if !== expectedJobIf || job?.["continue-on-error"] !== undefined) {
     throw new Error(`${label} job must be unconditional and fail closed`);
@@ -42,12 +72,48 @@ function assertCanonicalStep(job, step, patterns, label, expectedJobIf) {
 }
 
 function validateReleaseGraph(workflow) {
+  assertNoShellStartupOverrides(workflow);
   const jobs = workflow?.jobs;
   if (!jobs || typeof jobs !== "object") throw new Error("release jobs missing");
   const { build, verify, publish, "public-smoke": publicSmoke, release } = jobs;
   if (![build, verify, publish, publicSmoke, release].every(Boolean)) {
     throw new Error("release graph jobs missing");
   }
+  assertOrderedSteps(build, [
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "package",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+  ], "build");
+  assertOrderedSteps(verify, [
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e",
+    "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "Install tested agent CLIs",
+    "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    "Verify the identical release tarball and both host integrations",
+  ], "verify");
+  assertOrderedSteps(publish, [
+    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    "Publish exact tag through npm trusted publishing",
+  ], "publish");
+  assertOrderedSteps(publicSmoke, [
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+    "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e",
+    "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "Install tested agent CLIs",
+    "Verify public registry install and both host dry-runs",
+  ], "public smoke");
+  assertOrderedSteps(release, [
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "Create GitHub release after registry verification",
+  ], "release");
   if (build["runs-on"] !== "ubuntu-latest" || verify["runs-on"] !== "${{ matrix.os }}"
     || publish["runs-on"] !== "ubuntu-latest" || publicSmoke["runs-on"] !== "ubuntu-latest"
     || release["runs-on"] !== "ubuntu-latest") {
@@ -87,6 +153,10 @@ function validateReleaseGraph(workflow) {
   }
   const verifyDownloads = uses(verify, "actions/download-artifact@");
   const verifyStep = (verify.steps ?? []).find((step) => step.name?.startsWith("Verify the identical"));
+  if (verifyStep?.env?.RELEASE_VERSION !== "${{ needs.build.outputs.version }}"
+    || verifyStep?.env?.EXPECTED_SHA256 !== "${{ needs.build.outputs.sha256 }}") {
+    throw new Error("verify digest inputs must bind to build outputs");
+  }
   const verifyRuns = runs(verify).join("\n");
   if (verifyDownloads.length !== 1 || verifyDownloads[0].with?.name !== "tested-npm-tarball"
     || !verifyRuns.includes("EXPECTED_SHA256")
@@ -123,6 +193,10 @@ function validateReleaseGraph(workflow) {
     throw new Error("publish must use only the verified artifact without repository code");
   }
   const publishStep = (publish.steps ?? []).find((step) => step.name?.startsWith("Publish exact tag"));
+  if (publishStep?.env?.RELEASE_VERSION !== "${{ needs.build.outputs.version }}"
+    || publishStep?.env?.EXPECTED_SHA256 !== "${{ needs.build.outputs.sha256 }}") {
+    throw new Error("publish digest inputs must bind to build outputs");
+  }
   assertCanonicalStep(publish, publishStep, [
     /^npm install --global npm@11\.5\.1(?:\s+#.*)?$/u,
     /^version="\$RELEASE_VERSION"$/u,
@@ -170,6 +244,7 @@ function validateReleaseGraph(workflow) {
 }
 
 function validateCiCheckout(workflow) {
+  assertNoShellStartupOverrides(workflow);
   const job = workflow?.jobs?.package;
   if (!job || job["runs-on"] !== "${{ matrix.os }}"
     || JSON.stringify(Object.keys(job.strategy?.matrix ?? {})) !== JSON.stringify(["os"])
@@ -180,6 +255,22 @@ function validateCiCheckout(workflow) {
   if (checkout?.with?.ref !== "${{ github.event.pull_request.head.sha || github.sha }}") {
     throw new Error("CI must test the direct pull-request head or push SHA");
   }
+  assertOrderedSteps(job, [
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "run",
+    "Test packaged CLI outside checkout",
+  ], "CI package");
+  if (job.steps[3].run !== "bun run check") throw new Error("CI must run the complete check command");
+  assertCanonicalStep(job, job.steps[4], [
+    /^tarball="\$\(npm pack --silent\)"$/u,
+    /^consumer="\$\(mktemp -d\)"$/u,
+    /^npm install --prefix "\$consumer" --ignore-scripts "\$PWD\/\$tarball"(?:\s+#.*)?$/u,
+    /^cd "\$consumer"$/u,
+    /^bunx --no-install hoklims-devkit --help$/u,
+    /^test "\$\(bunx --no-install hoklims-devkit --version\)" = "\$\(node -p 'require\("\.\/node_modules\/hoklims-devkit\/package\.json"\)\.version'\)"$/u,
+  ], "CI packaged CLI");
   return true;
 }
 
@@ -190,12 +281,30 @@ function directCheckout(job) {
 }
 
 function validateNativeNoLc(workflow, harnessSource) {
+  assertNoShellStartupOverrides(workflow);
   const { build, native } = workflow?.jobs ?? {};
   if (workflow?.name !== "Native no-LC" || !build || !native
     || JSON.stringify(Object.keys(workflow.on ?? {})) !== JSON.stringify(["pull_request"])) {
     throw new Error("native no-LC jobs or pull-request trigger missing");
   }
   if (!directCheckout(build) || !directCheckout(native)) throw new Error("native no-LC must test the direct head");
+  assertOrderedSteps(build, [
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "package",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+  ], "native build");
+  assertOrderedSteps(native, [
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    "Run four owned native lanes without Latent Compass",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+  ], "native", {
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02": "always()",
+  });
   if (build["runs-on"] !== "ubuntu-latest" || native["runs-on"] !== "${{ matrix.os }}"
     || JSON.stringify([...needs(native)]) !== JSON.stringify(["build"])
     || JSON.stringify(Object.keys(native.strategy?.matrix ?? {})) !== JSON.stringify(["os"])
@@ -222,16 +331,16 @@ function validateNativeNoLc(workflow, harnessSource) {
   const downloads = uses(native, "actions/download-artifact@");
   if (uploads.length !== 1 || uploads[0].with?.name !== "devkit-native-package"
     || uploads[0].with?.path !== "native-package/hoklims-devkit-*.tgz"
-    || downloads.length !== 1 || downloads[0].with?.name !== "devkit-native-package") {
+    || downloads.length !== 1 || downloads[0].with?.name !== "devkit-native-package"
+    || downloads[0].with?.path !== "${{ runner.temp }}/native-package") {
     throw new Error("native no-LC must preserve and consume one exact artifact");
   }
   const smoke = (native.steps ?? []).find((step) => step.name?.startsWith("Run four owned"));
   assertCanonicalStep(native, smoke, [
-    /^tarball="\$PWD\/native-package\/hoklims-devkit-\$\{DEVKIT_VERSION\}\.tgz"$/u,
+    /^tarball="\$RUNNER_TEMP\/native-package\/hoklims-devkit-\$\{DEVKIT_VERSION\}\.tgz"$/u,
     /^test -f "\$tarball"$/u,
     /^test "\$\(git rev-parse HEAD\)" = "\$DEVKIT_SOURCE_SHA"$/u,
-    /^npm_cli="\$\(npm root -g\)\/npm\/bin\/npm-cli\.js"$/u,
-    /^test -f "\$npm_cli"$/u,
+    /^npm_cli="\$\(node -e 'import\("\.\/scripts\/native-runtime-paths\.mjs"\).+'\)"$/u,
     /^semctx_sha="\$\(npm view semctx@0\.3\.7 gitHead\)"$/u,
     /^run_root="\$RUNNER_TEMP\/devkit-native-no-lc"$/u,
     /^config="\$RUNNER_TEMP\/devkit-native-no-lc-config\.json"$/u,
@@ -241,7 +350,8 @@ function validateNativeNoLc(workflow, harnessSource) {
   ], "native smoke");
   if (!harnessSource.includes('assert(["win32", "linux", "darwin"].includes(process.platform)')
     || !harnessSource.includes('semctx: config.expected.semctx')
-    || !harnessSource.includes('allowAssertLedgerUnsafeDemo')) {
+    || !harnessSource.includes('allowAssertLedgerUnsafeDemo')
+    || !harnessSource.includes('.map((value) => path.resolve(value))')) {
     throw new Error("native harness lacks its platform, Semctx, or explicit demo boundary");
   }
   return true;
@@ -306,6 +416,21 @@ test("release critical jobs reject runner, condition, and inert-script bypasses"
     ["release step disabled", (workflow) => {
       workflow.jobs.release.steps.find((step) => step.name?.startsWith("Create GitHub release")).if = "${{ false }}";
     }],
+    ["duplicate verify step", (workflow) => {
+      workflow.jobs.verify.steps.push(structuredClone(
+        workflow.jobs.verify.steps.find((step) => step.name?.startsWith("Verify the identical")),
+      ));
+    }],
+    ["disconnected verify digest", (workflow) => {
+      workflow.jobs.verify.steps.find((step) => step.name?.startsWith("Verify the identical"))
+        .env.EXPECTED_SHA256 = "deadbeef";
+    }],
+    ["root bash startup override", (workflow) => {
+      workflow.env = { BASH_ENV: ".github/bypass.sh" };
+    }],
+    ["publish bash startup override", (workflow) => {
+      workflow.jobs.publish.env = { BASH_ENV: ".github/bypass.sh" };
+    }],
   ];
   for (const [name, mutate] of cases) {
     const mutant = structuredClone(original);
@@ -320,6 +445,16 @@ test("CI direct-head checkout rejects merge-ref and reduced-matrix mutants", () 
     (workflow) => { delete workflow.jobs.package.steps[0].with.ref; },
     (workflow) => { workflow.jobs.package.steps[0].with.ref = "${{ github.sha }}"; },
     (workflow) => { workflow.jobs.package.strategy.matrix.exclude = [{ os: "windows-latest" }]; },
+    (workflow) => { workflow.jobs.package.if = "${{ false }}"; },
+    (workflow) => { workflow.jobs.package["continue-on-error"] = true; },
+    (workflow) => { workflow.jobs.package.steps[3].if = "${{ false }}"; },
+    (workflow) => { workflow.jobs.package.steps[3].run = "true"; },
+    (workflow) => { workflow.jobs.package.steps[3].run = `exit 0\n${workflow.jobs.package.steps[3].run}`; },
+    (workflow) => {
+      const step = workflow.jobs.package.steps.find((item) => item.name?.startsWith("Test packaged"));
+      step.run = `: <<'EOF'\n${step.run}\nEOF`;
+    },
+    (workflow) => { workflow.env = { BASH_ENV: ".github/bypass.sh" }; },
   ];
   for (const mutate of cases) {
     const mutant = structuredClone(original);

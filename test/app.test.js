@@ -1462,6 +1462,38 @@ describe("public CLI", () => {
     }
   });
 
+  test("malformed negative Semctx index statuses block doctor and repeated setup", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.7", hosts: ["codex"] } },
+    };
+    for (const status of [undefined, null, 42, "invented"]) {
+      for (const command of ["doctor", "setup"]) {
+        const rt = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+        const nativeExec = rt.exec;
+        rt.exec = async (argv, cwd, timeout) => {
+          const result = await nativeExec(argv, cwd, timeout);
+          if (!argv.includes("doctor")) return result;
+          const body = JSON.parse(result.stdout);
+          body.healthy = false;
+          const index = body.checks.find((check) => check.name === "index");
+          index.ok = false;
+          if (status === undefined) delete index.status;
+          else index.status = status;
+          return { ...result, code: 1, stdout: JSON.stringify(body) };
+        };
+        const report = await execute(command === "doctor"
+          ? parseArgs(["doctor", "/repo", "--host", "codex"])
+          : setupOptions(), rt);
+        expect(report.ok, `${String(status)}:${command}`).toBe(false);
+        expect(report.components[0].configured, `${String(status)}:${command}`).toBe("unknown");
+        expect(rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run")))
+          .toHaveLength(0);
+        expect(rt.writes).toHaveLength(0);
+      }
+    }
+  });
+
   test("release skew prevents writes", async () => {
     const rt = fakeRuntime({ version: "0.3.7", stable: "0.3.8" });
     const report = await execute(setupOptions(), rt);

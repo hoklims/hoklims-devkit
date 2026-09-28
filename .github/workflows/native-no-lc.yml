@@ -71,7 +71,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: devkit-native-package
-          path: native-package
+          path: ${{ runner.temp }}/native-package
       - name: Run four owned native lanes without Latent Compass
         shell: bash
         env:
@@ -79,11 +79,10 @@ jobs:
           DEVKIT_SHA256: ${{ needs.build.outputs.sha256 }}
           DEVKIT_SOURCE_SHA: ${{ needs.build.outputs.source-sha }}
         run: |
-          tarball="$PWD/native-package/hoklims-devkit-${DEVKIT_VERSION}.tgz"
+          tarball="$RUNNER_TEMP/native-package/hoklims-devkit-${DEVKIT_VERSION}.tgz"
           test -f "$tarball"
           test "$(git rev-parse HEAD)" = "$DEVKIT_SOURCE_SHA"
-          npm_cli="$(npm root -g)/npm/bin/npm-cli.js"
-          test -f "$npm_cli"
+          npm_cli="$(node -e 'import("./scripts/native-runtime-paths.mjs").then(({resolveBundledNpmCli})=>process.stdout.write(resolveBundledNpmCli(process.execPath)))')"
           semctx_sha="$(npm view semctx@0.3.7 gitHead)"
           run_root="$RUNNER_TEMP/devkit-native-no-lc"
           config="$RUNNER_TEMP/devkit-native-no-lc-config.json"

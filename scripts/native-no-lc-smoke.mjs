@@ -9,13 +9,13 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  readlinkSync,
   realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { diffSnapshots, snapshotTree, validateNativeReport } from "./native-no-lc-contract.mjs";
 
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 const configPath = process.argv[2];
@@ -64,7 +64,7 @@ assert(!isWithin(scriptRoot, runRoot), "runRoot must be separate from the prepar
 const ambientHome = process.env.HOME ?? process.env.USERPROFILE;
 const ambientCodexHome = process.env.CODEX_HOME ?? (ambientHome ? path.join(ambientHome, ".codex") : null);
 const ambientClaudeHome = process.env.CLAUDE_CONFIG_DIR ?? (ambientHome ? path.join(ambientHome, ".claude") : null);
-for (const actualProfile of [ambientCodexHome, ambientClaudeHome].filter(Boolean).map(path.resolve)) {
+for (const actualProfile of [ambientCodexHome, ambientClaudeHome].filter(Boolean).map((value) => path.resolve(value))) {
   assert(!isWithin(actualProfile, runRoot), `runRoot overlaps an actual profile: ${actualProfile}`);
   assert(!isWithin(runRoot, actualProfile), `actual profile is inside runRoot: ${actualProfile}`);
 }
@@ -118,51 +118,11 @@ function sha256File(file) {
 
 assert.equal(sha256File(artifactPath), config.artifact.sha256, "Devkit tarball digest mismatch");
 
-function snapshotTree(root) {
-  if (!existsSync(root)) return [];
-  const result = [];
-  function walk(current, relative) {
-    for (const name of readdirSync(current).sort()) {
-      const full = path.join(current, name);
-      const rel = relative ? path.join(relative, name) : name;
-      const info = lstatSync(full);
-      const recordPath = rel.split(path.sep).join("/");
-      if (info.isSymbolicLink()) {
-        result.push({ path: recordPath, kind: "symlink", target: readlinkSync(full) });
-      } else if (info.isDirectory()) {
-        result.push({ path: recordPath, kind: "directory" });
-        walk(full, rel);
-      } else if (info.isFile()) {
-        result.push({ path: recordPath, kind: "file", bytes: info.size, sha256: sha256File(full) });
-      } else {
-        result.push({ path: recordPath, kind: "other" });
-      }
-    }
-  }
-  walk(root, "");
-  return result;
-}
-
 function snapshotProtected(lane) {
   return {
     repository: snapshotTree(lane.repository),
     profile: snapshotTree(lane.profileRoot),
   };
-}
-
-function diffSnapshots(before, after) {
-  const beforeMap = new Map();
-  const afterMap = new Map();
-  for (const [scope, records] of Object.entries(before)) {
-    for (const record of records) beforeMap.set(`${scope}/${record.path}`, JSON.stringify(record));
-  }
-  for (const [scope, records] of Object.entries(after)) {
-    for (const record of records) afterMap.set(`${scope}/${record.path}`, JSON.stringify(record));
-  }
-  const keys = [...new Set([...beforeMap.keys(), ...afterMap.keys()])].sort();
-  return keys
-    .filter((key) => beforeMap.get(key) !== afterMap.get(key))
-    .map((key) => ({ path: key, before: beforeMap.get(key) ?? null, after: afterMap.get(key) ?? null }));
 }
 
 function cleanBaseEnvironment() {
@@ -302,6 +262,16 @@ const sourceHead = (await runCommand({
 assert.equal(sourceHead, config.artifact.sourceSha, "Frozen source SHA mismatch");
 const sourceBefore = snapshotTree(sourceCheckout);
 writeFileSync(path.join(evidenceRoot, "source-before.json"), `${JSON.stringify(sourceBefore, null, 2)}\n`);
+assert.equal(config.artifact.version, "0.1.0", "Expected Devkit version gate");
+assert.equal(config.expected.semctx, "0.3.7", "Expected Semctx version gate");
+assert.equal(config.expected.assertledger, "1.3.0", "Expected AssertLedger version gate");
+assert.equal(config.expected.codex, "0.147.0", "Expected Codex version gate");
+assert.equal(config.expected.claude, "2.1.229", "Expected Claude version gate");
+if (config.startupProbeOnly === true) {
+  writeFileSync(path.join(evidenceRoot, "STARTUP_PASS"), `${config.artifact.sourceSha}\n`);
+  console.log(JSON.stringify({ kind: "devkit_no_lc_startup", platform: expectedPlatform }));
+  process.exit(0);
+}
 
 writeFileSync(path.join(consumerRoot, "package.json"), '{"name":"devkit-native-consumer","private":true}\n');
 await npm([
@@ -474,30 +444,14 @@ function parseJsonOutput(result, label) {
   }
 }
 
-function validateReport(report, lane, command) {
-  assert.equal(report.schemaVersion, 1, `${command}: schemaVersion`);
-  assert.equal(report.command, command, `${command}: command`);
-  assert.equal(report.ok, true, `${command}: ok`);
-  assert.deepEqual(report.conflicts ?? [], [], `${command}: conflicts`);
-  assert.equal(realpathSync(report.projectRoot), realpathSync(lane.repository), `${command}: projectRoot`);
-  const semctx = report.components?.find((component) => component.name === "semctx");
-  assert(semctx, `${command}: semctx component missing`);
-  assert.equal(semctx.version, config.expected.semctx, `${command}: semctx version`);
-  const compass = report.components?.find((component) => component.name === "latent-compass");
-  assert.equal(compass, undefined, `${command}: Latent Compass must not be selected`);
-  if (lane.withAssertLedger) {
-    const assertledger = report.components?.find((component) => component.name === "assertledger");
-    assert(assertledger, `${command}: AssertLedger component missing`);
-    assert.equal(assertledger.version, config.expected.assertledger, `${command}: AssertLedger version`);
-  }
-  for (const component of report.components ?? []) {
-    for (const field of ["loaded", "approved", "observed"]) {
-      if (field in component) {
-        assert.equal(component[field], "unknown", `${command}: ${component.name}.${field} must remain unknown`);
-      }
-    }
-  }
-  return report;
+function validateReport(report, lane, command, dryRun) {
+  const names = lane.withAssertLedger ? ["semctx", "assertledger"] : ["semctx"];
+  const hosts = lane.host === "all" ? ["codex", "claude"] : [lane.host];
+  return validateNativeReport(report, {
+    projectRoot: realpathSync(lane.repository), command, hosts, names,
+    versions: { semctx: config.expected.semctx, assertledger: config.expected.assertledger },
+    dryRun,
+  });
 }
 
 async function runDevkit(lane, command, { dryRun = false } = {}) {
@@ -513,7 +467,7 @@ async function runDevkit(lane, command, { dryRun = false } = {}) {
     env: lane.env,
     timeoutMs: 300_000,
   });
-  return validateReport(parseJsonOutput(result, `${lane.name} ${command}`), lane, command);
+  return validateReport(parseJsonOutput(result, `${lane.name} ${command}`), lane, command, dryRun);
 }
 
 async function requireUnchanged(lane, label, operation) {

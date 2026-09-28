@@ -769,7 +769,8 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
     && requiredChecks.every((name) => checkNames.includes(name))
     && doctor.healthy === doctorChecks.every((check) => check.ok === true)
     && (doctorCode === 0) === doctor.healthy
-    && (indexCheck?.ok === true ? indexCheck.status === "healthy" : indexCheck?.status !== "healthy");
+    && (indexCheck?.ok === true
+      ? indexCheck.status === "healthy" : ["degraded", "blocked"].includes(indexCheck?.status));
   const freshnessVerdict = health?.freshness?.verdict;
   const freshnessCapable = ["FRESH", "DIRTY_KNOWN"].includes(freshnessVerdict);
   const expectedHealthCode = health?.binding?.status !== "valid" || !freshnessCapable
