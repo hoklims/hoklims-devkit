@@ -285,6 +285,39 @@ function compareVersions(left, right) {
   return 0;
 }
 
+function exactUvVersion(result) {
+  if (result?.code !== 0 || typeof result.stdout !== "string") return null;
+  const version = result.stdout.trim()
+    .match(/^uv ((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?: \([^\r\n]+\))?$/u)?.[1];
+  return isStableVersion(version) ? version : null;
+}
+
+async function admitComponentRuntimes(rt, root, components, report) {
+  const selected = new Set(components);
+  if (selected.has("assertledger")) {
+    if (!rt.which("node")) {
+      problem(report, "NODE_REQUIRED", "AssertLedger needs Node >=22.15 on PATH", 3);
+      return false;
+    }
+    const nodeVersion = exactRuntimeVersion(await rt.exec(["node", "--version"], root), "v");
+    if (!nodeVersion || compareVersions(nodeVersion, "22.15.0") < 0) {
+      problem(report, "NODE_VERSION", "AssertLedger needs Node >=22.15", 3);
+      return false;
+    }
+  }
+  if (selected.has("latent-compass")) {
+    if (!rt.which("uv")) {
+      problem(report, "UV_REQUIRED", "Latent Compass needs uv on PATH", 3);
+      return false;
+    }
+    if (!exactUvVersion(await rt.exec(["uv", "--version"], root))) {
+      problem(report, "UV_VERSION", "Latent Compass needs a valid stable uv runtime", 3);
+      return false;
+    }
+  }
+  return true;
+}
+
 function safeSemctxVersion(version) {
   return isStableVersion(version) && compareVersions(version, MIN_SAFE_SEMCTX_VERSION) >= 0;
 }
@@ -703,6 +736,13 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && (!nestedSuccess || expectedInitPaths.every((relativePath, index) => (
       initActions.some((action) => action.path === relativePath) === (initArtifactByPath.get(relativePath)?.state === changedState)
     )));
+  const nestedReasonCodesConsistent = !nestedSuccess || (
+    Array.isArray(parsed?.init?.reasonCodes) && parsed.init.reasonCodes.length === 0
+    && parsed.init.detections !== null && !Array.isArray(parsed.init.detections)
+    && typeof parsed.init.detections === "object"
+    && Array.isArray(parsed.init.detections.reasonCodes) && parsed.init.detections.reasonCodes.length === 0
+    && parsed?.connection?.reasonCodes === undefined
+  );
   const nestedConnectionArtifacts = parsed?.connection?.artifacts;
   const expectedConnectionKinds = new Map(connectionArtifacts.map((artifact) => [
     artifact.path,
@@ -730,7 +770,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && initStatuses.includes(parsed.init?.status)
     && connectionStatuses.includes(parsed.connection?.status)
     && parsed.connection?.client === client
-    && initNestedConsistent && connectionNestedConsistent
+    && initNestedConsistent && connectionNestedConsistent && nestedReasonCodesConsistent
     && (!successAggregate || (initConsistent && connectionConsistent && aggregateConsistent))
     && rollbackConsistent && reasonCodesConsistent;
 }
@@ -1490,6 +1530,7 @@ export async function execute(options, rt = createRuntime()) {
   }
   if (options.command === "doctor") {
     const names = new Set(["semctx", ...options.with, ...Object.keys(state?.components ?? {}), ...(state?.inProgress?.selected ?? [])]);
+    if (!await admitComponentRuntimes(rt, root, names, report)) return finalizeFailure(state);
     for (const name of COMPONENTS.filter((item) => names.has(item))) {
       const version = state?.components?.[name]?.version ?? state?.inProgress?.versions[name] ?? null;
       if (!version) {
@@ -1532,32 +1573,7 @@ export async function execute(options, rt = createRuntime()) {
     problem(report, "PENDING_PLAN_CONFLICT", `The saved plan must be completed before changing selectors. ${recoveryActionFor(state)}`, 4);
     return finalizeFailure(state);
   }
-  if (selected.includes("assertledger")) {
-    if (!rt.which("node")) {
-      problem(report, "NODE_REQUIRED", "AssertLedger needs Node >=22.15 on PATH", 3);
-      return finalizeFailure(state);
-    }
-    const node = await rt.exec(["node", "--version"], root);
-    const nodeVersion = exactRuntimeVersion(node, "v");
-    if (!nodeVersion || compareVersions(nodeVersion, "22.15.0") < 0) {
-      problem(report, "NODE_VERSION", "AssertLedger needs Node >=22.15", 3);
-      return finalizeFailure(state);
-    }
-  }
-  if (selected.includes("latent-compass")) {
-    if (!rt.which("uv")) {
-      problem(report, "UV_REQUIRED", "Latent Compass needs uv on PATH", 3);
-      return finalizeFailure(state);
-    }
-    const uv = await rt.exec(["uv", "--version"], root);
-    const uvVersion = uv?.code === 0 && typeof uv.stdout === "string"
-      ? uv.stdout.trim().match(/^uv ((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?: \([^\r\n]+\))?$/u)?.[1]
-      : null;
-    if (!isStableVersion(uvVersion)) {
-      problem(report, "UV_VERSION", "Latent Compass needs a valid stable uv runtime", 3);
-      return finalizeFailure(state);
-    }
-  }
+  if (!await admitComponentRuntimes(rt, root, selected, report)) return finalizeFailure(state);
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) {
     if (report.conflicts.some((item) => item.code === "SEMCTX_VERSION_UNSAFE")) {

@@ -42,6 +42,8 @@ function assertSetupReport(argv, status, mode) {
     init: {
       status: mode === "write" ? status : status === "UNCHANGED" ? "UNCHANGED" : "WOULD_CREATE",
       schemaVersion: "1.0.0",
+      reasonCodes: [],
+      detections: { reasonCodes: [] },
       requiredOperatorInputs: [],
       actions: artifactState === "UNCHANGED" ? [] : initPaths.map((path) => ({ kind: "CREATE", path })),
       files: initPaths.map((path) => {
@@ -1776,6 +1778,7 @@ describe("public CLI", () => {
     const malformedDoctor = fakeRuntime({
       state: managed,
       files: { ...files, [join("/repo", "package.json")]: "{" },
+      tools: ["node", "npm"],
     });
     const malformedReport = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), malformedDoctor);
     expect(malformedReport.conflicts.map((item) => item.code)).toContain("PACKAGE_MANIFEST_CONFLICT");
@@ -1783,7 +1786,7 @@ describe("public CLI", () => {
     expect(malformedReport.exitCode).toBe(4);
     expect(malformedDoctor.writes).toHaveLength(0);
 
-    const ioDoctor = fakeRuntime({ state: managed, files });
+    const ioDoctor = fakeRuntime({ state: managed, files, tools: ["node", "npm"] });
     const doctorRead = ioDoctor.readPlainText;
     ioDoctor.readPlainText = (path) => {
       if (path === join("/repo", "node_modules", "assertledger", "package.json")) {
@@ -3064,6 +3067,13 @@ describe("public CLI", () => {
       (report) => { report.rollback.removed.push("assertledger.config.json"); },
       (report) => { report.rollback.unresolved.push("assertledger.lock.json"); },
       (report) => { report.reasonCodes = ["CONNECTION_CONTENT_CONFLICT"]; },
+      (report) => { report.init.reasonCodes = ["INIT_PREFLIGHT_FAILED"]; },
+      (report) => { report.init.reasonCodes = "malformed"; },
+      (report) => { report.init.reasonCodes = null; },
+      (report) => { report.init.detections.reasonCodes = ["INIT_PREFLIGHT_FAILED"]; },
+      (report) => { delete report.init.detections.reasonCodes; },
+      (report) => { report.connection.reasonCodes = ["CONNECTION_CONTENT_CONFLICT"]; },
+      (report) => { report.connection.reasonCodes = null; },
     ];
     for (const mutate of mutations) {
       for (const phase of ["doctor", "preflight", "write", "verify"]) {
@@ -3093,30 +3103,97 @@ describe("public CLI", () => {
   });
 
   test("runtime version probes fail closed before component native commands or state writes", async () => {
-    const cases = [
-      { component: "semctx", command: "bun", result: { code: 1, stdout: "1.4.0\n", stderr: "failed" } },
-      { component: "semctx", command: "bun", result: { code: 0, stdout: "1.4.not-a-version\n", stderr: "" } },
-      { component: "assertledger", command: "node", result: { code: 1, stdout: "v22.15.0\n", stderr: "failed" } },
-      { component: "assertledger", command: "node", result: { code: 0, stdout: "v22.15.not-a-version\n", stderr: "" } },
-      { component: "latent-compass", command: "uv", result: { code: 1, stdout: "uv 0.8.22\n", stderr: "failed" } },
-      { component: "latent-compass", command: "uv", result: { code: 0, stdout: "uv 0.8.not-a-version\n", stderr: "" } },
+    const invalid = {
+      bun: [
+        { code: 1, stdout: "1.4.0\n", stderr: "failed" },
+        { code: 0, stdout: "1.4.not-a-version\n", stderr: "" },
+        { code: 0, stdout: "1.4.0-rc.1\n", stderr: "" },
+        { code: 0, stdout: "1.3.9\n", stderr: "" },
+      ],
+      node: [
+        { code: 1, stdout: "v22.15.0\n", stderr: "failed" },
+        { code: 0, stdout: "v22.15.not-a-version\n", stderr: "" },
+        { code: 0, stdout: "v22.15.0-rc.1\n", stderr: "" },
+        { code: 0, stdout: "v22.14.9\n", stderr: "" },
+      ],
+      uv: [
+        { code: 1, stdout: "uv 0.8.22\n", stderr: "failed" },
+        { code: 0, stdout: "uv 0.8.not-a-version\n", stderr: "" },
+        { code: 0, stdout: "uv 0.8.22-rc.1\n", stderr: "" },
+      ],
+    };
+    const specs = [
+      { component: "semctx", runtime: "bun", tools: [] },
+      { component: "assertledger", runtime: "node", tools: ["node", "npm"] },
+      { component: "latent-compass", runtime: "uv", tools: ["uv"] },
     ];
-    for (const scenario of cases) {
-      const withComponents = scenario.component === "semctx" ? [] : [scenario.component];
-      const tools = scenario.component === "assertledger" ? ["node", "npm"]
-        : scenario.component === "latent-compass" ? ["uv"] : [];
-      const rt = fakeRuntime({ tools, files: scenario.component === "assertledger" ? {
-        [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
-        [join("/repo", "package-lock.json")]: "{}",
-      } : {} });
+    for (const command of ["setup", "upgrade", "doctor"]) {
+      for (const spec of specs) {
+        for (const result of invalid[spec.runtime]) {
+          const withComponents = spec.component === "semctx" ? [] : [spec.component];
+          const state = command === "doctor" && spec.component !== "semctx" ? {
+            schemaVersion: 1, projectRoot: "/repo", components: {
+              [spec.component]: { version: spec.component === "assertledger" ? "1.2.0" : "0.3.0", hosts: ["codex"] },
+            },
+          } : null;
+          const files = spec.component === "assertledger" ? {
+            [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+            [join("/repo", "package-lock.json")]: "{}",
+            [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+            [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+          } : spec.component === "latent-compass" ? {
+            [join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass")]: "shim",
+          } : {};
+          const rt = fakeRuntime({ state, tools: spec.tools, files });
+          const nativeExec = rt.exec;
+          rt.exec = async (argv, cwd, timeout) => {
+            if (argv[0] === spec.runtime && argv.includes("--version")) {
+              rt.calls.push(argv);
+              return result;
+            }
+            return nativeExec(argv, cwd, timeout);
+          };
+          const options = parseArgs([command, "/repo", "--host", "codex",
+            ...(withComponents.length ? ["--with", withComponents.join(",")] : [])]);
+          const report = await execute(options, rt);
+          expect(report.ok, `${command}:${spec.runtime}:${result.stdout}`).toBe(false);
+          expect(rt.writes, `${command}:${spec.runtime}`).toHaveLength(0);
+          expect(rt.calls.some((argv) => argv[0] === "bunx" || (argv[0] === "node" && argv.includes("setup"))
+            || (argv[0] === "uv" && argv.includes("tool"))
+            || String(argv[0]).includes("latent-compass")), `${command}:${spec.runtime}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  test("doctor runtime admission includes explicit saved and pending optional components", async () => {
+    const sources = [
+      { component: "assertledger", state: null, with: ["assertledger"], runtime: "node", tools: ["node", "npm"] },
+      { component: "assertledger", state: { components: { assertledger: { version: "1.2.0", hosts: ["codex"] } } }, with: [], runtime: "node", tools: ["node", "npm"] },
+      { component: "latent-compass", state: { components: {}, inProgress: {
+        command: "setup", selected: ["semctx", "latent-compass"], hosts: ["codex"],
+        versions: { semctx: "0.3.7", "latent-compass": "0.3.0" },
+      } }, with: [], runtime: "uv", tools: ["uv"] },
+    ];
+    for (const source of sources) {
+      const state = source.state ? { schemaVersion: 1, projectRoot: "/repo", ...source.state } : null;
+      const rt = fakeRuntime({ state, tools: source.tools });
       const nativeExec = rt.exec;
-      rt.exec = async (argv, cwd, timeout) => argv[0] === scenario.command && argv.includes("--version")
-        ? scenario.result : nativeExec(argv, cwd, timeout);
-      const report = await execute({ ...setupOptions(), with: withComponents }, rt);
-      expect(report.ok, `${scenario.command}:${scenario.result.stdout}`).toBe(false);
-      expect(rt.writes, scenario.command).toHaveLength(0);
-      expect(rt.calls.some((argv) => argv[0] === "bunx" || argv.includes("setup")
-        || (argv[0] === "uv" && argv.includes("tool"))), scenario.command).toBe(false);
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === source.runtime && argv.includes("--version")) {
+          rt.calls.push(argv);
+          return { code: 1, stdout: source.runtime === "node" ? "v22.15.0\n" : "uv 0.8.22\n", stderr: "failed" };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex",
+        ...(source.with.length ? ["--with", source.with.join(",")] : [])]), rt);
+      expect(report.ok, source.component).toBe(false);
+      expect(report.conflicts.map((item) => item.code), source.component)
+        .toContain(source.runtime === "node" ? "NODE_VERSION" : "UV_VERSION");
+      expect(rt.calls.some((argv) => argv[0] === source.runtime && argv.includes("--version")), source.component).toBe(true);
+      expect(rt.calls.some((argv) => argv[0] === "bunx" || (argv[0] === "node" && argv.includes("setup"))
+        || (argv[0] === "uv" && argv.includes("tool"))), source.component).toBe(false);
     }
   });
 

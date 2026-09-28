@@ -47,8 +47,18 @@ function assertNoShellStartupOverrides(workflow) {
     "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "PROMPT_COMMAND", "NODE_OPTIONS", "BUN_OPTIONS",
   ]);
   const inspect = (owner) => {
+    if (owner && Object.prototype.hasOwnProperty.call(owner, "env")
+      && (owner.env === null || typeof owner.env !== "object" || Array.isArray(owner.env))) {
+      throw new Error("environment map must be a static mapping");
+    }
     for (const name of Object.keys(owner?.env ?? {})) {
-      if (forbidden.has(name.toUpperCase()) || /^BASH_FUNC_.+%%$/u.test(name)) {
+      if (/^BASH_FUNC_.+%%$/u.test(name)) {
+        throw new Error(`forbidden shell startup override: ${name}`);
+      }
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+        throw new Error(`environment map contains an opaque key: ${name}`);
+      }
+      if (forbidden.has(name.toUpperCase())) {
         throw new Error(`forbidden shell startup override: ${name}`);
       }
     }
@@ -540,6 +550,33 @@ test("runtime preload options are rejected at workflow job and step scope", () =
           ...(workflow.jobs[jobName].steps[stepIndex].env ?? {}), ...env,
         };
         expect(() => validate(workflow), `${path.pathname}:${name}:${scope}`).toThrow(/startup override/u);
+      }
+    }
+  }
+});
+
+test("opaque environment maps are rejected at every workflow job and step scope", () => {
+  const sources = [
+    [workflowPath, validateReleaseGraph, "verify", 7],
+    [ciPath, validateCiCheckout, "package", 3],
+    [nativePath, (workflow) => validateNativeNoLc(
+      workflow, readFileSync(nativeHarnessPath, "utf8"),
+    ), "native", 4],
+  ];
+  const opaqueValues = [
+    null,
+    [],
+    "${{ fromJSON('{\"NODE_OPTIONS\":\"--import=data:text/javascript,process.exit(0)\"}') }}",
+    { "${{ fromJSON('[]')[0] }}": "hidden" },
+  ];
+  for (const [path, validate, jobName, stepIndex] of sources) {
+    for (const env of opaqueValues) {
+      for (const scope of ["workflow", "job", "step"]) {
+        const workflow = Bun.YAML.parse(readFileSync(path, "utf8"));
+        if (scope === "workflow") workflow.env = structuredClone(env);
+        if (scope === "job") workflow.jobs[jobName].env = structuredClone(env);
+        if (scope === "step") workflow.jobs[jobName].steps[stepIndex].env = structuredClone(env);
+        expect(() => validate(workflow), `${path.pathname}:${scope}:${JSON.stringify(env)}`).toThrow(/environment map/u);
       }
     }
   }
