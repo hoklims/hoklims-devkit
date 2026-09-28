@@ -122,7 +122,7 @@ function laneRunnerOptions(overrides = {}) {
   return {
     commands,
     laneDefinitions: NATIVE_LANE_DEFINITIONS,
-    createLane: async (definition) => ({ ...definition, repository: `/repo/${definition.name}` }),
+    createLane: async (definition) => ({ ...definition, repository: path.join("/run", "lanes", definition.name, "repository") }),
     executeDevkit: async (lane, command, { dryRun }) => {
       commands.push(`${lane.name}:${command}:${dryRun}`);
       return syntheticLaneReport(lane, command, dryRun);
@@ -133,9 +133,12 @@ function laneRunnerOptions(overrides = {}) {
       names: lane.withAssertLedger ? ["semctx", "assertledger"] : ["semctx"],
       versions: { semctx: "0.3.7", assertledger: "1.3.0" }, dryRun,
     }),
-    captureProtected: () => ({ repository: [{ path: ".", kind: "directory" }], profile: [] }),
+    captureProtected: () => ({
+      repository: [{ path: ".", kind: "directory", mode: 0o755, device: "1", inode: "2" }],
+      profile: [{ path: ".", kind: "directory", mode: 0o755, device: "1", inode: "3" }],
+    }),
     recordSnapshot: () => {},
-    runAssertLedgerDemo: async () => {},
+    runAssertLedgerDemo: async () => ({ verdict: "VERIFIED", report: { verdict: "VERIFIED" } }),
     ...overrides,
   };
 }
@@ -174,20 +177,18 @@ test("production native runner cannot bypass protected snapshot comparison", asy
 
 test("production smoke orchestration validates literal result completeness before finalization", async () => {
   let finalized = false;
-  const valid = NATIVE_LANE_DEFINITIONS.map((lane) => ({ ...lane, stages: [
-    "create-lane", "setup-dry-run", "setup-apply", "doctor", "setup-repeat", "upgrade-noop", "assertledger-demo",
-  ] }));
+  const valid = await runNativeLaneMatrix(laneRunnerOptions());
   await expect(runNativeSmokeOrchestration({
-    runMatrix: async () => [], matrixOptions: {}, finalize: () => { finalized = true; },
+    runMatrix: async () => [], matrixOptions: {}, resultContext: { runRoot: "/run", versions: { semctx: "0.3.7", assertledger: "1.3.0" } }, finalize: () => { finalized = true; },
   })).rejects.toThrow(/exactly four/u);
   expect(finalized).toBe(false);
   await expect(runNativeSmokeOrchestration({
     runMatrix: async () => valid.map((lane, index) => index === 0 ? { ...lane, stages: lane.stages.slice(1) } : lane),
-    matrixOptions: {}, finalize: () => { finalized = true; },
+    matrixOptions: {}, resultContext: { runRoot: "/run", versions: { semctx: "0.3.7", assertledger: "1.3.0" } }, finalize: () => { finalized = true; },
   })).rejects.toThrow(/stages are incomplete/u);
   expect(finalized).toBe(false);
   await runNativeSmokeOrchestration({
-    runMatrix: async () => valid, matrixOptions: {}, finalize: () => { finalized = true; },
+    runMatrix: async () => valid, matrixOptions: {}, resultContext: { runRoot: "/run", versions: { semctx: "0.3.7", assertledger: "1.3.0" } }, finalize: () => { finalized = true; },
   });
   expect(finalized).toBe(true);
 });
@@ -198,24 +199,24 @@ test("actual native smoke suffix executes four lanes and refuses disconnected PA
   expect(validateNativeSmokeEntrypointSource(source)).toBe(true);
   const suffix = source.slice(source.indexOf("function finalizeNativeSmokeResults"));
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  const executeSuffix = async (candidate) => {
+  const executeSuffix = async (candidate, matrixRunner = runNativeLaneMatrix) => {
     const options = laneRunnerOptions();
     const writes = new Map();
     const names = [
       "snapshotTree", "sourceCheckout", "writeFileSync", "path", "evidenceRoot", "JSON", "diffSnapshots", "sourceBefore",
-      "assert", "expectedPlatform", "artifactPath", "config", "codexPackage", "sha256File", "codexBin", "sha256Bytes",
+      "assert", "physicalRunRoot", "expectedPlatform", "artifactPath", "config", "codexPackage", "sha256File", "codexBin", "sha256Bytes",
       "toolsRoot", "claudePackage", "claudeBin", "console", "assertNativeSmokeResults", "NATIVE_LANE_DEFINITIONS",
       "createLane", "runDevkit", "nativeReportOptions", "snapshotProtected", "recordProtectedSnapshots",
       "runAssertLedgerDemo", "runNativeSmokeOrchestration", "runNativeLaneMatrix",
     ];
     const values = [
       () => [], "/source", (file, bytes) => writes.set(file, bytes), path, "/evidence", JSON, () => [], [],
-      assert, "windows", "/artifact.tgz", { artifact: { sha256: "a", sourceSha: "b", version: "0.1.0" },
+      assert, "/run", "windows", "/artifact.tgz", { artifact: { sha256: "a", sourceSha: "b", version: "0.1.0" },
         expected: { semctx: "0.3.7", semctxPublicationSha: "c", assertledger: "1.3.0" } },
       { version: "0.147.0" }, () => "digest", "/codex", () => "digest", "/tools", { version: "2.1.229" }, "/claude",
       { log() {} }, assertNativeSmokeResults, NATIVE_LANE_DEFINITIONS, options.createLane, options.executeDevkit,
       options.reportOptions, options.captureProtected, options.recordSnapshot, options.runAssertLedgerDemo,
-      runNativeSmokeOrchestration, runNativeLaneMatrix,
+      runNativeSmokeOrchestration, matrixRunner,
     ];
     await new AsyncFunction(...names, candidate)(...values);
     return { writes, commands: options.commands };
@@ -231,6 +232,33 @@ test("actual native smoke suffix executes four lanes and refuses disconnected PA
   for (const lane of summary.lanes) expect(lane.stages).toEqual([
     "create-lane", "setup-dry-run", "setup-apply", "doctor", "setup-repeat", "upgrade-noop", "assertledger-demo",
   ]);
+
+  const validResults = await runNativeLaneMatrix(laneRunnerOptions());
+  const labelOnly = validResults.map(({ name, host, withAssertLedger, stages }) => ({ name, host, withAssertLedger, stages }));
+  const missingReport = structuredClone(validResults);
+  delete missingReport[0].evidence[0].report;
+  const malformedReport = structuredClone(validResults);
+  delete malformedReport[0].evidence[0].report.components[0].installed;
+  const incompleteSnapshot = structuredClone(validResults);
+  incompleteSnapshot[0].evidence[0].protectedSnapshot.before.profile = [];
+  const duplicateApply = structuredClone(validResults);
+  duplicateApply[0].evidence = Array.from({ length: 5 }, () => structuredClone(duplicateApply[0].evidence[1]));
+  const forgedValidation = structuredClone(validResults);
+  forgedValidation[0].evidence[0].report.projectRoot = "/foreign";
+  forgedValidation[0].evidence[0].report.components[0].version = "9.9.9";
+  forgedValidation[0].evidence[0].validation.projectRoot = "/foreign";
+  forgedValidation[0].evidence[0].validation.versions.semctx = "9.9.9";
+  const missingDemoReport = structuredClone(validResults);
+  delete missingDemoReport[3].demo.evidence.report;
+  const invalidDemoReport = structuredClone(validResults);
+  invalidDemoReport[3].demo.evidence.report.verdict = "REJECTED";
+  for (const [name, results] of Object.entries({
+    labelOnly, missingReport, malformedReport, incompleteSnapshot, duplicateApply, forgedValidation,
+    missingDemoReport, invalidDemoReport,
+  })) {
+    const attempted = executeSuffix(suffix, async () => results);
+    await expect(attempted, name).rejects.toThrow();
+  }
 
   const disconnected = suffix.replace(/await runNativeSmokeOrchestration\(\{[\s\S]*?\n\}\);\s*$/u,
     "const laneResults = [];\nfinalizeNativeSmokeResults(laneResults);\n");

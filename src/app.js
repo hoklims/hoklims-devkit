@@ -576,9 +576,39 @@ function localAssertEntry(rt, root) {
   return { version, cliPath };
 }
 
-function localAssertCommand(entry, args) {
-  if (!entry) throw new Error("The project-local AssertLedger executable is missing or invalid");
-  return ["node", entry.cliPath, ...args];
+function authenticateAssertEntry(rt, entry, expectedVersion) {
+  if (!entry || entry.version !== expectedVersion) throw new Error("AssertLedger executable version is not admitted");
+  const contract = assertLedgerContract(expectedVersion);
+  if (!contract) throw new Error(`AssertLedger ${expectedVersion} has no Devkit-reviewed native contract`);
+  const cliPath = rt.realpath(entry.cliPath);
+  const packageRoot = dirname(dirname(cliPath));
+  const manifestPath = join(packageRoot, "package.json");
+  if (basename(cliPath) !== "cli.js" || basename(dirname(cliPath)) !== "dist"
+    || basename(packageRoot) !== "assertledger" || !rt.plainFilePresent(manifestPath)) {
+    throw new Error("AssertLedger executable is outside an admitted package layout");
+  }
+  const manifest = JSON.parse(rt.readPlainText(manifestPath));
+  if (manifest?.name !== "assertledger" || manifest.version !== expectedVersion
+    || manifest.bin?.assertledger !== "dist/cli.js" || manifest.bin?.testforge !== "dist/cli.js"
+    || verifiedAssertAsset(rt, packageRoot, "dist/cli.js", contract) === null
+    || verifiedAssertAsset(rt, packageRoot, "integrations/skill/SKILL.md", contract) === null) {
+    throw new Error("AssertLedger executable or packaged contract assets do not match the reviewed release");
+  }
+  const node = rt.which("node");
+  if (!node) throw new Error("Node disappeared before AssertLedger execution");
+  return { version: expectedVersion, packageRoot, contract, cliPath, nodePath: rt.realpath(node) };
+}
+
+async function resolveCachedAssertEntry(rt, root, version) {
+  const resolver = [
+    "npm", "exec", "--yes", "--ignore-scripts", `--package=assertledger@${version}`, "--", "node", "-e",
+    'const f=require("node:fs"),p=require("node:path");let cli=null;for(const b of (process.env.PATH||"").split(p.delimiter)){if(p.basename(b)!==".bin")continue;const c=p.join(p.dirname(b),"assertledger","dist","cli.js");if(f.existsSync(c)){cli=c;break}}if(cli)process.stdout.write(cli);else process.exitCode=2',
+  ];
+  const result = await rt.exec(resolver, root);
+  if (result.code !== 0 || typeof result.stdout !== "string" || result.stdout.trim().length === 0) {
+    throw new Error(`AssertLedger cache resolution failed: ${shortError(result)}`);
+  }
+  return authenticateAssertEntry(rt, { version, cliPath: result.stdout.trim() }, version);
 }
 
 function uvToolVersion(output, stderr = "") {
@@ -957,27 +987,16 @@ function parsedAssertConnection(connection, client, root) {
   }
 }
 
-function assertPackageAnchor(rt, connection, client, root, version) {
+function assertPackageAnchor(rt, connection, client, root, identity) {
   const invocation = parsedAssertConnection(connection, client, root);
   const skill = connection.artifacts.find((artifact) => artifact.kind === "skill")?.content;
-  const contract = assertLedgerContract(version);
-  if (!contract || !invocation || typeof invocation.node !== "string" || typeof invocation.cli !== "string") return null;
+  if (!identity || !invocation || typeof invocation.node !== "string" || typeof invocation.cli !== "string") return null;
   try {
-    const admittedNode = rt.which("node");
     const node = rt.realpath(invocation.node);
     const cli = rt.realpath(invocation.cli);
-    if (!admittedNode || node !== rt.realpath(admittedNode) || basename(cli) !== "cli.js"
-      || basename(dirname(cli)) !== "dist") return null;
-    const packageRoot = dirname(dirname(cli));
-    if (basename(packageRoot) !== "assertledger") return null;
-    const manifestPath = join(packageRoot, "package.json");
-    if (!rt.plainFilePresent(manifestPath)) return null;
-    const manifest = JSON.parse(rt.readPlainText(manifestPath));
-    if (manifest?.name !== "assertledger" || manifest.version !== version
-      || manifest.bin?.assertledger !== "dist/cli.js" || manifest.bin?.testforge !== "dist/cli.js"
-      || verifiedAssertAsset(rt, packageRoot, "dist/cli.js", contract) === null
-      || skill !== verifiedAssertAsset(rt, packageRoot, "integrations/skill/SKILL.md", contract)) return null;
-    return { packageRoot, contract };
+    if (node !== identity.nodePath || cli !== identity.cliPath
+      || skill !== verifiedAssertAsset(rt, identity.packageRoot, "integrations/skill/SKILL.md", identity.contract)) return null;
+    return identity;
   } catch {
     return null;
   }
@@ -1014,7 +1033,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
   const initFiles = parsed?.init?.files;
   const initActions = parsed?.init?.actions;
   const packageAnchor = Array.isArray(parsed?.connection?.artifacts)
-    ? assertPackageAnchor(rt, parsed.connection, client, root, options.version) : null;
+    ? assertPackageAnchor(rt, parsed.connection, client, root, options.identity) : null;
   const expectedInitPaths = ["assertledger.config.json", "assertledger.lock.json"];
   const nestedSuccess = ["UNCHANGED", mode === "dry-run" ? "WOULD_CREATE" : "CREATED"].includes(parsed?.status);
   const initArtifactByPath = new Map(expectedInitPaths.map((relativePath) => [
@@ -1362,9 +1381,17 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
       recordProjectAdmissionProblem(report, error, "PACKAGE_MANIFEST_CONFLICT");
       return null;
     }
-    const previewCommand = !needsInstall
-      ? localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"])
-      : ["npm", "exec", "--yes", "--ignore-scripts", `--package=assertledger@${version}`, "--", "assertledger", "setup", root, "--client", client, "--dry-run", "--json"];
+    let identity;
+    try {
+      identity = needsInstall
+        ? await resolveCachedAssertEntry(rt, root, version)
+        : authenticateAssertEntry(rt, admission.entry, version);
+    } catch (error) {
+      problem(report, "ASSERTLEDGER_CONTRACT_INVALID", String(error.message ?? error), 3);
+      return null;
+    }
+    const previewCommand = [identity.nodePath, identity.cliPath,
+      "setup", root, "--client", client, "--dry-run", "--json"];
     const result = await rt.exec(previewCommand, root);
     if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
     try {
@@ -1375,7 +1402,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     }
     const parsed = nativeResult(result, `assertledger setup (${client})`, report);
     if (!parsed) continue;
-    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"], { version })) {
+    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"], { identity })) {
       problem(report, "ASSERTLEDGER_CONFLICT", JSON.stringify(parsed).slice(0, 600));
       continue;
     }
@@ -1495,25 +1522,29 @@ async function applyAssert(rt, root, hosts, version, preflight) {
     const client = host === "claude" ? "claude-code" : "codex";
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    const preview = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
+    let identity = authenticateAssertEntry(rt, admission.entry, version);
+    const preview = await rt.exec([identity.nodePath, identity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"], root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
+    identity = authenticateAssertEntry(rt, admission.entry, version);
     const previewReport = parseJsonOutput(preview);
-    if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"], { version })) {
+    if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"], { identity })) {
       throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
     }
-    const result = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--write", "--json"]), root);
+    const result = await rt.exec([identity.nodePath, identity.cliPath, "setup", root, "--client", client, "--write", "--json"], root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
+    identity = authenticateAssertEntry(rt, admission.entry, version);
     const parsed = parseJsonOutput(result);
-    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"], { version })) {
+    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"], { identity })) {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
     }
-    const verify = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
+    const verify = await rt.exec([identity.nodePath, identity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"], root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
+    identity = authenticateAssertEntry(rt, admission.entry, version);
     const verified = parseJsonOutput(verify);
-    if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"], { version })) {
+    if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"], { identity })) {
       throw new Error(`AssertLedger post-install verification (${client}): ${shortError(verify)}`);
     }
   }
@@ -1597,11 +1628,13 @@ async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [ve
     const client = host === "claude" ? "claude-code" : "codex";
     requireAssertLedgerTools(rt, project.manager);
     const admission = assertAssertAdmission(rt, root, project.manager, [version], [version]);
-    const argv = localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]);
+    let identity = authenticateAssertEntry(rt, admission.entry, version);
+    const argv = [identity.nodePath, identity.cliPath, "setup", root, "--client", client, "--dry-run", "--json"];
     const result = await rt.exec(argv, root);
     requireAssertLedgerTools(rt, project.manager);
-    assertAssertAdmission(rt, root, project.manager, [version], [version]);
-    checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result) });
+    const readback = assertAssertAdmission(rt, root, project.manager, [version], [version]);
+    identity = authenticateAssertEntry(rt, readback.entry, version);
+    checks.push({ command: `setup:${client}`, exitCode: result.code, report: parseJsonOutput(result), identity });
   }
   requireAssertLedgerTools(rt, project.manager);
   const exitCodes = { UNCHANGED: 0, WOULD_CREATE: 0, BLOCKED: 3, CONFLICT: 4 };
@@ -1610,16 +1643,17 @@ async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [ve
     return item.exitCode === exitCodes[item.report?.status]
       && validAssertSetupReport(rt, item.report, root, client, "dry-run",
         Object.keys(exitCodes), ["UNCHANGED", "WOULD_CREATE", "CONFLICT"], {
-          version,
+          identity: item.identity,
           initStatuses: ["UNCHANGED", "WOULD_CREATE", "BLOCKED", "CONFLICT"],
           connectionStatuses: ["EMITTED", "CONFLICT"],
         });
   });
   const configured = admitted && checks.every((item) => item.exitCode === 0 && item.report.status === "UNCHANGED"
-    && validAssertSetupReport(rt, item.report, root, item.command.slice(6), "dry-run", ["UNCHANGED"], ["UNCHANGED"], { version }));
+    && validAssertSetupReport(rt, item.report, root, item.command.slice(6), "dry-run", ["UNCHANGED"], ["UNCHANGED"], { identity: item.identity }));
+  const publicChecks = checks.map(({ identity: _identity, ...item }) => item);
   return {
     name: "assertledger", version, installed: "yes", configured: !admitted ? "unknown" : configured ? "yes" : "no",
-    loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured, evidenceInvalid: !admitted,
+    loaded: "unknown", approved: "unknown", observed: "unknown", checks: publicChecks, ready: configured, evidenceInvalid: !admitted,
   };
 }
 

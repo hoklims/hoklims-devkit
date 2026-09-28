@@ -517,10 +517,12 @@ async function runAssertLedgerDemo(lane) {
     "AssertLedger strong fixture must verify",
   );
   writeFileSync(path.join(evidenceRoot, `${lane.name}-assertledger-demo.json`), `${JSON.stringify({ demo, report }, null, 2)}\n`);
+  return { verdict: "VERIFIED", report };
 }
 
 function finalizeNativeSmokeResults(laneResults) {
-  assertNativeSmokeResults(laneResults);
+  assertNativeSmokeResults(laneResults, { runRoot: physicalRunRoot,
+    versions: { semctx: config.expected.semctx, assertledger: config.expected.assertledger } });
   const sourceAfter = snapshotTree(sourceCheckout);
   writeFileSync(path.join(evidenceRoot, "source-after.json"), `${JSON.stringify(sourceAfter, null, 2)}\n`);
   const sourceDiff = diffSnapshots({ source: sourceBefore }, { source: sourceAfter });
@@ -555,7 +557,8 @@ function finalizeNativeSmokeResults(laneResults) {
       },
     },
     lanes: laneResults.map((lane) => ({ name: lane.name, host: lane.host,
-      withAssertLedger: lane.withAssertLedger, stages: lane.stages })),
+      withAssertLedger: lane.withAssertLedger, stages: lane.stages,
+      evidence: lane.evidence, demo: lane.demo })),
     protectedBoundaries: "full repository and full owned profile roots",
     cachesAndTempOutsideProtectedProfiles: true,
     actualUserProfilesUsed: false,
@@ -580,5 +583,7 @@ const matrixOptions = {
 await runNativeSmokeOrchestration({
   runMatrix: runNativeLaneMatrix,
   matrixOptions,
+  resultContext: { runRoot: physicalRunRoot,
+    versions: { semctx: config.expected.semctx, assertledger: config.expected.assertledger } },
   finalize: finalizeNativeSmokeResults,
 });

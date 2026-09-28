@@ -102,7 +102,7 @@ function assertSetupReport(argv, status, mode, schemaVersion = "1.0.0") {
     detections,
   };
   const lockContent = `${canonicalFixtureJson({ ...lockBase, lockDigest: fixtureDigest(canonicalFixtureJson(lockBase)) })}\n`;
-  const node = process.platform === "win32" ? "C:\\runtime\\node.exe" : "/runtime/node";
+  const node = argv[0] === "node" ? "node" : process.platform === "win32" ? "C:\\runtime\\node.exe" : "/runtime/node";
   const cli = argv[0] === "node" && typeof argv[1] === "string" && argv[1].endsWith("cli.js")
     ? argv[1] : process.platform === "win32" ? "C:\\cache\\assertledger\\dist\\cli.js" : "/cache/assertledger/dist/cli.js";
   const configuration = client === "codex" ? [
@@ -187,7 +187,7 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
     calls,
     writes,
     which: (name) => name === "node" && tools.includes("node")
-      ? (process.platform === "win32" ? "C:\\runtime\\node.exe" : "/runtime/node")
+      ? "node"
       : ["bun", "bunx", "codex", ...tools].includes(name) ? `/bin/${name}` : null,
     resolve: () => "/repo",
     realpath: (path) => path,
@@ -205,16 +205,17 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
     },
     exec: async (argv) => {
       calls.push(argv);
+      const nodeCommand = argv[0] === "node" || argv[0] === (process.platform === "win32" ? "C:\\runtime\\node.exe" : "/runtime/node");
       if (argv[0] === "bun") return { code: 0, stdout: "1.4.0\n", stderr: "" };
       if (argv[0] === "uv" && argv.includes("--version")) return { code: 0, stdout: "uv 0.8.22 (fixture)\n", stderr: "" };
-      if (argv[0] === "node" && argv.includes("setup")) {
+      if (nodeCommand && argv.includes("setup")) {
         const write = argv.includes("--write");
         const cli = argv[1];
         const installed = JSON.parse(files[join(dirname(dirname(cli)), "package.json")] ?? "null")?.version ?? "1.2.0";
         installAssertPackageFixture(files, cli, installed);
         return { code: assertStatus === "CONFLICT" ? 4 : 0, stdout: JSON.stringify(assertSetupReport(argv, write ? "CREATED" : assertStatus, write ? "write" : "dry-run")), stderr: "" };
       }
-      if (argv[0] === "node") return { code: 0, stdout: "v22.15.0\n", stderr: "" };
+      if (nodeCommand) return { code: 0, stdout: "v22.15.0\n", stderr: "" };
       if (argv[0] === "git") return { code: 0, stdout: "/repo\n", stderr: "" };
       if (argv[0] === "uv" && argv.includes("dir")) return { code: 0, stdout: "/uvbin\n", stderr: "" };
       if (argv[0] === "uv" && argv.includes("list")) return { code: 0, stdout: uvInstalled ? "latent-compass v0.3.0\n" : "", stderr: uvInstalled ? "" : "No tools installed\n" };
@@ -225,7 +226,7 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
         const spec = argv.find((argument) => /^(?:--package=)?assertledger@/u.test(argument));
         const cli = process.platform === "win32" ? "C:\\cache\\assertledger\\dist\\cli.js" : "/cache/assertledger/dist/cli.js";
         installAssertPackageFixture(files, cli, spec?.replace(/^--package=assertledger@|^assertledger@/u, "") ?? "1.2.0", true);
-        return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
+        return { code: 0, stdout: cli, stderr: "" };
       }
       const assertSpec = argv.find((arg) => /^assertledger@/u.test(arg));
       if (assertSpec && ((argv[0] === "npm" && argv.includes("install"))
@@ -240,7 +241,7 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
           manifest.devDependencies = { ...(manifest.devDependencies ?? {}), assertledger: installedVersion };
           files[manifestPath] = JSON.stringify(manifest);
           files[join("/repo", "node_modules", "assertledger", "package.json")] = JSON.stringify({ version: installedVersion });
-          files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")] = "cli";
+          installAssertPackageFixture(files, join("/repo", "node_modules", "assertledger", "dist", "cli.js"), installedVersion, true);
         }
         return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
       }
@@ -2296,7 +2297,7 @@ describe("public CLI", () => {
       files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) },
     });
     const nativeExec = rt.exec;
-    rt.exec = async (argv, cwd) => argv[0] === "npm" && argv.includes("exec")
+    rt.exec = async (argv, cwd) => argv[0] === "node" && argv.includes("setup")
       ? { code: 0, stdout: JSON.stringify({
         ...assertSetupReport(argv, "WOULD_CREATE", "dry-run"),
         artifacts: [
@@ -2328,7 +2329,7 @@ describe("public CLI", () => {
         files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }) },
       });
       const nativeExec = rt.exec;
-      rt.exec = async (argv, cwd) => argv[0] === "npm" && argv.includes("exec")
+      rt.exec = async (argv, cwd) => argv[0] === "node" && argv.includes("setup")
         ? { code: 0, stdout: JSON.stringify({ ...assertSetupReport(argv, "WOULD_CREATE", "dry-run"), artifacts }), stderr: "" }
         : nativeExec(argv, cwd);
       const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
@@ -3295,8 +3296,29 @@ describe("public CLI", () => {
       };
       const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
       expect(report.ok).toBe(false);
-      expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_CONFLICT");
+      expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_CONTRACT_INVALID");
       expect(rt.writes).toHaveLength(0);
+    }
+  });
+
+  test("AssertLedger authenticates the actual local CLI before doctor and preflight execution", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    for (const command of ["doctor", "setup"]) {
+      const files = {
+        [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+        [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+        [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "placeholder",
+      };
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files });
+      files[join("/repo", "node_modules", "assertledger", "dist", "cli.js")] = "replaced local executable\n";
+      const report = await execute(command === "doctor" ? parseArgs(["doctor", "/repo", "--host", "codex"])
+        : { ...setupOptions(), with: ["assertledger"], dryRun: true }, rt);
+      expect(report.ok, command).toBe(false);
+      expect(rt.calls.filter((argv) => argv[0] === "node" && String(argv[1]).endsWith("cli.js")
+        && argv.includes("setup")), command).toHaveLength(0);
+      expect(rt.writes, command).toHaveLength(0);
     }
   });
 
@@ -5405,7 +5427,7 @@ describe("public CLI", () => {
       } });
       const nativeExec = rt.exec;
       rt.exec = async (argv, cwd, timeout) => {
-        if (argv[0] === "npm" && argv.includes("exec")) {
+        if (argv[0] === "node" && argv.includes("setup")) {
           const report = assertSetupReport(argv, "WOULD_CREATE", "dry-run");
           if (field === "client") report.client = "claude-code";
           if (field === "state") report.artifacts[0].state = "CREATED";
@@ -5650,7 +5672,7 @@ describe("public CLI", () => {
       } });
       const nativeExec = rt.exec;
       rt.exec = async (argv, cwd, timeout) => {
-        if (argv[0] === "npm" && argv.includes("exec")) {
+        if (argv[0] === "node" && argv.includes("setup")) {
           const report = assertSetupReport(argv, "WOULD_CREATE", "dry-run");
           if (field === "connection-client") report.connection.client = "claude-code";
           if (field === "mode") report.mode = "write";
