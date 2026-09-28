@@ -16,3 +16,5 @@ export function resolveBundledNpmCli(nodeExecutable, platform = process.platform
   if (!candidate) throw new Error(`Bundled npm CLI not found beside Node: ${nodeExecutable}`);
   return realpathSync(candidate);
 }
+
+if (import.meta.main) process.stdout.write(resolveBundledNpmCli(process.execPath));

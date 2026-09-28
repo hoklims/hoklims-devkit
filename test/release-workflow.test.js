@@ -332,7 +332,7 @@ function validateNativeNoLc(workflow, harnessSource) {
     /^mkdir native-package$/u,
     /^tarball="\$\(npm pack --silent --ignore-scripts --pack-destination native-package\)"$/u,
     /^test "\$tarball" = "hoklims-devkit-\$\{version\}\.tgz"$/u,
-    /^digest="\$\(node -e '.+' "native-package\/\$tarball"\)"$/u,
+    String.raw`digest="$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "native-package/$tarball")"`,
     /^echo "version=\$version" >> "\$GITHUB_OUTPUT"$/u,
     /^echo "source-sha=\$source_sha" >> "\$GITHUB_OUTPUT"$/u,
     /^echo "sha256=\$digest" >> "\$GITHUB_OUTPUT"$/u,
@@ -350,12 +350,12 @@ function validateNativeNoLc(workflow, harnessSource) {
     /^tarball="\$RUNNER_TEMP\/native-package\/hoklims-devkit-\$\{DEVKIT_VERSION\}\.tgz"$/u,
     /^test -f "\$tarball"$/u,
     /^test "\$\(git rev-parse HEAD\)" = "\$DEVKIT_SOURCE_SHA"$/u,
-    /^npm_cli="\$\(node -e 'import\("\.\/scripts\/native-runtime-paths\.mjs"\).+'\)"$/u,
+    /^npm_cli="\$\(node scripts\/native-runtime-paths\.mjs\)"$/u,
     /^semctx_sha="\$\(npm view semctx@0\.3\.7 gitHead\)"$/u,
     String.raw`physical_temp="$(node -p 'require("node:fs").realpathSync(process.argv[1])' "$RUNNER_TEMP")"`,
     /^run_root="\$physical_temp\/devkit-native-no-lc"$/u,
     /^config="\$physical_temp\/devkit-native-no-lc-config\.json"$/u,
-    /^node -e '.+' "\$config" "\$run_root" "\$PWD" "\$tarball" "\$semctx_sha" "\$npm_cli"$/u,
+    /^node scripts\/native-no-lc-config\.mjs "\$config" "\$run_root" "\$PWD" "\$tarball" "\$semctx_sha" "\$npm_cli"$/u,
     /^node scripts\/native-no-lc-smoke\.mjs "\$config"$/u,
     /^test -f "\$run_root\/evidence\/PASS"$/u,
   ], "native smoke");
@@ -394,12 +394,30 @@ test("native no-LC workflow rejects head, artifact, matrix, and silent-skip muta
     (workflow) => { workflow.jobs.native.steps.find((step) => step.name?.startsWith("Run four owned")).run += " || true"; },
     (workflow) => { workflow.jobs.build.steps.push({ run: "npm pack --silent" }); },
     (workflow) => { workflow.jobs.native.steps.find((step) => step.uses?.startsWith("actions/download-artifact@")).with.name = "other"; },
+    (workflow) => {
+      const step = workflow.jobs.native.steps.find((item) => item.name?.startsWith("Run four owned"));
+      step.run = step.run.replace(
+        /node scripts\/native-no-lc-config\.mjs .+/u,
+        'node -e \'const fs=require("node:fs");fs.mkdirSync(process.argv[2]+"/evidence",{recursive:true});fs.writeFileSync(process.argv[2]+"/evidence/PASS","synthetic");fs.writeFileSync("scripts/native-no-lc-smoke.mjs","process.exit(0);")\' "$config" "$run_root" "$PWD" "$tarball" "$semctx_sha" "$npm_cli"',
+      );
+    },
   ];
   for (const mutate of cases) {
     const mutant = structuredClone(original);
     mutate(mutant);
     expect(() => validateNativeNoLc(mutant, harness)).toThrow();
   }
+});
+
+test("native configuration command rejects opaque JavaScript harness bypass", () => {
+  const workflow = Bun.YAML.parse(readFileSync(nativePath, "utf8"));
+  const harness = readFileSync(nativeHarnessPath, "utf8");
+  const step = workflow.jobs.native.steps.find((item) => item.name?.startsWith("Run four owned"));
+  step.run = step.run.replace(
+    /node scripts\/native-no-lc-config\.mjs .+/u,
+    'node -e \'const fs=require("node:fs");fs.mkdirSync(process.argv[2]+"/evidence",{recursive:true});fs.writeFileSync(process.argv[2]+"/evidence/PASS","synthetic");fs.writeFileSync("scripts/native-no-lc-smoke.mjs","process.exit(0);")\' "$config" "$run_root" "$PWD" "$tarball" "$semctx_sha" "$npm_cli"',
+  );
+  expect(() => validateNativeNoLc(workflow, harness)).toThrow();
 });
 
 test("release critical jobs reject runner, condition, and inert-script bypasses", () => {

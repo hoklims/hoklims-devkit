@@ -794,14 +794,15 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
     && (health.binding.status === "valid" || health.coverage.status === "insufficient")
     && healthCode === expectedHealthCode;
   if (!doctorStructured || !healthStructured) return "unknown";
+  const doctorIndexReady = indexCheck.ok === true && indexCheck.status === "healthy";
+  const healthIndexReady = healthCode === 0 && health.binding.status === "valid"
+    && health.freshness.canRunHighRiskControl === true && health.coverage.status === "complete";
+  if (doctorIndexReady !== healthIndexReady) return "unknown";
   const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
     && requiredChecks.every((name) => doctorChecks.some((check) =>
       check && typeof check === "object" && check.name === name && check.ok === true
       && (name !== "index" || check.status === "healthy")));
-  const indexReady = healthCode === 0 && health?.schemaVersion === 1 && health.kind === "index_health"
-    && health.binding?.status === "valid" && health.freshness?.canRunHighRiskControl === true
-    && health.coverage?.status === "complete";
-  return doctorReady && indexReady ? "yes" : "no";
+  return doctorReady && healthIndexReady ? "yes" : "no";
 }
 
 async function resolveComponents(rt, options, state, root, report) {

@@ -122,7 +122,11 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
         checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({ name, ok: true, ...(name === "index" ? { status: "healthy" } : {}) })),
       } : {
         healthy: false, version: argv[1]?.split("@").at(-1) ?? version,
-        checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({ name, ok: name !== "workspace", ...(name === "index" ? { status: "healthy" } : {}) })),
+        checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({
+          name,
+          ok: !["workspace", "index"].includes(name),
+          ...(name === "index" ? { status: "blocked" } : {}),
+        })),
       }), stderr: "" };
       if (argv.includes("index-health")) return workspaceReady
         ? { code: 0, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: "FRESH", canRunHighRiskControl: true, reasons: [] }, coverage: { status: "complete" } }), stderr: "" }
@@ -1492,6 +1496,55 @@ describe("public CLI", () => {
         expect(rt.writes).toHaveLength(0);
       }
     }
+  });
+
+  test("Semctx doctor and index-health conclusions must agree before repair", async () => {
+    const state = {
+      schemaVersion: 1, projectRoot: "/repo",
+      components: { semctx: { version: "0.3.7", hosts: ["codex"] } },
+    };
+    const make = (doctorReady, healthReady) => {
+      const rt = fakeRuntime({ state: structuredClone(state), workspaceReady: true });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        const result = await nativeExec(argv, cwd, timeout);
+        if (argv.includes("doctor") && !doctorReady) {
+          const body = JSON.parse(result.stdout);
+          body.healthy = false;
+          const index = body.checks.find((check) => check.name === "index");
+          index.ok = false;
+          index.status = "blocked";
+          return { ...result, code: 1, stdout: JSON.stringify(body) };
+        }
+        if (argv.includes("index-health") && !healthReady) {
+          const body = JSON.parse(result.stdout);
+          body.binding.status = "invalid";
+          body.coverage.status = "insufficient";
+          return { ...result, code: 3, stdout: JSON.stringify(body) };
+        }
+        return result;
+      };
+      return rt;
+    };
+    for (const [doctorReady, healthReady] of [[false, true], [true, false]]) {
+      for (const command of ["doctor", "setup"]) {
+        const rt = make(doctorReady, healthReady);
+        const report = await execute(command === "doctor"
+          ? parseArgs(["doctor", "/repo", "--host", "codex"])
+          : setupOptions(), rt);
+        expect(report.ok, `${doctorReady}:${healthReady}:${command}`).toBe(false);
+        expect(report.components[0].configured).toBe("unknown");
+        expect(rt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run"))).toHaveLength(0);
+      }
+    }
+
+    const doctorRt = make(false, false);
+    const doctor = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), doctorRt);
+    expect(doctor.components[0].configured).toBe("no");
+    const setupRt = make(false, false);
+    const setup = await execute(setupOptions(), setupRt);
+    expect(setup.ok).toBe(true);
+    expect(setupRt.calls.filter((argv) => argv.includes("setup") && !argv.includes("--dry-run"))).toHaveLength(1);
   });
 
   test("release skew prevents writes", async () => {
@@ -4990,7 +5043,7 @@ describe("public CLI", () => {
       };
       const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
       expect(report.ok, field).toBe(false);
-      expect(report.components[0].configured, field).toBe(field === "index-partial" ? "no" : "unknown");
+      expect(report.components[0].configured, field).toBe("unknown");
       expect(rt.writes, field).toHaveLength(0);
     }
 

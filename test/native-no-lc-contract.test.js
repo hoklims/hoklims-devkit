@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { diffSnapshots, runtimeCachePaths, snapshotTree, validateNativeReport } from "../scripts/native-no-lc-contract.mjs";
 import { resolveBundledNpmCli } from "../scripts/native-runtime-paths.mjs";
+import { buildNativeConfig } from "../scripts/native-no-lc-config.mjs";
 
 function touch(path, bytes = "fixture\n") {
   mkdirSync(dirname(path), { recursive: true });
@@ -118,7 +119,18 @@ test("real native startup accepts generated owned config and rejects wrong expec
   const execute = (name, expected = base.expected) => {
     const config = join(root, `${name}.json`);
     const runRoot = join(root, name);
-    writeFileSync(config, `${JSON.stringify({ ...base, runRoot, expected })}\n`);
+    const generated = buildNativeConfig({
+      runRoot,
+      sourceCheckout: source,
+      artifactPath: artifact,
+      artifactSha256: base.artifact.sha256,
+      sourceSha,
+      version: "0.1.0",
+      semctxPublicationSha: base.expected.semctxPublicationSha,
+      npmCliJs: npmCli,
+      startupProbeOnly: true,
+    });
+    writeFileSync(config, `${JSON.stringify({ ...generated, expected })}\n`);
     return Bun.spawnSync({ cmd: [process.execPath, harness, config], cwd: root, stdout: "pipe", stderr: "pipe" });
   };
   const accepted = execute("accepted");
