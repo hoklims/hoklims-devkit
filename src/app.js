@@ -655,6 +655,11 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
   ];
   const initStatuses = options.initStatuses ?? (mode === "dry-run" ? ["WOULD_CREATE", "UNCHANGED"] : ["CREATED", "UNCHANGED"]);
   const connectionStatuses = options.connectionStatuses ?? (mode === "dry-run" ? ["EMITTED"] : ["CREATED", "UNCHANGED"]);
+  const successShape = {
+    UNCHANGED: { init: "UNCHANGED", connection: mode === "dry-run" ? "EMITTED" : "UNCHANGED", artifact: "UNCHANGED" },
+    WOULD_CREATE: { init: "WOULD_CREATE", connection: "EMITTED", artifact: "WOULD_CREATE" },
+    CREATED: { init: "CREATED", connection: "CREATED", artifact: "CREATED" },
+  }[parsed?.status];
   return statuses.includes(parsed?.status) && parsed.client === client && parsed.mode === mode
     && Array.isArray(parsed.artifacts) && parsed.artifacts.length === expected.length
     && parsed.artifacts.every((artifact) => artifact !== null && !Array.isArray(artifact) && typeof artifact === "object")
@@ -666,6 +671,9 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && initStatuses.includes(parsed.init?.status)
     && connectionStatuses.includes(parsed.connection?.status)
     && parsed.connection?.client === client
+    && (!successShape || (parsed.init.status === successShape.init
+      && parsed.connection.status === successShape.connection
+      && parsed.artifacts.every((artifact) => artifact.state === successShape.artifact)))
     && parsed.rollback?.status === "NOT_REQUIRED";
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { diffSnapshots, snapshotTree, validateNativeReport } from "../scripts/native-no-lc-contract.mjs";
+import { diffSnapshots, runtimeCachePaths, snapshotTree, validateNativeReport } from "../scripts/native-no-lc-contract.mjs";
 import { resolveBundledNpmCli } from "../scripts/native-runtime-paths.mjs";
 
 function touch(path, bytes = "fixture\n") {
@@ -70,6 +70,18 @@ test("native snapshots detect permission-only mutations", () => {
   const before = { source: snapshotTree(root) };
   chmodSync(file, 0o755);
   expect(diffSnapshots(before, { source: snapshotTree(root) })).not.toEqual([]);
+});
+
+test("native runtime cache paths stay outside the fully protected home", () => {
+  const root = mkdtempSync(join(tmpdir(), "devkit-native-cache-"));
+  const runtime = join(root, "runtime");
+  const protectedHome = join(root, "profile", "home");
+  const caches = runtimeCachePaths(runtime);
+  expect(Object.keys(caches)).toContain("BUN_INSTALL_CACHE_DIR");
+  for (const cache of Object.values(caches)) {
+    expect(cache.startsWith(`${protectedHome}\\`) || cache.startsWith(`${protectedHome}/`)).toBe(false);
+    expect(cache.startsWith(runtime)).toBe(true);
+  }
 });
 
 test("real native startup accepts generated owned config and rejects wrong expected versions before network", () => {

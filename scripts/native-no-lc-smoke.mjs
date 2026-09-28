@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { diffSnapshots, snapshotTree, validateNativeReport } from "./native-no-lc-contract.mjs";
+import { diffSnapshots, runtimeCachePaths, snapshotTree, validateNativeReport } from "./native-no-lc-contract.mjs";
 
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 const configPath = process.argv[2];
@@ -203,24 +203,24 @@ function makeRuntimeEnvironment(root, pathPrefix = null) {
   const home = path.join(root, "home");
   const appData = path.join(root, "appdata");
   const localAppData = path.join(root, "localappdata");
-  const temp = path.join(root, "temp");
-  const npmCache = path.join(root, "npm-cache");
   const xdg = path.join(root, "xdg");
-  for (const directory of [home, appData, localAppData, temp, npmCache, xdg]) {
+  const cachePaths = runtimeCachePaths(root);
+  for (const directory of [home, appData, localAppData, xdg, ...Object.values(cachePaths)]) {
     mkdirSync(directory, { recursive: true });
   }
   environment.HOME = home;
   environment.USERPROFILE = home;
   environment.APPDATA = appData;
   environment.LOCALAPPDATA = localAppData;
-  environment.TEMP = temp;
-  environment.TMP = temp;
-  environment.TMPDIR = temp;
+  environment.TEMP = cachePaths.TEMP;
+  environment.TMP = cachePaths.TEMP;
+  environment.TMPDIR = cachePaths.TEMP;
   environment.XDG_CONFIG_HOME = path.join(xdg, "config");
-  environment.XDG_CACHE_HOME = path.join(xdg, "cache");
+  environment.XDG_CACHE_HOME = cachePaths.XDG_CACHE_HOME;
   environment.XDG_STATE_HOME = path.join(xdg, "state");
   environment.XDG_DATA_HOME = path.join(xdg, "data");
-  environment.npm_config_cache = npmCache;
+  environment.npm_config_cache = cachePaths.npm_config_cache;
+  environment.BUN_INSTALL_CACHE_DIR = cachePaths.BUN_INSTALL_CACHE_DIR;
   environment.NPM_CONFIG_USERCONFIG = path.join(root, "absent-user-npmrc");
   environment.NPM_CONFIG_GLOBALCONFIG = path.join(root, "absent-global-npmrc");
   environment.npm_config_update_notifier = "false";

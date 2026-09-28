@@ -35,6 +35,13 @@ function assertOrderedSteps(job, expected, label, allowedIf = {}) {
   }
 }
 
+function assertExactRun(step, command, label, shell) {
+  if (step?.run !== command || step.shell !== shell
+    || step.if !== undefined || step["continue-on-error"] !== undefined) {
+    throw new Error(`${label} command or shell is not canonical`);
+  }
+}
+
 function assertNoShellStartupOverrides(workflow) {
   const forbidden = new Set(["BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "PROMPT_COMMAND"]);
   const inspect = (owner) => {
@@ -114,6 +121,9 @@ function validateReleaseGraph(workflow) {
     "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
     "Create GitHub release after registry verification",
   ], "release");
+  const hostInstall = "npm install --global @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229";
+  assertExactRun(verify.steps[5], hostInstall, "verify host CLI install", undefined);
+  assertExactRun(publicSmoke.steps[5], hostInstall, "public host CLI install", undefined);
   if (build["runs-on"] !== "ubuntu-latest" || verify["runs-on"] !== "${{ matrix.os }}"
     || publish["runs-on"] !== "ubuntu-latest" || publicSmoke["runs-on"] !== "ubuntu-latest"
     || release["runs-on"] !== "ubuntu-latest") {
@@ -262,7 +272,7 @@ function validateCiCheckout(workflow) {
     "run",
     "Test packaged CLI outside checkout",
   ], "CI package");
-  if (job.steps[3].run !== "bun run check") throw new Error("CI must run the complete check command");
+  assertExactRun(job.steps[3], "bun run check", "CI check", undefined);
   assertCanonicalStep(job, job.steps[4], [
     /^tarball="\$\(npm pack --silent\)"$/u,
     /^consumer="\$\(mktemp -d\)"$/u,
@@ -432,6 +442,8 @@ test("release critical jobs reject runner, condition, and inert-script bypasses"
     ["publish bash startup override", (workflow) => {
       workflow.jobs.publish.env = { BASH_ENV: ".github/bypass.sh" };
     }],
+    ["verify host install neutralized", (workflow) => { workflow.jobs.verify.steps[5].run = "true"; }],
+    ["public host install neutralized", (workflow) => { workflow.jobs["public-smoke"].steps[5].run = "true"; }],
   ];
   for (const [name, mutate] of cases) {
     const mutant = structuredClone(original);
@@ -450,6 +462,7 @@ test("CI direct-head checkout rejects merge-ref and reduced-matrix mutants", () 
     (workflow) => { workflow.jobs.package["continue-on-error"] = true; },
     (workflow) => { workflow.jobs.package.steps[3].if = "${{ false }}"; },
     (workflow) => { workflow.jobs.package.steps[3].run = "true"; },
+    (workflow) => { workflow.jobs.package.steps[3].shell = "bash -c 'exit 0' {0}"; },
     (workflow) => { workflow.jobs.package.steps[3].run = `exit 0\n${workflow.jobs.package.steps[3].run}`; },
     (workflow) => {
       const step = workflow.jobs.package.steps.find((item) => item.name?.startsWith("Test packaged"));

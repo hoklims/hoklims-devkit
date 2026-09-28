@@ -2805,6 +2805,38 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
   });
 
+  test("AssertLedger unchanged evidence requires unchanged nested initialization", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      semctx: { version: "0.3.7", hosts: ["codex"] },
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const command of ["doctor", "setup"]) {
+      const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files: { ...files } });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => {
+        if (argv[0] === "node" && argv.includes("setup") && argv.includes("--dry-run")) {
+          const report = assertSetupReport(argv, "UNCHANGED", "dry-run");
+          report.init.status = "WOULD_CREATE";
+          return { code: 0, stdout: JSON.stringify(report), stderr: "" };
+        }
+        return nativeExec(argv, cwd, timeout);
+      };
+      const report = await execute(command === "doctor"
+        ? parseArgs(["doctor", "/repo", "--host", "codex"])
+        : { ...setupOptions(), with: ["assertledger"] }, rt);
+      expect(report.ok, command).toBe(false);
+      expect(report.components.find((item) => item.name === "assertledger").configured, command).toBe("unknown");
+      expect(report.conflicts.map((item) => item.code), command)
+        .toContain(command === "doctor" ? "NATIVE_REPORT_INVALID" : "ASSERTLEDGER_CONFLICT");
+      expect(rt.writes, command).toHaveLength(0);
+    }
+  });
+
   test("interrupted host expansion preserves both selected hosts in its pending plan", async () => {
     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.7", hosts: ["codex"] } } };
     const rt = fakeRuntime({ state, tools: ["claude"] });

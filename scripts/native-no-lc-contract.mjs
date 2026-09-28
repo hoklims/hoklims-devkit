@@ -47,6 +47,15 @@ export function diffSnapshots(before, after) {
     .map((key) => ({ path: key, before: beforeMap.get(key) ?? null, after: afterMap.get(key) ?? null }));
 }
 
+export function runtimeCachePaths(runtimeRoot) {
+  return {
+    TEMP: path.join(runtimeRoot, "temp"),
+    npm_config_cache: path.join(runtimeRoot, "npm-cache"),
+    XDG_CACHE_HOME: path.join(runtimeRoot, "xdg", "cache"),
+    BUN_INSTALL_CACHE_DIR: path.join(runtimeRoot, "bun-cache"),
+  };
+}
+
 export function validateNativeReport(report, options) {
   const { projectRoot, command, hosts, names, versions, dryRun } = options;
   const doctor = command === "doctor";
