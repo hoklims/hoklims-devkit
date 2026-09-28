@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 const workflowPath = new URL("../.github/workflows/release.yml", import.meta.url);
+const bootstrapPath = new URL("../.github/workflows/bootstrap-verify.yml", import.meta.url);
 const ciPath = new URL("../.github/workflows/ci.yml", import.meta.url);
 const nativePath = new URL("../.github/workflows/native-no-lc.yml", import.meta.url);
 const nativeHarnessPath = new URL("../scripts/native-no-lc-smoke.mjs", import.meta.url);
@@ -70,7 +71,8 @@ function assertNoShellStartupOverrides(workflow) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
         throw new Error(`environment map contains an opaque key: ${name}`);
       }
-      if (forbidden.has(name.toUpperCase())) {
+      const upper = name.toUpperCase();
+      if (forbidden.has(upper) || upper === "NPM_CONFIG" || upper === "NPMRC" || upper.startsWith("NPM_CONFIG_")) {
         throw new Error(`forbidden shell startup override: ${name}`);
       }
     }
@@ -116,6 +118,11 @@ function validateReleaseGraph(workflow) {
   if (![build, verify, publish, publicSmoke, release].every(Boolean)) {
     throw new Error("release graph jobs missing");
   }
+  if (JSON.stringify(build.outputs) !== JSON.stringify({
+    version: "${{ steps.package.outputs.version }}",
+    sha256: "${{ steps.package.outputs.sha256 }}",
+    integrity: "${{ steps.package.outputs.integrity }}",
+  })) throw new Error("build outputs must retain the exact version and archive digests");
   assertOrderedSteps(build, [
     "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
     "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
@@ -151,7 +158,7 @@ function validateReleaseGraph(workflow) {
     "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
     "Create GitHub release after registry verification",
   ], "release");
-  const hostInstall = "npm install --global @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229";
+  const hostInstall = "npm install --global --registry=https://registry.npmjs.org @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229";
   assertExactRun(verify.steps[5], hostInstall, "verify host CLI install", undefined);
   assertExactRun(publicSmoke.steps[5], hostInstall, "public host CLI install", undefined);
   for (const [name, job] of [["build", build], ["verify", verify], ["public smoke", publicSmoke]]) {
@@ -188,8 +195,10 @@ function validateReleaseGraph(workflow) {
     /^tarball="\$\(npm pack --silent\)"$/u,
     /^test "\$tarball" = "hoklims-devkit-\$\{version\}\.tgz"$/u,
     String.raw`digest="$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$tarball")"`,
+    String.raw`integrity="sha512-$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "$tarball")"`,
     /^echo "version=\$version" >> "\$GITHUB_OUTPUT"$/u,
     /^echo "sha256=\$digest" >> "\$GITHUB_OUTPUT"$/u,
+    /^echo "integrity=\$integrity" >> "\$GITHUB_OUTPUT"$/u,
   ], "build package");
 
   if (JSON.stringify(Object.keys(verify.strategy?.matrix ?? {})) !== JSON.stringify(["os"])
@@ -244,24 +253,26 @@ function validateReleaseGraph(workflow) {
   }
   const publishStep = (publish.steps ?? []).find((step) => step.name?.startsWith("Publish exact tag"));
   if (publishStep?.env?.RELEASE_VERSION !== "${{ needs.build.outputs.version }}"
-    || publishStep?.env?.EXPECTED_SHA256 !== "${{ needs.build.outputs.sha256 }}") {
+    || publishStep?.env?.EXPECTED_SHA256 !== "${{ needs.build.outputs.sha256 }}"
+    || publishStep?.env?.EXPECTED_INTEGRITY !== "${{ needs.build.outputs.integrity }}") {
     throw new Error("publish digest inputs must bind to build outputs");
   }
   assertCanonicalStep(publish, publishStep, [
-    /^npm install --global npm@11\.5\.1(?:\s+#.*)?$/u,
+    /^npm install --global --registry=https:\/\/registry\.npmjs\.org npm@11\.5\.1(?:\s+#.*)?$/u,
     /^version="\$RELEASE_VERSION"$/u,
     /^test "\$GITHUB_REF_NAME" = "v\$version"$/u,
     /^tarball="tested-package\/hoklims-devkit-\$\{version\}\.tgz"$/u,
     /^test -f "\$tarball"$/u,
     String.raw`node -e 'const fs=require("node:fs"),crypto=require("node:crypto");const actual=crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex");if(actual!==process.env.EXPECTED_SHA256)throw new Error("published tarball digest mismatch")' "$tarball"`,
     String.raw`integrity="sha512-$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "$tarball")"`,
-    /^if npm view "hoklims-devkit@\$version" version >\/dev\/null 2>&1; then$/u,
-    /^test "\$\(npm view "hoklims-devkit@\$version" dist\.integrity\)" = "\$integrity"$/u,
+    /^test "\$integrity" = "\$EXPECTED_INTEGRITY"$/u,
+    /^if npm view --registry=https:\/\/registry\.npmjs\.org "hoklims-devkit@\$version" version >\/dev\/null 2>&1; then$/u,
+    /^test "\$\(npm view --registry=https:\/\/registry\.npmjs\.org "hoklims-devkit@\$version" dist\.integrity\)" = "\$integrity"$/u,
     /^else$/u,
-    /^npm publish "\$tarball" --access public$/u,
+    /^npm publish "\$tarball" --access public --registry=https:\/\/registry\.npmjs\.org$/u,
     /^fi$/u,
-    /^test "\$\(npm view "hoklims-devkit@\$version" version\)" = "\$version"$/u,
-    /^test "\$\(npm view "hoklims-devkit@\$version" dist\.integrity\)" = "\$integrity"$/u,
+    /^test "\$\(npm view --registry=https:\/\/registry\.npmjs\.org "hoklims-devkit@\$version" version\)" = "\$version"$/u,
+    /^test "\$\(npm view --registry=https:\/\/registry\.npmjs\.org "hoklims-devkit@\$version" dist\.integrity\)" = "\$integrity"$/u,
   ], "publish", "github.ref_name != 'v0.1.0'");
 
   if (JSON.stringify([...needs(publicSmoke)].sort()) !== JSON.stringify(["build", "publish"])) {
@@ -275,11 +286,12 @@ function validateReleaseGraph(workflow) {
     /^version="\$RELEASE_VERSION"$/u,
     /^test "\$GITHUB_REF_NAME" = "v\$version"$/u,
     /^consumer="\$\(mktemp -d\)"$/u,
-    /^npm install --prefix "\$consumer" --ignore-scripts "hoklims-devkit@\$version"(?:\s+#.*)?$/u,
-    String.raw`test "$(node -p 'require(process.argv[1]).version' "$consumer/node_modules/hoklims-devkit/package.json")" = "$version"`,
+    /^npm install --prefix "\$consumer" --ignore-scripts --package-lock=true --registry=https:\/\/registry\.npmjs\.org "hoklims-devkit@\$version"(?:\s+#.*)?$/u,
+    /^node scripts\/public-install-integrity\.mjs "\$consumer" "\$version" "\$EXPECTED_INTEGRITY" "https:\/\/registry\.npmjs\.org"$/u,
     /^bun scripts\/release-smoke\.js "\$consumer"$/u,
   ];
-  if (publicStep?.env?.RELEASE_VERSION !== "${{ needs.build.outputs.version }}") {
+  if (publicStep?.env?.RELEASE_VERSION !== "${{ needs.build.outputs.version }}"
+    || publicStep?.env?.EXPECTED_INTEGRITY !== "${{ needs.build.outputs.integrity }}") {
     throw new Error("public smoke must install, attest, and smoke the exact built public version with failure propagation");
   }
   assertCanonicalStep(publicSmoke, publicStep, requiredPublicLines, "public smoke");
@@ -293,6 +305,73 @@ function validateReleaseGraph(workflow) {
   assertCanonicalStep(release, releaseStep, [
     /^gh release view "\$GITHUB_REF_NAME" >\/dev\/null 2>&1 \|\| gh release create "\$GITHUB_REF_NAME" --verify-tag --generate-notes$/u,
   ], "release");
+  return true;
+}
+
+function validateBootstrapGraph(workflow) {
+  assertNoShellStartupOverrides(workflow);
+  assertExactJobGraph(workflow, { verify: [], release: ["verify"] });
+  const { verify, release } = workflow?.jobs ?? {};
+  if (workflow?.name !== "Verify npm bootstrap release" || !verify || !release
+    || verify["runs-on"] !== "ubuntu-latest" || release["runs-on"] !== "ubuntu-latest") {
+    throw new Error("bootstrap workflow jobs or runners differ from the canonical graph");
+  }
+  const input = workflow?.on?.workflow_dispatch?.inputs?.verified_run_id;
+  if (input?.required !== true || input.type !== "string") throw new Error("bootstrap verified run input is not required");
+  assertOrderedSteps(verify, [
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+    "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+    "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e",
+    "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "Install tested agent CLIs",
+    "Verify the published bootstrap package and its exact tag",
+  ], "bootstrap verify");
+  assertOrderedSteps(release, [
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "Create GitHub release after public registry verification",
+  ], "bootstrap release");
+  const verifyCheckout = verify.steps[0];
+  const releaseCheckout = release.steps[0];
+  if (verifyCheckout.with?.ref !== "v0.1.0" || verifyCheckout.with?.["fetch-depth"] !== 0
+    || verifyCheckout.with?.["persist-credentials"] !== false
+    || releaseCheckout.with?.ref !== "v0.1.0" || releaseCheckout.with?.["persist-credentials"] !== false) {
+    throw new Error("bootstrap checkouts must bind the immutable first tag without credentials");
+  }
+  assertExactRun(verify.steps[5],
+    "npm install --global --registry=https://registry.npmjs.org @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229",
+    "bootstrap host CLI install", undefined);
+  const verifyStep = verify.steps[6];
+  if (JSON.stringify(verifyStep.env) !== JSON.stringify({
+    GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}", VERIFY_RUN_ID: "${{ inputs.verified_run_id }}",
+  })) throw new Error("bootstrap verification inputs are not canonical");
+  assertCanonicalStep(verify, verifyStep, [
+    /^\[\[ "\$VERIFY_RUN_ID" =~ \^\[0-9\]\+\$ \]\]$/u,
+    /^test "\$\(git cat-file -t refs\/tags\/v0\.1\.0\)" = "tag"$/u,
+    /^test "\$\(git rev-list -n 1 refs\/tags\/v0\.1\.0\)" = "\$\(git rev-parse HEAD\)"$/u,
+    /^git merge-base --is-ancestor HEAD origin\/main$/u,
+    /^test "\$\(node -p 'require\("\.\/package\.json"\)\.version'\)" = "0\.1\.0"$/u,
+    /^run_json="\$\(gh run view "\$VERIFY_RUN_ID" --repo hoklims\/hoklims-devkit --json workflowName,headSha,event,conclusion\)"$/u,
+    /^test "\$\(jq -r '\.workflowName' <<< "\$run_json"\)" = "Publish npm release"$/u,
+    /^test "\$\(jq -r '\.headSha' <<< "\$run_json"\)" = "\$\(git rev-parse HEAD\)"$/u,
+    /^test "\$\(jq -r '\.event' <<< "\$run_json"\)" = "push"$/u,
+    /^test "\$\(jq -r '\.conclusion' <<< "\$run_json"\)" = "success"$/u,
+    /^gh run download "\$VERIFY_RUN_ID" --repo hoklims\/hoklims-devkit --name tested-npm-tarball --dir tested-package$/u,
+    /^tarball="tested-package\/hoklims-devkit-0\.1\.0\.tgz"$/u,
+    /^test -f "\$tarball"$/u,
+    String.raw`integrity="sha512-$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "$tarball")"`,
+    /^test "\$\(npm view --registry=https:\/\/registry\.npmjs\.org hoklims-devkit@0\.1\.0 version\)" = "0\.1\.0"$/u,
+    /^test "\$\(npm view --registry=https:\/\/registry\.npmjs\.org hoklims-devkit@0\.1\.0 dist\.integrity\)" = "\$integrity"$/u,
+    /^bun run check$/u,
+    /^consumer="\$\(mktemp -d\)"$/u,
+    /^npm install --prefix "\$consumer" --ignore-scripts --package-lock=true --registry=https:\/\/registry\.npmjs\.org hoklims-devkit@0\.1\.0(?:\s+#.*)?$/u,
+    /^node scripts\/public-install-integrity\.mjs "\$consumer" "0\.1\.0" "\$integrity" "https:\/\/registry\.npmjs\.org"$/u,
+    /^bun scripts\/release-smoke\.js "\$consumer"$/u,
+  ], "bootstrap verify");
+  if (release.permissions?.contents !== "write") throw new Error("bootstrap release lacks contents write permission");
+  assertExactRun(release.steps[1],
+    "gh release view v0.1.0 >/dev/null 2>&1 || gh release create v0.1.0 --verify-tag --generate-notes",
+    "bootstrap release", undefined);
   return true;
 }
 
@@ -416,6 +495,10 @@ function validateNativeNoLc(workflow, harnessSource) {
 test("release workflow builds once, verifies one artifact on three OSes, then publishes in order", () => {
   const workflow = Bun.YAML.parse(readFileSync(workflowPath, "utf8"));
   expect(validateReleaseGraph(workflow)).toBe(true);
+});
+
+test("bootstrap verification binds the downloaded first-release archive before release", () => {
+  expect(validateBootstrapGraph(Bun.YAML.parse(readFileSync(bootstrapPath, "utf8")))).toBe(true);
 });
 
 test("CI checks out and tests the direct candidate SHA on all three runners", () => {
@@ -563,6 +646,7 @@ test("CI direct-head checkout rejects merge-ref and reduced-matrix mutants", () 
 test("all workflow oracles reject skipped prerequisites on their entry job", () => {
   const sources = [
     [workflowPath, validateReleaseGraph, "build", null],
+    [bootstrapPath, validateBootstrapGraph, "verify", null],
     [ciPath, validateCiCheckout, "package", null],
     [nativePath, (workflow) => validateNativeNoLc(workflow, readFileSync(nativeHarnessPath, "utf8")), "build", null],
   ];
@@ -577,6 +661,7 @@ test("all workflow oracles reject skipped prerequisites on their entry job", () 
 test("exported Bash functions are rejected at workflow job and step scope", () => {
   const sources = [
     [workflowPath, validateReleaseGraph, "verify", 7],
+    [bootstrapPath, validateBootstrapGraph, "verify", 6],
     [ciPath, validateCiCheckout, "package", 3],
     [nativePath, (workflow) => validateNativeNoLc(
       workflow, readFileSync(nativeHarnessPath, "utf8"),
@@ -599,6 +684,7 @@ test("exported Bash functions are rejected at workflow job and step scope", () =
 test("runtime preload options are rejected at workflow job and step scope", () => {
   const sources = [
     [workflowPath, validateReleaseGraph, "verify", 7],
+    [bootstrapPath, validateBootstrapGraph, "verify", 6],
     [ciPath, validateCiCheckout, "package", 3],
     [nativePath, (workflow) => validateNativeNoLc(
       workflow, readFileSync(nativeHarnessPath, "utf8"),
@@ -623,6 +709,7 @@ test("runtime preload options are rejected at workflow job and step scope", () =
 test("opaque environment maps are rejected at every workflow job and step scope", () => {
   const sources = [
     [workflowPath, validateReleaseGraph, "verify", 7],
+    [bootstrapPath, validateBootstrapGraph, "verify", 6],
     [ciPath, validateCiCheckout, "package", 3],
     [nativePath, (workflow) => validateNativeNoLc(
       workflow, readFileSync(nativeHarnessPath, "utf8"),
@@ -645,6 +732,86 @@ test("opaque environment maps are rejected at every workflow job and step scope"
       }
     }
   }
+});
+
+test("all workflow oracles reject registry and npm config overrides at every scope and casing", () => {
+  const sources = [
+    [workflowPath, validateReleaseGraph, "public-smoke", 6],
+    [bootstrapPath, validateBootstrapGraph, "verify", 6],
+    [ciPath, validateCiCheckout, "package", 3],
+    [nativePath, (workflow) => validateNativeNoLc(
+      workflow, readFileSync(nativeHarnessPath, "utf8"),
+    ), "native", 4],
+  ];
+  for (const key of [
+    "npm_config_registry", "NPM_CONFIG_REGISTRY", "Npm_Config_UserConfig",
+    "npm_config_globalconfig", "NPM_CONFIG_PREFIX", "npmrc",
+  ]) {
+    for (const [source, validate, jobName, stepIndex] of sources) {
+      for (const scope of ["workflow", "job", "step"]) {
+        const workflow = Bun.YAML.parse(readFileSync(source, "utf8"));
+        const target = scope === "workflow" ? workflow : scope === "job" ? workflow.jobs[jobName]
+          : workflow.jobs[jobName].steps[stepIndex];
+        target.env = { ...(target.env ?? {}), [key]: "https://registry.example.invalid" };
+        expect(() => validate(workflow), `${source.pathname}:${scope}:${key}`).toThrow(/startup override/u);
+      }
+    }
+  }
+});
+
+test("public smoke binds same-version installation integrity before CLI and GitHub release", () => {
+  const original = Bun.YAML.parse(readFileSync(workflowPath, "utf8"));
+  const mutatePublic = (mutate) => {
+    const workflow = structuredClone(original);
+    const step = workflow.jobs["public-smoke"].steps.find((candidate) => candidate.name?.startsWith("Verify public registry"));
+    mutate(workflow, step);
+    expect(() => validateReleaseGraph(workflow)).toThrow();
+  };
+  mutatePublic((workflow) => { workflow.jobs.build.outputs.integrity = "same-registry-metadata"; });
+  mutatePublic((_workflow, step) => { delete step.env.EXPECTED_INTEGRITY; });
+  mutatePublic((_workflow, step) => {
+    step.run = step.run.replace(/node scripts\/public-install-integrity\.mjs[^\n]+\n/u, "");
+  });
+  mutatePublic((_workflow, step) => {
+    step.run = step.run.replace(
+      'node scripts/public-install-integrity.mjs "$consumer" "$version" "$EXPECTED_INTEGRITY" "https://registry.npmjs.org"\n' +
+      'bun scripts/release-smoke.js "$consumer"',
+      'bun scripts/release-smoke.js "$consumer"\n' +
+      'node scripts/public-install-integrity.mjs "$consumer" "$version" "$EXPECTED_INTEGRITY" "https://registry.npmjs.org"',
+    );
+  });
+  mutatePublic((_workflow, step) => {
+    step.run = step.run.replace("--registry=https://registry.npmjs.org", "--registry=https://registry.example.invalid");
+  });
+  mutatePublic((workflow) => { workflow.jobs.release.needs = "publish"; });
+});
+
+test("bootstrap refuses integrity neutralization before smoke and GitHub release", () => {
+  const original = Bun.YAML.parse(readFileSync(bootstrapPath, "utf8"));
+  const mutate = (change) => {
+    const workflow = structuredClone(original);
+    const step = workflow.jobs.verify.steps.find((candidate) => candidate.name?.startsWith("Verify the published bootstrap"));
+    change(workflow, step);
+    expect(() => validateBootstrapGraph(workflow)).toThrow();
+  };
+  mutate((_workflow, step) => {
+    step.run = step.run.replace(/node scripts\/public-install-integrity\.mjs[^\n]+\n/u, "");
+  });
+  mutate((_workflow, step) => {
+    step.run = step.run.replace(
+      'node scripts/public-install-integrity.mjs "$consumer" "0.1.0" "$integrity" "https://registry.npmjs.org"\n' +
+      'bun scripts/release-smoke.js "$consumer"',
+      'bun scripts/release-smoke.js "$consumer"\n' +
+      'node scripts/public-install-integrity.mjs "$consumer" "0.1.0" "$integrity" "https://registry.npmjs.org"',
+    );
+  });
+  mutate((_workflow, step) => {
+    step.run = step.run.replace('"$integrity" "https://registry.npmjs.org"', '"sha512-AAAAAAAA" "https://registry.npmjs.org"');
+  });
+  mutate((_workflow, step) => {
+    step.run = step.run.replaceAll("--registry=https://registry.npmjs.org", "--registry=https://registry.example.invalid");
+  });
+  mutate((workflow) => { workflow.jobs.release.needs = []; });
 });
 
 test("release graph tripwire rejects selected semantic mutants", () => {
@@ -682,7 +849,7 @@ test("release graph tripwire rejects selected semantic mutants", () => {
   for (const replacement of [
     ["npm install --prefix", "true # npm install --prefix"],
     ['"hoklims-devkit@$version"', '"hoklims-devkit@latest"'],
-    ["test \"$(node -p", "true # test \"$(node -p"],
+    ["node scripts/public-install-integrity.mjs", "true # node scripts/public-install-integrity.mjs"],
     ["bun scripts/release-smoke.js \"$consumer\"", "true # smoke disabled"],
     ["bun scripts/release-smoke.js \"$consumer\"", "bun scripts/release-smoke.js \"$consumer\" || true"],
   ]) {
@@ -758,9 +925,10 @@ test("verify cannot replace the digest assertion with inert JavaScript", () => {
   expect(() => validateReleaseGraph(original)).toThrow();
 });
 
-test("public version assertion cannot substitute a constant for installed metadata", () => {
+test("public integrity assertion cannot substitute build environment constants for installed metadata", () => {
   const original = Bun.YAML.parse(readFileSync(workflowPath, "utf8"));
   const step = original.jobs["public-smoke"].steps.find((item) => item.name?.startsWith("Verify public registry"));
-  step.run = step.run.replace(`require(process.argv[1]).version`, `process.env.RELEASE_VERSION`);
+  step.run = step.run.replace(/node scripts\/public-install-integrity\.mjs[^\n]+/u,
+    `test "$EXPECTED_INTEGRITY" = "$EXPECTED_INTEGRITY"`);
   expect(() => validateReleaseGraph(original)).toThrow();
 });

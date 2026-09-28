@@ -14,6 +14,7 @@ jobs:
     outputs:
       version: ${{ steps.package.outputs.version }}
       sha256: ${{ steps.package.outputs.sha256 }}
+      integrity: ${{ steps.package.outputs.integrity }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -42,8 +43,10 @@ jobs:
           tarball="$(npm pack --silent)"
           test "$tarball" = "hoklims-devkit-${version}.tgz"
           digest="$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$tarball")"
+          integrity="sha512-$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "$tarball")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+          echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
       - name: Preserve the one tested and published tarball
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -81,7 +84,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install tested agent CLIs
-        run: npm install --global @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229 # zizmor: ignore[adhoc-packages] exact host smoke pins
+        run: npm install --global --registry=https://registry.npmjs.org @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229 # zizmor: ignore[adhoc-packages] exact host smoke pins
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: tested-npm-tarball
@@ -128,21 +131,23 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
           EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+          EXPECTED_INTEGRITY: ${{ needs.build.outputs.integrity }}
         run: |
-          npm install --global npm@11.5.1 # zizmor: ignore[adhoc-packages] exact OIDC publisher pin
+          npm install --global --registry=https://registry.npmjs.org npm@11.5.1 # zizmor: ignore[adhoc-packages] exact OIDC publisher pin
           version="$RELEASE_VERSION"
           test "$GITHUB_REF_NAME" = "v$version"
           tarball="tested-package/hoklims-devkit-${version}.tgz"
           test -f "$tarball"
           node -e 'const fs=require("node:fs"),crypto=require("node:crypto");const actual=crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex");if(actual!==process.env.EXPECTED_SHA256)throw new Error("published tarball digest mismatch")' "$tarball"
           integrity="sha512-$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "$tarball")"
-          if npm view "hoklims-devkit@$version" version >/dev/null 2>&1; then
-            test "$(npm view "hoklims-devkit@$version" dist.integrity)" = "$integrity"
+          test "$integrity" = "$EXPECTED_INTEGRITY"
+          if npm view --registry=https://registry.npmjs.org "hoklims-devkit@$version" version >/dev/null 2>&1; then
+            test "$(npm view --registry=https://registry.npmjs.org "hoklims-devkit@$version" dist.integrity)" = "$integrity"
           else
-            npm publish "$tarball" --access public
+            npm publish "$tarball" --access public --registry=https://registry.npmjs.org
           fi
-          test "$(npm view "hoklims-devkit@$version" version)" = "$version"
-          test "$(npm view "hoklims-devkit@$version" dist.integrity)" = "$integrity"
+          test "$(npm view --registry=https://registry.npmjs.org "hoklims-devkit@$version" version)" = "$version"
+          test "$(npm view --registry=https://registry.npmjs.org "hoklims-devkit@$version" dist.integrity)" = "$integrity"
   public-smoke:
     needs: [build, publish]
     runs-on: ubuntu-latest
@@ -171,11 +176,12 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install tested agent CLIs
-        run: npm install --global @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229 # zizmor: ignore[adhoc-packages] exact host smoke pins
+        run: npm install --global --registry=https://registry.npmjs.org @openai/codex@0.147.0 @anthropic-ai/claude-code@2.1.229 # zizmor: ignore[adhoc-packages] exact host smoke pins
       - name: Verify public registry install and both host dry-runs # zizmor: ignore[adhoc-packages] exact public release is the subject under test
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          EXPECTED_INTEGRITY: ${{ needs.build.outputs.integrity }}
         run: |
           test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = "tag"
           test "$(git rev-list -n 1 "refs/tags/${GITHUB_REF_NAME}")" = "$GITHUB_SHA"
@@ -183,8 +189,8 @@ jobs:
           version="$RELEASE_VERSION"
           test "$GITHUB_REF_NAME" = "v$version"
           consumer="$(mktemp -d)"
-          npm install --prefix "$consumer" --ignore-scripts "hoklims-devkit@$version" # zizmor: ignore[adhoc-packages] verify exact public release
-          test "$(node -p 'require(process.argv[1]).version' "$consumer/node_modules/hoklims-devkit/package.json")" = "$version"
+          npm install --prefix "$consumer" --ignore-scripts --package-lock=true --registry=https://registry.npmjs.org "hoklims-devkit@$version" # zizmor: ignore[adhoc-packages] verify exact public release
+          node scripts/public-install-integrity.mjs "$consumer" "$version" "$EXPECTED_INTEGRITY" "https://registry.npmjs.org"
           bun scripts/release-smoke.js "$consumer"
 
   release:
