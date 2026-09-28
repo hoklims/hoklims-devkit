@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { closeSync, lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { execute, main, parseArgs, quoteShellToken } from "../src/app.js";
 import { createRuntime, validateState } from "../src/runtime.js";
 
@@ -32,15 +33,33 @@ function assertSetupReport(argv, status, mode) {
   const client = argv[argv.indexOf("--client") + 1];
   const artifactState = status === "CREATED" ? "CREATED" : status === "UNCHANGED" ? "UNCHANGED"
     : status === "CONFLICT" ? "CONFLICT" : "WOULD_CREATE";
+  const initPaths = ["assertledger.config.json", "assertledger.lock.json"];
+  const connectionPaths = client === "codex"
+    ? ["/repo/.codex/config.toml", "/repo/.agents/skills/assertledger/SKILL.md"]
+    : ["/repo/.mcp.json", "/repo/.claude/skills/assertledger/SKILL.md"];
   return {
     status, client, mode,
-    init: { status: mode === "write" ? status : status === "UNCHANGED" ? "UNCHANGED" : "WOULD_CREATE", requiredOperatorInputs: [] },
-    connection: { client, status: mode === "write" ? status : "EMITTED" },
+    init: {
+      status: mode === "write" ? status : status === "UNCHANGED" ? "UNCHANGED" : "WOULD_CREATE",
+      schemaVersion: "1.0.0",
+      requiredOperatorInputs: [],
+      actions: artifactState === "UNCHANGED" ? [] : initPaths.map((path) => ({ kind: "CREATE", path })),
+      files: initPaths.map((path) => {
+        const content = "{}\n";
+        return { path, digest: `sha256:${createHash("sha256").update(content).digest("hex")}`, content };
+      }),
+    },
+    connection: {
+      client, status: mode === "write" ? status : "EMITTED",
+      artifacts: connectionPaths.map((path, index) => ({
+        kind: index === 0 ? "configuration" : "skill", path, content: "owned\n",
+      })),
+    },
     artifacts: [
       { owner: "init", path: "/repo/assertledger.config.json", state: artifactState },
       { owner: "init", path: "/repo/assertledger.lock.json", state: artifactState },
-      { owner: "connection", path: client === "codex" ? "/repo/.codex/config.toml" : "/repo/.mcp.json", state: artifactState },
-      { owner: "connection", path: client === "codex" ? "/repo/.agents/skills/assertledger/SKILL.md" : "/repo/.claude/skills/assertledger/SKILL.md", state: artifactState },
+      { owner: "connection", path: connectionPaths[0], state: artifactState },
+      { owner: "connection", path: connectionPaths[1], state: artifactState },
     ],
     rollback: { status: "NOT_REQUIRED", removed: [], unresolved: [] },
   };
@@ -55,6 +74,12 @@ function mixedAssertSetupReport(argv, mode, mixedInit = false, mixedConnection =
   const connectionArtifacts = report.artifacts.filter((artifact) => artifact.owner === "connection");
   initArtifacts[0].state = "UNCHANGED";
   initArtifacts[1].state = mixedInit ? changed : "UNCHANGED";
+  report.init.actions = initArtifacts
+    .filter((artifact) => artifact.state === changed)
+    .map((artifact) => ({
+      kind: artifact.path.endsWith("assertledger.lock.json") && mixedInit ? "REGENERATE" : "CREATE",
+      path: artifact.path.split("/").at(-1),
+    }));
   connectionArtifacts[0].state = "UNCHANGED";
   connectionArtifacts[1].state = mixedConnection ? changed : "UNCHANGED";
   return report;
@@ -2984,6 +3009,42 @@ describe("public CLI", () => {
       const setup = await execute(parseArgs(["setup", "/repo", "--host", "all", "--with", "assertledger"]), rt);
       expect(setup.ok).toBe(true);
       expect(setup.components.find((item) => item.name === "assertledger").configured).toBe("yes");
+    }
+  });
+
+  test("AssertLedger rejects contradictory nested init actions and connection artifacts", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    for (const mutate of [
+      (report) => { report.init.actions = [{ kind: "CREATE", path: "assertledger.lock.json" }]; },
+      (report) => { report.init.files[0].content = "changed\n"; },
+      (report) => { report.init.files[1].path = report.init.files[0].path; },
+      (report) => { report.connection.artifacts[0].path = "/foreign/.codex/config.toml"; },
+    ]) {
+      for (const command of ["doctor", "setup"]) {
+        const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files: { ...files } });
+        const nativeExec = rt.exec;
+        rt.exec = async (argv, cwd, timeout) => {
+          if (argv[0] === "node" && argv.includes("setup") && argv.includes("--dry-run")) {
+            const report = assertSetupReport(argv, "UNCHANGED", "dry-run");
+            mutate(report);
+            return { code: 0, stdout: JSON.stringify(report), stderr: "" };
+          }
+          return nativeExec(argv, cwd, timeout);
+        };
+        const report = await execute(command === "doctor"
+          ? parseArgs(["doctor", "/repo", "--host", "codex"])
+          : { ...setupOptions(), with: ["assertledger"] }, rt);
+        expect(report.ok).toBe(false);
+        expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+        expect(rt.writes).toHaveLength(0);
+      }
     }
   });
 

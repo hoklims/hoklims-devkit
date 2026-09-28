@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { isMainModule } from "./native-runtime-paths.mjs";
 
 export function buildNativeConfig(input) {
   const platform = input.platform ?? (process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux");
@@ -36,8 +37,11 @@ export function buildNativeConfig(input) {
   return config;
 }
 
-if (import.meta.main) {
+const isMain = isMainModule(import.meta.url);
+if (isMain) {
   const [output, runRoot, sourceCheckout, artifactPath, semctxPublicationSha, npmCliJs] = process.argv.slice(2);
+  assert(output && runRoot && sourceCheckout && artifactPath && semctxPublicationSha && npmCliJs,
+    "Usage: node native-no-lc-config.mjs OUTPUT RUN_ROOT SOURCE ARTIFACT SEMCTX_SHA NPM_CLI");
   const config = buildNativeConfig({
     runRoot, sourceCheckout, artifactPath, semctxPublicationSha, npmCliJs,
     artifactSha256: process.env.DEVKIT_SHA256,

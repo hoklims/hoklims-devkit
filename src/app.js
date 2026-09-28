@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 import { createRuntime, parseJsonOutput, preferredBoundaryError, RunLockedError, shortError, validateState } from "./runtime.js";
 
@@ -675,6 +676,37 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
   const aggregateConsistent = successAggregate
     ? parsed.status === (changed ? changedState : "UNCHANGED")
     : true;
+  const initFiles = parsed?.init?.files;
+  const initActions = parsed?.init?.actions;
+  const expectedInitPaths = ["assertledger.config.json", "assertledger.lock.json"];
+  const nestedSuccess = ["UNCHANGED", mode === "dry-run" ? "WOULD_CREATE" : "CREATED"].includes(parsed?.status);
+  const initArtifactByPath = new Map(expectedInitPaths.map((relativePath) => [
+    relativePath,
+    initArtifacts.find((artifact) => fileBelongsToRoot(rt, artifact.path, relativePath, root)),
+  ]));
+  const initNestedConsistent = ["1.0.0", "2.0.0"].includes(parsed?.init?.schemaVersion)
+    && Array.isArray(initFiles) && initFiles.length === expectedInitPaths.length
+    && expectedInitPaths.every((relativePath) => initFiles.filter((file) => file?.path === relativePath
+      && typeof file.content === "string"
+      && file.digest === `sha256:${createHash("sha256").update(file.content).digest("hex")}`).length === 1)
+    && Array.isArray(initActions)
+    && initActions.every((action) => expectedInitPaths.includes(action?.path)
+      && (action.kind === "CREATE" || (action.kind === "REGENERATE" && action.path === "assertledger.lock.json")))
+    && new Set(initActions.map((action) => action.path)).size === initActions.length
+    && (!nestedSuccess || expectedInitPaths.every((relativePath, index) => (
+      initActions.some((action) => action.path === relativePath) === (initArtifactByPath.get(relativePath)?.state === changedState)
+    )));
+  const nestedConnectionArtifacts = parsed?.connection?.artifacts;
+  const expectedConnectionKinds = new Map(connectionArtifacts.map((artifact) => [
+    artifact.path,
+    artifact.path.endsWith("SKILL.md") ? "skill" : "configuration",
+  ]));
+  const connectionNestedConsistent = Array.isArray(nestedConnectionArtifacts)
+    && nestedConnectionArtifacts.length === connectionArtifacts.length
+    && connectionArtifacts.every((outer) => nestedConnectionArtifacts.filter((nested) => (
+      nested?.path === outer.path && nested.kind === expectedConnectionKinds.get(outer.path)
+        && typeof nested.content === "string"
+    )).length === 1);
   return statuses.includes(parsed?.status) && parsed.client === client && parsed.mode === mode
     && Array.isArray(parsed.artifacts) && parsed.artifacts.length === expected.length
     && parsed.artifacts.every((artifact) => artifact !== null && !Array.isArray(artifact) && typeof artifact === "object")
@@ -686,6 +718,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && initStatuses.includes(parsed.init?.status)
     && connectionStatuses.includes(parsed.connection?.status)
     && parsed.connection?.client === client
+    && initNestedConsistent && connectionNestedConsistent
     && (!successAggregate || (initConsistent && connectionConsistent && aggregateConsistent))
     && parsed.rollback?.status === "NOT_REQUIRED";
 }

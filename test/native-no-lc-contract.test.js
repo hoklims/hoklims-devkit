@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { diffSnapshots, runtimeCachePaths, snapshotTree, validateNativeReport } from "../scripts/native-no-lc-contract.mjs";
 import { resolveBundledNpmCli } from "../scripts/native-runtime-paths.mjs";
 import { buildNativeConfig } from "../scripts/native-no-lc-config.mjs";
@@ -25,6 +25,46 @@ test("bundled npm resolution ignores a custom global prefix on Windows and Unix 
   const unixNpm = touch(join(root, "unix", "lib", "node_modules", "npm", "bin", "npm-cli.js"));
   expect(resolveBundledNpmCli(unixNode, "linux")).toBe(realpathSync(unixNpm));
   expect(() => resolveBundledNpmCli(join(root, "missing", "node"), "linux")).toThrow(/Bundled npm CLI/u);
+});
+
+test("native helper CLIs execute under the pinned Node 22.15 runtime", () => {
+  const windowsNode = "C:\\Users\\Hokli\\Documents\\Codex\\2026-09-25\\aujourd-hui-j-ai-un-probl-2\\work\\node-v22.15.0-win-x64\\node.exe";
+  const node = process.platform === "win32" && existsSync(windowsNode) ? windowsNode : Bun.which("node");
+  expect(node).toBeTruthy();
+  expect(Bun.spawnSync({ cmd: [node, "--version"] }).stdout.toString().trim()).toMatch(/^v22\.15\./u);
+  const runtimeCli = fileURLToPath(new URL("../scripts/native-runtime-paths.mjs", import.meta.url));
+  const configCli = fileURLToPath(new URL("../scripts/native-no-lc-config.mjs", import.meta.url));
+  for (const modulePath of [runtimeCli, configCli]) {
+    const imported = Bun.spawnSync({
+      cmd: [node, "--input-type=module", "-e", `import(${JSON.stringify(pathToFileURL(modulePath).href)})`],
+      stdout: "pipe", stderr: "pipe",
+    });
+    expect(imported.exitCode, imported.stderr.toString()).toBe(0);
+    expect(imported.stdout.toString()).toBe("");
+  }
+  const resolved = Bun.spawnSync({ cmd: [node, runtimeCli], stdout: "pipe", stderr: "pipe" });
+  expect(resolved.exitCode, resolved.stderr.toString()).toBe(0);
+  expect(resolved.stdout.toString().trim()).toMatch(/npm-cli\.js$/u);
+
+  const root = mkdtempSync(join(tmpdir(), "devkit-config-cli-"));
+  const output = join(root, "config.json");
+  const env = {
+    ...process.env,
+    DEVKIT_SHA256: "a".repeat(64),
+    DEVKIT_SOURCE_SHA: "b".repeat(40),
+    DEVKIT_VERSION: "0.1.0",
+  };
+  const generated = Bun.spawnSync({
+    cmd: [node, configCli, output, join(root, "run"), root, join(root, "artifact.tgz"), "c".repeat(40), resolved.stdout.toString().trim()],
+    env, stdout: "pipe", stderr: "pipe",
+  });
+  expect(generated.exitCode, generated.stderr.toString()).toBe(0);
+  expect(JSON.parse(readFileSync(output, "utf8"))).toMatchObject({
+    artifact: { version: "0.1.0" }, expected: { semctx: "0.3.7" },
+  });
+  const malformed = Bun.spawnSync({ cmd: [node, configCli], env, stdout: "pipe", stderr: "pipe" });
+  expect(malformed.exitCode).not.toBe(0);
+  expect(malformed.stderr.toString()).toContain("Usage: node native-no-lc-config.mjs");
 });
 
 test("native report contract rejects missing, false, duplicate, and foreign evidence", () => {

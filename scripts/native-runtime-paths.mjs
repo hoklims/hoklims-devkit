@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export function bundledNpmCliCandidates(nodeExecutable, platform = process.platform) {
   const bin = path.dirname(path.resolve(nodeExecutable));
@@ -17,4 +18,14 @@ export function resolveBundledNpmCli(nodeExecutable, platform = process.platform
   return realpathSync(candidate);
 }
 
-if (import.meta.main) process.stdout.write(resolveBundledNpmCli(process.execPath));
+export function isMainModule(metaUrl, argv1 = process.argv[1]) {
+  if (!argv1 || argv1 === "-") return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(metaUrl));
+  } catch {
+    return false;
+  }
+}
+
+const isMain = isMainModule(import.meta.url);
+if (isMain) process.stdout.write(resolveBundledNpmCli(process.execPath));
