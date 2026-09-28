@@ -1,29 +1,41 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { validComponentReport } from "./release-report.js";
 
-function sha256File(file) {
-  return createHash("sha256").update(readFileSync(file)).digest("hex");
-}
-
-export function snapshotTree(root) {
-  if (!existsSync(root)) return [];
-  const result = [];
+export function snapshotTree(root, io = { lstatSync, readFileSync, readdirSync, readlinkSync }) {
+  let rootInfo;
+  try {
+    rootInfo = io.lstatSync(root, { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [{ path: ".", kind: "absent" }];
+    throw error;
+  }
+  const identity = (info) => ({ device: String(info.dev), inode: String(info.ino) });
+  const rootMode = Number(rootInfo.mode & 0o7777n);
+  if (rootInfo.isSymbolicLink()) {
+    return [{ path: ".", kind: "symlink", mode: rootMode, target: io.readlinkSync(root), ...identity(rootInfo) }];
+  }
+  if (!rootInfo.isDirectory()) {
+    const kind = rootInfo.isFile() ? "file" : "other";
+    return [{ path: ".", kind, mode: rootMode, ...identity(rootInfo) }];
+  }
+  const result = [{ path: ".", kind: "directory", mode: rootMode, ...identity(rootInfo) }];
   function walk(current, relative) {
-    for (const name of readdirSync(current).sort()) {
+    for (const name of io.readdirSync(current).sort()) {
       const full = path.join(current, name);
       const rel = relative ? path.join(relative, name) : name;
-      const info = lstatSync(full);
+      const info = io.lstatSync(full);
       const recordPath = rel.split(path.sep).join("/");
       if (info.isSymbolicLink()) {
-        result.push({ path: recordPath, kind: "symlink", target: readlinkSync(full) });
+        result.push({ path: recordPath, kind: "symlink", target: io.readlinkSync(full) });
       } else if (info.isDirectory()) {
         result.push({ path: recordPath, kind: "directory", mode: info.mode & 0o7777 });
         walk(full, rel);
       } else if (info.isFile()) {
-        result.push({ path: recordPath, kind: "file", mode: info.mode & 0o7777, bytes: info.size, sha256: sha256File(full) });
+        result.push({ path: recordPath, kind: "file", mode: info.mode & 0o7777, bytes: info.size,
+          sha256: createHash("sha256").update(io.readFileSync(full)).digest("hex") });
       } else {
         result.push({ path: recordPath, kind: "other", mode: info.mode & 0o7777 });
       }

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -107,10 +107,62 @@ test("native snapshots detect permission-only mutations", () => {
   synthetic.find((item) => item.path === "tool").mode ^= 0o111;
   expect(diffSnapshots({ source: recorded }, { source: synthetic })).not.toEqual([]);
   if (process.platform === "win32") return;
+  chmodSync(root, 0o755);
+  const rootBefore = { source: snapshotTree(root) };
+  chmodSync(root, 0o700);
+  expect(diffSnapshots(rootBefore, { source: snapshotTree(root) })).not.toEqual([]);
   chmodSync(file, 0o644);
   const before = { source: snapshotTree(root) };
   chmodSync(file, 0o755);
   expect(diffSnapshots(before, { source: snapshotTree(root) })).not.toEqual([]);
+});
+
+test("native snapshots distinguish absent empty and linked roots", () => {
+  const parent = mkdtempSync(join(tmpdir(), "devkit-native-root-"));
+  const absent = snapshotTree(join(parent, "absent"));
+  const emptyRoot = join(parent, "empty");
+  mkdirSync(emptyRoot);
+  const empty = snapshotTree(emptyRoot);
+  expect(absent).toEqual([{ path: ".", kind: "absent" }]);
+  expect(empty[0]).toMatchObject({ path: ".", kind: "directory" });
+  expect(empty[0]).toHaveProperty("device");
+  expect(empty[0]).toHaveProperty("inode");
+  if (process.platform !== "win32") {
+    const link = join(parent, "linked");
+    symlinkSync(emptyRoot, link, "dir");
+    expect(snapshotTree(link)).toEqual([expect.objectContaining({
+      path: ".", kind: "symlink", target: emptyRoot,
+    })]);
+  }
+});
+
+test("native snapshots inspect root presence and never follow a root symlink", () => {
+  const calls = [];
+  const io = {
+    lstatSync(path, options) {
+      calls.push(["lstat", path, options]);
+      if (path.endsWith("absent")) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      if (path.endsWith("link")) return {
+        mode: 0o120777n, dev: 7n, ino: 11n,
+        isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false,
+      };
+      return {
+        mode: 0o040755n, dev: 7n, ino: 10n,
+        isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false,
+      };
+    },
+    readlinkSync(path) { calls.push(["readlink", path]); return "target"; },
+    readdirSync(path) { calls.push(["readdir", path]); return []; },
+    readFileSync() { throw new Error("unexpected read"); },
+  };
+  expect(snapshotTree("/fixture/absent", io)).toEqual([{ path: ".", kind: "absent" }]);
+  expect(snapshotTree("/fixture/empty", io)).toEqual([{
+    path: ".", kind: "directory", mode: 0o755, device: "7", inode: "10",
+  }]);
+  expect(snapshotTree("/fixture/link", io)).toEqual([{
+    path: ".", kind: "symlink", mode: 0o777, target: "target", device: "7", inode: "11",
+  }]);
+  expect(calls.filter(([kind, path]) => kind === "readdir" && path.endsWith("link"))).toHaveLength(0);
 });
 
 test("native runtime cache paths stay outside the fully protected home", () => {

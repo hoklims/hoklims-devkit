@@ -110,6 +110,7 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
     exec: async (argv) => {
       calls.push(argv);
       if (argv[0] === "bun") return { code: 0, stdout: "1.4.0\n", stderr: "" };
+      if (argv[0] === "uv" && argv.includes("--version")) return { code: 0, stdout: "uv 0.8.22 (fixture)\n", stderr: "" };
       if (argv[0] === "node" && argv.includes("setup")) {
         const write = argv.includes("--write");
         return { code: assertStatus === "CONFLICT" ? 4 : 0, stdout: JSON.stringify(assertSetupReport(argv, write ? "CREATED" : assertStatus, write ? "write" : "dry-run")), stderr: "" };
@@ -3045,6 +3046,77 @@ describe("public CLI", () => {
         expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
         expect(rt.writes).toHaveLength(0);
       }
+    }
+  });
+
+  test("AssertLedger rejects contradictory rollback and success reason evidence", async () => {
+    const state = { schemaVersion: 1, projectRoot: "/repo", components: {
+      assertledger: { version: "1.2.0", hosts: ["codex"] },
+    } };
+    const files = {
+      [join("/repo", "package.json")]: JSON.stringify({ dependencies: { assertledger: "1.2.0" } }),
+      [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }),
+      [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli",
+    };
+    const mutations = [
+      (report) => { delete report.rollback.removed; },
+      (report) => { delete report.rollback.unresolved; },
+      (report) => { report.rollback.removed.push("assertledger.config.json"); },
+      (report) => { report.rollback.unresolved.push("assertledger.lock.json"); },
+      (report) => { report.reasonCodes = ["CONNECTION_CONTENT_CONFLICT"]; },
+    ];
+    for (const mutate of mutations) {
+      for (const phase of ["doctor", "preflight", "write", "verify"]) {
+        const rt = fakeRuntime({ state: structuredClone(state), tools: ["node", "npm"], files: { ...files } });
+        const nativeExec = rt.exec;
+        let setupCalls = 0;
+        rt.exec = async (argv, cwd, timeout) => {
+          if (argv[0] === "node" && argv.includes("setup")) {
+            setupCalls += 1;
+            const dryRun = argv.includes("--dry-run");
+            const report = assertSetupReport(argv, dryRun && phase === "verify" ? "UNCHANGED"
+              : dryRun ? "UNCHANGED" : "CREATED", dryRun ? "dry-run" : "write");
+            const target = phase === "doctor" || phase === "preflight" ? setupCalls === 1
+              : phase === "write" ? !dryRun : dryRun && setupCalls > 1;
+            if (target) mutate(report);
+            return { code: 0, stdout: JSON.stringify(report), stderr: "" };
+          }
+          return nativeExec(argv, cwd, timeout);
+        };
+        const options = phase === "doctor" ? parseArgs(["doctor", "/repo", "--host", "codex"])
+          : { ...setupOptions(), with: ["assertledger"], dryRun: phase === "preflight" };
+        const report = await execute(options, rt);
+        expect(report.ok, `${phase}:${mutate}`).toBe(false);
+        expect(report.components.find((item) => item.name === "assertledger").configured, phase).toBe("unknown");
+      }
+    }
+  });
+
+  test("runtime version probes fail closed before component native commands or state writes", async () => {
+    const cases = [
+      { component: "semctx", command: "bun", result: { code: 1, stdout: "1.4.0\n", stderr: "failed" } },
+      { component: "semctx", command: "bun", result: { code: 0, stdout: "1.4.not-a-version\n", stderr: "" } },
+      { component: "assertledger", command: "node", result: { code: 1, stdout: "v22.15.0\n", stderr: "failed" } },
+      { component: "assertledger", command: "node", result: { code: 0, stdout: "v22.15.not-a-version\n", stderr: "" } },
+      { component: "latent-compass", command: "uv", result: { code: 1, stdout: "uv 0.8.22\n", stderr: "failed" } },
+      { component: "latent-compass", command: "uv", result: { code: 0, stdout: "uv 0.8.not-a-version\n", stderr: "" } },
+    ];
+    for (const scenario of cases) {
+      const withComponents = scenario.component === "semctx" ? [] : [scenario.component];
+      const tools = scenario.component === "assertledger" ? ["node", "npm"]
+        : scenario.component === "latent-compass" ? ["uv"] : [];
+      const rt = fakeRuntime({ tools, files: scenario.component === "assertledger" ? {
+        [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", packageManager: "npm@10.9.8" }),
+        [join("/repo", "package-lock.json")]: "{}",
+      } : {} });
+      const nativeExec = rt.exec;
+      rt.exec = async (argv, cwd, timeout) => argv[0] === scenario.command && argv.includes("--version")
+        ? scenario.result : nativeExec(argv, cwd, timeout);
+      const report = await execute({ ...setupOptions(), with: withComponents }, rt);
+      expect(report.ok, `${scenario.command}:${scenario.result.stdout}`).toBe(false);
+      expect(rt.writes, scenario.command).toHaveLength(0);
+      expect(rt.calls.some((argv) => argv[0] === "bunx" || argv.includes("setup")
+        || (argv[0] === "uv" && argv.includes("tool"))), scenario.command).toBe(false);
     }
   });
 

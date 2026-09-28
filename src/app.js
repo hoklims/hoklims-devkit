@@ -269,6 +269,13 @@ function isStableVersion(version) {
     && /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(version);
 }
 
+function exactRuntimeVersion(result, prefix = "") {
+  if (result?.code !== 0 || typeof result.stdout !== "string") return null;
+  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const match = result.stdout.trim().match(new RegExp(`^${escapedPrefix}((?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*))$`, "u"));
+  return match && isStableVersion(match[1]) ? match[1] : null;
+}
+
 function compareVersions(left, right) {
   const a = left.split(".").map(Number);
   const b = right.split(".").map(Number);
@@ -707,6 +714,11 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
       nested?.path === outer.path && nested.kind === expectedConnectionKinds.get(outer.path)
         && typeof nested.content === "string"
     )).length === 1);
+  const rollbackConsistent = parsed?.rollback !== null && !Array.isArray(parsed?.rollback)
+    && typeof parsed?.rollback === "object" && parsed.rollback.status === "NOT_REQUIRED"
+    && Array.isArray(parsed.rollback.removed) && parsed.rollback.removed.length === 0
+    && Array.isArray(parsed.rollback.unresolved) && parsed.rollback.unresolved.length === 0;
+  const reasonCodesConsistent = !successAggregate || parsed.reasonCodes === undefined;
   return statuses.includes(parsed?.status) && parsed.client === client && parsed.mode === mode
     && Array.isArray(parsed.artifacts) && parsed.artifacts.length === expected.length
     && parsed.artifacts.every((artifact) => artifact !== null && !Array.isArray(artifact) && typeof artifact === "object")
@@ -720,7 +732,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && parsed.connection?.client === client
     && initNestedConsistent && connectionNestedConsistent
     && (!successAggregate || (initConsistent && connectionConsistent && aggregateConsistent))
-    && parsed.rollback?.status === "NOT_REQUIRED";
+    && rollbackConsistent && reasonCodesConsistent;
 }
 
 function recognizableCompassStatus(rt, parsed, root, host, version) {
@@ -966,12 +978,6 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
 
 async function preflightAssert(rt, root, hosts, version, previous, command, report, pendingVersion) {
   if (recordMissingAssertLedgerTools(report, rt)) return null;
-  const node = await rt.exec(["node", "--version"], root);
-  const match = node.stdout.trim().match(/^v(\d+)\.(\d+)\./u);
-  if (!match || Number(match[1]) < 22 || (Number(match[1]) === 22 && Number(match[2]) < 15)) {
-    problem(report, "NODE_VERSION", "AssertLedger needs Node >=22.15", 3);
-    return null;
-  }
   let project;
   try {
     project = inspectAssertProject(rt, root);
@@ -1378,8 +1384,8 @@ export async function execute(options, rt = createRuntime()) {
     return earlyFailure("BUN_REQUIRED", "Bun >=1.4 is required", "Install Bun >=1.4 and ensure bun and bunx are on PATH");
   }
   const bun = await rt.exec(["bun", "--version"], ".");
-  const bunVersion = bun.stdout.trim().match(/^(\d+)\.(\d+)\./u);
-  if (!bunVersion || Number(bunVersion[1]) < 1 || (Number(bunVersion[1]) === 1 && Number(bunVersion[2]) < 4)) {
+  const bunVersion = exactRuntimeVersion(bun);
+  if (!bunVersion || compareVersions(bunVersion, "1.4.0") < 0) {
     return earlyFailure("BUN_VERSION", "Bun >=1.4 is required", "Upgrade Bun to 1.4 or newer");
   }
   const project = rt.resolve(options.project);
@@ -1525,6 +1531,32 @@ export async function execute(options, rt = createRuntime()) {
     || JSON.stringify(state.inProgress.selected) !== JSON.stringify(selected))) {
     problem(report, "PENDING_PLAN_CONFLICT", `The saved plan must be completed before changing selectors. ${recoveryActionFor(state)}`, 4);
     return finalizeFailure(state);
+  }
+  if (selected.includes("assertledger")) {
+    if (!rt.which("node")) {
+      problem(report, "NODE_REQUIRED", "AssertLedger needs Node >=22.15 on PATH", 3);
+      return finalizeFailure(state);
+    }
+    const node = await rt.exec(["node", "--version"], root);
+    const nodeVersion = exactRuntimeVersion(node, "v");
+    if (!nodeVersion || compareVersions(nodeVersion, "22.15.0") < 0) {
+      problem(report, "NODE_VERSION", "AssertLedger needs Node >=22.15", 3);
+      return finalizeFailure(state);
+    }
+  }
+  if (selected.includes("latent-compass")) {
+    if (!rt.which("uv")) {
+      problem(report, "UV_REQUIRED", "Latent Compass needs uv on PATH", 3);
+      return finalizeFailure(state);
+    }
+    const uv = await rt.exec(["uv", "--version"], root);
+    const uvVersion = uv?.code === 0 && typeof uv.stdout === "string"
+      ? uv.stdout.trim().match(/^uv ((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?: \([^\r\n]+\))?$/u)?.[1]
+      : null;
+    if (!isStableVersion(uvVersion)) {
+      problem(report, "UV_VERSION", "Latent Compass needs a valid stable uv runtime", 3);
+      return finalizeFailure(state);
+    }
   }
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) {

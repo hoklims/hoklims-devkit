@@ -43,7 +43,9 @@ function assertExactRun(step, command, label, shell) {
 }
 
 function assertNoShellStartupOverrides(workflow) {
-  const forbidden = new Set(["BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "PROMPT_COMMAND"]);
+  const forbidden = new Set([
+    "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "PROMPT_COMMAND", "NODE_OPTIONS", "BUN_OPTIONS",
+  ]);
   const inspect = (owner) => {
     for (const name of Object.keys(owner?.env ?? {})) {
       if (forbidden.has(name.toUpperCase()) || /^BASH_FUNC_.+%%$/u.test(name)) {
@@ -515,6 +517,30 @@ test("exported Bash functions are rejected at workflow job and step scope", () =
         ...(workflow.jobs[jobName].steps[stepIndex].env ?? {}), ...env,
       };
       expect(() => validate(workflow), `${path.pathname}:${scope}`).toThrow(/shell startup override/u);
+    }
+  }
+});
+
+test("runtime preload options are rejected at workflow job and step scope", () => {
+  const sources = [
+    [workflowPath, validateReleaseGraph, "verify", 7],
+    [ciPath, validateCiCheckout, "package", 3],
+    [nativePath, (workflow) => validateNativeNoLc(
+      workflow, readFileSync(nativeHarnessPath, "utf8"),
+    ), "native", 4],
+  ];
+  for (const [path, validate, jobName, stepIndex] of sources) {
+    for (const name of ["NODE_OPTIONS", "BUN_OPTIONS"]) {
+      for (const scope of ["workflow", "job", "step"]) {
+        const workflow = Bun.YAML.parse(readFileSync(path, "utf8"));
+        const env = { [name]: "--import=data:text/javascript,process.exit(0)" };
+        if (scope === "workflow") workflow.env = env;
+        if (scope === "job") workflow.jobs[jobName].env = env;
+        if (scope === "step") workflow.jobs[jobName].steps[stepIndex].env = {
+          ...(workflow.jobs[jobName].steps[stepIndex].env ?? {}), ...env,
+        };
+        expect(() => validate(workflow), `${path.pathname}:${name}:${scope}`).toThrow(/startup override/u);
+      }
     }
   }
 });
