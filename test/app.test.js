@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { closeSync, lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { execute, main, parseArgs, quoteShellToken } from "../src/app.js";
 import { createRuntime, validateState } from "../src/runtime.js";
@@ -39,6 +39,49 @@ function fixtureDigest(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
+const ASSERT_SKILL_CONTENT = "---\nname: assertledger\ndescription: Analyze a repository, submit candidate tests, and accept only deterministic AssertLedger evidence.\nmetadata:\n  version: \"1.0.0\"\n---\n\n# AssertLedger skill\n\nRun assertledger doctor, preserve assertledger replay, and never infer UNSANDBOXED authority.\n";
+
+function fakePublishedSchema(name) {
+  if (name.startsWith("repository-init-config.")) {
+    const version = name.includes(".v2.") ? "2.0.0" : "1.0.0";
+    return {
+      type: "object", additionalProperties: false,
+      required: ["schemaVersion", "repository", "packageManager", "framework", "testCommand", "adapter", "candidateRoots"],
+      properties: {
+        schemaVersion: { const: version }, repository: true, packageManager: true, framework: true,
+        testCommand: true, adapter: true,
+        candidateRoots: { type: "array", minItems: 1, maxItems: 100, items: { type: "string", minLength: 1, maxLength: 512 } },
+      },
+    };
+  }
+  return { type: "object" };
+}
+
+function installAssertPackageFixture(files, cli, version, forceVersion = false) {
+  const packageRoot = dirname(dirname(cli));
+  files[cli] ??= "cli";
+  const manifestPath = join(packageRoot, "package.json");
+  if (files[manifestPath] === undefined) {
+    files[manifestPath] = JSON.stringify({
+      name: "assertledger", version, bin: { assertledger: "dist/cli.js", testforge: "dist/cli.js" },
+    });
+  } else {
+    try {
+      const manifest = JSON.parse(files[manifestPath]);
+      files[manifestPath] = JSON.stringify({ name: "assertledger", bin: {
+        assertledger: "dist/cli.js", testforge: "dist/cli.js",
+      }, ...manifest, ...(forceVersion ? { version } : {}) });
+    } catch { /* Preserve malformed manifest fixtures. */ }
+  }
+  files[join(packageRoot, "integrations", "skill", "SKILL.md")] ??= ASSERT_SKILL_CONTENT;
+  for (const kind of ["config", "lock", "result"]) {
+    for (const generation of ["v1", "v2"]) {
+      const name = `repository-init-${kind}.${generation}.json`;
+      files[join(packageRoot, "schemas", name)] ??= JSON.stringify(fakePublishedSchema(name));
+    }
+  }
+}
+
 function assertSetupReport(argv, status, mode, schemaVersion = "1.0.0") {
   const client = argv[argv.indexOf("--client") + 1];
   const artifactState = status === "CREATED" ? "CREATED" : status === "UNCHANGED" ? "UNCHANGED"
@@ -73,7 +116,8 @@ function assertSetupReport(argv, status, mode, schemaVersion = "1.0.0") {
   };
   const lockContent = `${canonicalFixtureJson({ ...lockBase, lockDigest: fixtureDigest(canonicalFixtureJson(lockBase)) })}\n`;
   const node = process.platform === "win32" ? "C:\\runtime\\node.exe" : "/runtime/node";
-  const cli = process.platform === "win32" ? "C:\\cache\\assertledger\\dist\\cli.js" : "/cache/assertledger/dist/cli.js";
+  const cli = argv[0] === "node" && typeof argv[1] === "string" && argv[1].endsWith("cli.js")
+    ? argv[1] : process.platform === "win32" ? "C:\\cache\\assertledger\\dist\\cli.js" : "/cache/assertledger/dist/cli.js";
   const configuration = client === "codex" ? [
     "[mcp_servers.assertledger]",
     `command = ${JSON.stringify(node)}`,
@@ -83,7 +127,6 @@ function assertSetupReport(argv, status, mode, schemaVersion = "1.0.0") {
   ].join("\n") : `${JSON.stringify({ mcpServers: { assertledger: {
     type: "stdio", command: node, args: [cli, "mcp", "--root", "/repo"],
   } } }, null, 2)}\n`;
-  const skill = "---\nname: assertledger\ndescription: Analyze a repository, submit candidate tests, and accept only deterministic AssertLedger evidence.\nmetadata:\n  version: \"1.0.0\"\n---\n\n# AssertLedger skill\n\nRun assertledger doctor, preserve assertledger replay, and never infer UNSANDBOXED authority.\n";
   return {
     status, client, mode,
     init: {
@@ -102,7 +145,7 @@ function assertSetupReport(argv, status, mode, schemaVersion = "1.0.0") {
     connection: {
       client, status: mode === "write" ? status : "EMITTED",
       artifacts: connectionPaths.map((path, index) => ({
-        kind: index === 0 ? "configuration" : "skill", path, content: index === 0 ? configuration : skill,
+        kind: index === 0 ? "configuration" : "skill", path, content: index === 0 ? configuration : ASSERT_SKILL_CONTENT,
       })),
     },
     artifacts: [
@@ -138,11 +181,27 @@ function mixedAssertSetupReport(argv, mode, mixedInit = false, mixedConnection =
 function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupPlan(), setupReady = true, workspaceReady = false, state = null, files = {}, tools = [], failAssertInstall = false, failPyPi = false, uvInstalled = true, assertStatus = "UNCHANGED", compassStatus = "NO_OBSERVATIONS", semctxStatusCode = 3, semctxStatusMalformed = false, semctxMissing = false, semctxContentDrift = false, semctxMarketplaceMatch = true, installedSemctxVersion } = {}) {
   const calls = [];
   const writes = [];
+  const cachedCli = process.platform === "win32" ? "C:\\cache\\assertledger\\dist\\cli.js" : "/cache/assertledger/dist/cli.js";
+  installAssertPackageFixture(files, cachedCli, "1.2.0");
+  const localCli = join("/repo", "node_modules", "assertledger", "dist", "cli.js");
+  if (Object.hasOwn(files, localCli)) {
+    let localVersion = "1.2.0";
+    try { localVersion = JSON.parse(files[join("/repo", "node_modules", "assertledger", "package.json")])?.version ?? localVersion; } catch { /* Preserve malformed fixtures. */ }
+    installAssertPackageFixture(files, localCli, localVersion);
+  }
+  for (const cli of Object.keys(files).filter((path) => path.endsWith(`${process.platform === "win32" ? "\\" : "/"}assertledger${process.platform === "win32" ? "\\" : "/"}dist${process.platform === "win32" ? "\\" : "/"}cli.js`))) {
+    const packageRoot = dirname(dirname(cli));
+    let packageVersion = "1.2.0";
+    try { packageVersion = JSON.parse(files[join(packageRoot, "package.json")])?.version ?? packageVersion; } catch { /* Preserve malformed fixtures. */ }
+    installAssertPackageFixture(files, cli, packageVersion);
+  }
   let semctxInstalledVersion = semctxMissing ? null : installedSemctxVersion ?? state?.components?.semctx?.version ?? null;
   const rt = {
     calls,
     writes,
-    which: (name) => ["bun", "bunx", "codex", ...tools].includes(name) ? `/bin/${name}` : null,
+    which: (name) => name === "node" && tools.includes("node")
+      ? (process.platform === "win32" ? "C:\\runtime\\node.exe" : "/runtime/node")
+      : ["bun", "bunx", "codex", ...tools].includes(name) ? `/bin/${name}` : null,
     resolve: () => "/repo",
     realpath: (path) => path,
     statePath: () => "/state/repo.json",
@@ -163,6 +222,9 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
       if (argv[0] === "uv" && argv.includes("--version")) return { code: 0, stdout: "uv 0.8.22 (fixture)\n", stderr: "" };
       if (argv[0] === "node" && argv.includes("setup")) {
         const write = argv.includes("--write");
+        const cli = argv[1];
+        const installed = JSON.parse(files[join(dirname(dirname(cli)), "package.json")] ?? "null")?.version ?? "1.2.0";
+        installAssertPackageFixture(files, cli, installed);
         return { code: assertStatus === "CONFLICT" ? 4 : 0, stdout: JSON.stringify(assertSetupReport(argv, write ? "CREATED" : assertStatus, write ? "write" : "dry-run")), stderr: "" };
       }
       if (argv[0] === "node") return { code: 0, stdout: "v22.15.0\n", stderr: "" };
@@ -172,7 +234,12 @@ function fakeRuntime({ version = "0.3.7", stable = version, setup = semctxSetupP
       if (argv[0] === "uv" && argv.includes("run")) return { code: 0, stdout: JSON.stringify(compassInstallReport(argv)), stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("--version")) return { code: 0, stdout: "latent-compass 0.3.0\n", stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo", hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
-      if (argv[0] === "npm" && argv.includes("exec")) return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
+      if (argv[0] === "npm" && argv.includes("exec")) {
+        const spec = argv.find((argument) => /^(?:--package=)?assertledger@/u.test(argument));
+        const cli = process.platform === "win32" ? "C:\\cache\\assertledger\\dist\\cli.js" : "/cache/assertledger/dist/cli.js";
+        installAssertPackageFixture(files, cli, spec?.replace(/^--package=assertledger@|^assertledger@/u, "") ?? "1.2.0", true);
+        return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
+      }
       const assertSpec = argv.find((arg) => /^assertledger@/u.test(arg));
       if (assertSpec && ((argv[0] === "npm" && argv.includes("install"))
         || (argv[0] === "pnpm" && argv.includes("add")) || (argv[0] === "bun" && argv.includes("add")))) {
@@ -3114,6 +3181,16 @@ describe("public CLI", () => {
       report.init.files[index].content = content;
       report.init.files[index].digest = fixtureDigest(content);
     };
+    const rewriteSemanticFiles = (report, edit) => {
+      const config = JSON.parse(report.init.files[0].content);
+      const lock = JSON.parse(report.init.files[1].content);
+      edit(config, lock, report.init.detections);
+      lock.configDigest = fixtureDigest(canonicalFixtureJson(config));
+      const { lockDigest, ...lockBase } = lock;
+      lock.lockDigest = fixtureDigest(canonicalFixtureJson(lockBase));
+      replaceJsonFile(report, 0, config);
+      replaceJsonFile(report, 1, lock);
+    };
     const mutations = [
       (report) => {
         report.init.files[0].content = "not JSON";
@@ -3134,6 +3211,28 @@ describe("public CLI", () => {
       (report) => { report.connection.artifacts[0].content = ""; },
       (report) => { report.connection.artifacts[0].content = report.connection.artifacts[0].content.replaceAll("/repo", "/foreign"); },
       (report) => { report.connection.artifacts[1].content = "---\nname: foreign\n---\n"; },
+      (report) => {
+        report.connection.artifacts[1].content = `${ASSERT_SKILL_CONTENT.slice(0, 220)}\nassertledger doctor assertledger replay UNSANDBOXED\n`;
+      },
+      (report) => {
+        const lines = report.connection.artifacts[0].content.split("\n");
+        const args = JSON.parse(lines[2].slice("args = ".length));
+        args[0] = process.platform === "win32" ? "C:\\foreign\\assertledger\\dist\\cli.js" : "/foreign/assertledger/dist/cli.js";
+        lines[2] = `args = ${JSON.stringify(args)}`;
+        report.connection.artifacts[0].content = lines.join("\n");
+      },
+      (report) => rewriteSemanticFiles(report, (config) => {
+        config.candidateRoots = Array.from({ length: 101 }, (_, index) => `candidate-${String(index).padStart(3, "0")}`);
+      }),
+      (report) => rewriteSemanticFiles(report, (config, lock, detections) => {
+        config.packageManager = "cargo";
+        lock.detections.packageManager = "cargo";
+        detections.packageManager = "cargo";
+      }),
+      (report) => rewriteSemanticFiles(report, (config, lock) => {
+        lock.evidence[0].digest = "sha256:NOT_LOWERCASE_HEX";
+      }),
+      (report) => rewriteSemanticFiles(report, (config) => { config.unexpected = true; }),
     ];
     for (const mutate of mutations) {
       for (const command of ["doctor", "setup"]) {
@@ -3176,6 +3275,26 @@ describe("public CLI", () => {
       expect(report.conflicts.map((item) => item.code), schemaVersion).not.toContain("NATIVE_REPORT_INVALID");
       expect(report.components.find((item) => item.name === "assertledger").configured).toBe("yes");
     }
+  });
+
+  test("AssertLedger cached preflight binds package manifest version bins and exact skill bytes", async () => {
+    const files = { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) };
+    const rt = fakeRuntime({ tools: ["node", "npm"], files });
+    const packageRoot = process.platform === "win32" ? "C:\\cache\\assertledger" : "/cache/assertledger";
+    const nativeExec = rt.exec;
+    rt.exec = async (argv, cwd, timeout) => {
+      const result = await nativeExec(argv, cwd, timeout);
+      if (argv[0] === "npm" && argv.includes("exec")) {
+        files[join(packageRoot, "package.json")] = JSON.stringify({
+          name: "assertledger", version: "9.9.9", bin: { assertledger: "dist/cli.js", testforge: "dist/cli.js" },
+        });
+      }
+      return result;
+    };
+    const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts.map((item) => item.code)).toContain("ASSERTLEDGER_CONFLICT");
+    expect(rt.writes).toHaveLength(0);
   });
 
   test("AssertLedger rejects contradictory rollback and success reason evidence", async () => {

@@ -15,7 +15,8 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { diffSnapshots, runtimeCachePaths, snapshotTree, validateNativeReport } from "./native-no-lc-contract.mjs";
+import { diffSnapshots, runtimeCachePaths, snapshotTree } from "./native-no-lc-contract.mjs";
+import { NATIVE_LANE_DEFINITIONS, runNativeLaneMatrix } from "./native-no-lc-runner.mjs";
 
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 const configPath = process.argv[2];
@@ -363,13 +364,6 @@ writeFileSync(path.join(evidenceRoot, "registry.json"), `${JSON.stringify({
   assertExact,
 }, null, 2)}\n`);
 
-const laneDefinitions = [
-  { name: "codex-semctx", host: "codex", withAssertLedger: false },
-  { name: "claude-semctx", host: "claude", withAssertLedger: false },
-  { name: "all-semctx", host: "all", withAssertLedger: false },
-  { name: "all-assertledger", host: "all", withAssertLedger: true },
-];
-
 function laneEnvironment(lane) {
   const environment = makeRuntimeEnvironment(lane.runtimeRoot, toolsBin);
   environment.CODEX_HOME = lane.codexHome;
@@ -444,14 +438,14 @@ function parseJsonOutput(result, label) {
   }
 }
 
-function validateReport(report, lane, command, dryRun) {
+function nativeReportOptions(lane, command, dryRun) {
   const names = lane.withAssertLedger ? ["semctx", "assertledger"] : ["semctx"];
   const hosts = lane.host === "all" ? ["codex", "claude"] : [lane.host];
-  return validateNativeReport(report, {
+  return {
     projectRoot: realpathSync(lane.repository), command, hosts, names,
     versions: { semctx: config.expected.semctx, assertledger: config.expected.assertledger },
     dryRun,
-  });
+  };
 }
 
 async function runDevkit(lane, command, { dryRun = false } = {}) {
@@ -467,19 +461,14 @@ async function runDevkit(lane, command, { dryRun = false } = {}) {
     env: lane.env,
     timeoutMs: 300_000,
   });
-  return validateReport(parseJsonOutput(result, `${lane.name} ${command}`), lane, command, dryRun);
+  return parseJsonOutput(result, `${lane.name} ${command}`);
 }
 
-async function requireUnchanged(lane, label, operation) {
-  const before = snapshotProtected(lane);
-  writeFileSync(path.join(evidenceRoot, `${lane.name}-${label}-before.json`), `${JSON.stringify(before, null, 2)}\n`);
-  const value = await operation();
-  const after = snapshotProtected(lane);
-  writeFileSync(path.join(evidenceRoot, `${lane.name}-${label}-after.json`), `${JSON.stringify(after, null, 2)}\n`);
+function recordProtectedSnapshots({ lane, id, before, after }) {
+  writeFileSync(path.join(evidenceRoot, `${lane.name}-${id}-before.json`), `${JSON.stringify(before, null, 2)}\n`);
+  writeFileSync(path.join(evidenceRoot, `${lane.name}-${id}-after.json`), `${JSON.stringify(after, null, 2)}\n`);
   const diff = diffSnapshots(before, after);
-  writeFileSync(path.join(evidenceRoot, `${lane.name}-${label}-diff.json`), `${JSON.stringify(diff, null, 2)}\n`);
-  assert.deepEqual(diff, [], `${lane.name} ${label} changed protected profile or repository`);
-  return value;
+  writeFileSync(path.join(evidenceRoot, `${lane.name}-${id}-diff.json`), `${JSON.stringify(diff, null, 2)}\n`);
 }
 
 async function runAssertLedgerDemo(lane) {
@@ -530,17 +519,15 @@ async function runAssertLedgerDemo(lane) {
   writeFileSync(path.join(evidenceRoot, `${lane.name}-assertledger-demo.json`), `${JSON.stringify({ demo, report }, null, 2)}\n`);
 }
 
-const laneResults = [];
-for (const definition of laneDefinitions) {
-  const lane = await createLane(definition);
-  const dryRun = await requireUnchanged(lane, "setup-dry-run", () => runDevkit(lane, "setup", { dryRun: true }));
-  const apply = await runDevkit(lane, "setup");
-  const doctor = await requireUnchanged(lane, "doctor", () => runDevkit(lane, "doctor"));
-  const repeat = await requireUnchanged(lane, "setup-repeat", () => runDevkit(lane, "setup"));
-  const upgrade = await requireUnchanged(lane, "upgrade-noop", () => runDevkit(lane, "upgrade"));
-  if (lane.withAssertLedger) await runAssertLedgerDemo(lane);
-  laneResults.push({ name: lane.name, host: lane.host, withAssertLedger: lane.withAssertLedger, dryRun, apply, doctor, repeat, upgrade });
-}
+const laneResults = await runNativeLaneMatrix({
+  laneDefinitions: NATIVE_LANE_DEFINITIONS,
+  createLane,
+  executeDevkit: runDevkit,
+  reportOptions: nativeReportOptions,
+  captureProtected: snapshotProtected,
+  recordSnapshot: recordProtectedSnapshots,
+  runAssertLedgerDemo,
+});
 
 const sourceAfter = snapshotTree(sourceCheckout);
 writeFileSync(path.join(evidenceRoot, "source-after.json"), `${JSON.stringify(sourceAfter, null, 2)}\n`);
@@ -575,7 +562,8 @@ const summary = {
       packageTreeSha256: sha256Bytes(JSON.stringify(snapshotTree(path.join(toolsRoot, "node_modules", "@anthropic-ai", "claude-code")))),
     },
   },
-  lanes: laneResults.map((lane) => ({ name: lane.name, host: lane.host, withAssertLedger: lane.withAssertLedger })),
+  lanes: laneResults.map((lane) => ({ name: lane.name, host: lane.host,
+    withAssertLedger: lane.withAssertLedger, stages: lane.stages })),
   protectedBoundaries: "full repository and full owned profile roots",
   cachesAndTempOutsideProtectedProfiles: true,
   actualUserProfilesUsed: false,

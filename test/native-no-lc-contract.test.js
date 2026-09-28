@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { diffSnapshots, runtimeCachePaths, snapshotTree, validateNativeReport } from "../scripts/native-no-lc-contract.mjs";
 import { resolveBundledNpmCli } from "../scripts/native-runtime-paths.mjs";
 import { buildNativeConfig } from "../scripts/native-no-lc-config.mjs";
+import { NATIVE_LANE_DEFINITIONS, NATIVE_STAGE_IDS, runNativeLaneMatrix } from "../scripts/native-no-lc-runner.mjs";
 
 function touch(path, bytes = "fixture\n") {
   mkdirSync(dirname(path), { recursive: true });
@@ -96,6 +97,77 @@ test("native report contract rejects missing, false, duplicate, and foreign evid
     mutate(candidate);
     expect(() => validateNativeReport(candidate, options)).toThrow(/invalid complete component report/u);
   }
+});
+
+function syntheticLaneReport(lane, command, dryRun) {
+  const planned = command === "setup" && dryRun;
+  const doctor = command === "doctor";
+  const names = lane.withAssertLedger ? ["semctx", "assertledger"] : ["semctx"];
+  return {
+    schemaVersion: 1, command, ok: true, projectRoot: lane.repository,
+    hosts: lane.host === "all" ? ["codex", "claude"] : [lane.host], conflicts: [],
+    components: names.map((name) => ({
+      name, version: name === "semctx" ? "0.3.7" : "1.3.0",
+      ...(doctor ? {} : { state: planned ? "planned" : "configured" }),
+      installed: planned ? "unknown" : "yes", configured: planned ? "unknown" : "yes",
+      loaded: "unknown", approved: "unknown", observed: "unknown",
+    })),
+  };
+}
+
+function laneRunnerOptions(overrides = {}) {
+  const commands = [];
+  return {
+    commands,
+    laneDefinitions: NATIVE_LANE_DEFINITIONS,
+    createLane: async (definition) => ({ ...definition, repository: `/repo/${definition.name}` }),
+    executeDevkit: async (lane, command, { dryRun }) => {
+      commands.push(`${lane.name}:${command}:${dryRun}`);
+      return syntheticLaneReport(lane, command, dryRun);
+    },
+    reportOptions: (lane, command, dryRun) => ({
+      projectRoot: lane.repository, command,
+      hosts: lane.host === "all" ? ["codex", "claude"] : [lane.host],
+      names: lane.withAssertLedger ? ["semctx", "assertledger"] : ["semctx"],
+      versions: { semctx: "0.3.7", assertledger: "1.3.0" }, dryRun,
+    }),
+    captureProtected: () => ({ repository: [{ path: ".", kind: "directory" }], profile: [] }),
+    recordSnapshot: () => {},
+    runAssertLedgerDemo: async () => {},
+    ...overrides,
+  };
+}
+
+test("production native runner executes the exact four lanes and seven stages", async () => {
+  const options = laneRunnerOptions();
+  const results = await runNativeLaneMatrix(options);
+  expect(results.map(({ name, host, withAssertLedger }) => ({ name, host, withAssertLedger })))
+    .toEqual(NATIVE_LANE_DEFINITIONS);
+  for (const result of results) expect(result.stages).toEqual(NATIVE_STAGE_IDS);
+  expect(options.commands).toHaveLength(20);
+});
+
+test("production native runner rejects an empty lane set", async () => {
+  await expect(runNativeLaneMatrix(laneRunnerOptions({ laneDefinitions: [] }))).rejects.toThrow(/exact four/u);
+});
+
+test("production native runner cannot bypass native report validation", async () => {
+  const invalid = laneRunnerOptions({
+    executeDevkit: async (lane, command, { dryRun }) => {
+      const report = syntheticLaneReport(lane, command, dryRun);
+      delete report.components[0].installed;
+      return report;
+    },
+  });
+  await expect(runNativeLaneMatrix(invalid)).rejects.toThrow(/invalid complete component report/u);
+});
+
+test("production native runner cannot bypass protected snapshot comparison", async () => {
+  let captures = 0;
+  const changed = laneRunnerOptions({
+    captureProtected: () => ({ repository: [{ path: ".", kind: "directory", captures: captures++ }], profile: [] }),
+  });
+  await expect(runNativeLaneMatrix(changed)).rejects.toThrow(/changed protected profile or repository/u);
 });
 
 test("native snapshots detect permission-only mutations", () => {

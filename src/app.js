@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
@@ -791,12 +791,92 @@ function parseCanonicalJson(content) {
   }
 }
 
-function validAssertInitContent(init) {
+function jsonSchemaValue(value, schema, rootSchema) {
+  if (schema === true) return true;
+  if (schema === false || !schema || typeof schema !== "object") return false;
+  if (typeof schema.$ref === "string") {
+    if (!schema.$ref.startsWith("#/$defs/")) return false;
+    const key = schema.$ref.slice("#/$defs/".length).replaceAll("~1", "/").replaceAll("~0", "~");
+    return jsonSchemaValue(value, rootSchema.$defs?.[key], rootSchema);
+  }
+  if (Array.isArray(schema.anyOf) && !schema.anyOf.some((candidate) => jsonSchemaValue(value, candidate, rootSchema))) return false;
+  if (Array.isArray(schema.oneOf)
+    && schema.oneOf.filter((candidate) => jsonSchemaValue(value, candidate, rootSchema)).length !== 1) return false;
+  if (schema.const !== undefined && canonicalJson(value) !== canonicalJson(schema.const)) return false;
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => canonicalJson(value) === canonicalJson(candidate))) return false;
+  if (schema.type !== undefined) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    const actual = value === null ? "null" : Array.isArray(value) ? "array"
+      : Number.isInteger(value) ? "integer" : typeof value === "number" ? "number" : typeof value;
+    if (!types.includes(actual) && !(actual === "integer" && types.includes("number"))) return false;
+  }
+  if (typeof value === "string") {
+    if (schema.minLength !== undefined && value.length < schema.minLength) return false;
+    if (schema.maxLength !== undefined && value.length > schema.maxLength) return false;
+    if (schema.pattern !== undefined && !new RegExp(schema.pattern, "u").test(value)) return false;
+  }
+  if (typeof value === "number") {
+    if (schema.minimum !== undefined && value < schema.minimum) return false;
+    if (schema.maximum !== undefined && value > schema.maximum) return false;
+  }
+  if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) return false;
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) return false;
+    if (Array.isArray(schema.prefixItems)) {
+      if (value.length < schema.prefixItems.length
+        || !schema.prefixItems.every((candidate, index) => jsonSchemaValue(value[index], candidate, rootSchema))) return false;
+    }
+    const offset = Array.isArray(schema.prefixItems) ? schema.prefixItems.length : 0;
+    if (schema.items === false && value.length > offset) return false;
+    if (schema.items && schema.items !== true
+      && value.slice(offset).some((item) => !jsonSchemaValue(item, schema.items, rootSchema))) return false;
+  }
+  if (value !== null && !Array.isArray(value) && typeof value === "object") {
+    if (Array.isArray(schema.required) && schema.required.some((key) => !Object.hasOwn(value, key))) return false;
+    const properties = schema.properties ?? {};
+    for (const [key, item] of Object.entries(value)) {
+      if (Object.hasOwn(properties, key)) {
+        if (!jsonSchemaValue(item, properties[key], rootSchema)) return false;
+      } else if (schema.additionalProperties === false) return false;
+      else if (schema.additionalProperties && schema.additionalProperties !== true
+        && !jsonSchemaValue(item, schema.additionalProperties, rootSchema)) return false;
+    }
+  }
+  return true;
+}
+
+function publishedSchema(rt, packageRoot, name) {
+  try {
+    const path = join(packageRoot, "schemas", name);
+    if (!rt.plainFilePresent(path)) return null;
+    const schema = JSON.parse(rt.readPlainText(path));
+    return schema && typeof schema === "object" ? schema : null;
+  } catch {
+    return null;
+  }
+}
+
+function validPublishedInitSchemas(rt, packageRoot, init, config, lock) {
+  const suffix = init.schemaVersion === "2.0.0" ? "v2" : init.schemaVersion === "1.0.0" ? "v1" : null;
+  if (!suffix) return false;
+  const documents = [
+    [init, `repository-init-result.${suffix}.json`],
+    [config, `repository-init-config.${suffix}.json`],
+    [lock, `repository-init-lock.${suffix}.json`],
+  ];
+  return documents.every(([value, name]) => {
+    const schema = publishedSchema(rt, packageRoot, name);
+    return schema !== null && jsonSchemaValue(value, schema, schema);
+  });
+}
+
+function validAssertInitContent(rt, packageRoot, init) {
   const configFile = init.files.find((file) => file.path === "assertledger.config.json");
   const lockFile = init.files.find((file) => file.path === "assertledger.lock.json");
   const config = parseCanonicalJson(configFile?.content);
   const lock = parseCanonicalJson(lockFile?.content);
-  if (!config || !lock || !jsonRecord(config, ["schemaVersion", "repository", "packageManager", "framework", "testCommand", "adapter", "candidateRoots"])
+  if (!config || !lock || !validPublishedInitSchemas(rt, packageRoot, init, config, lock)
+    || !jsonRecord(config, ["schemaVersion", "repository", "packageManager", "framework", "testCommand", "adapter", "candidateRoots"])
     || config.schemaVersion !== init.schemaVersion
     || !jsonRecord(config.repository, ["root", "exclude"]) || config.repository.root !== "."
     || !sortedUniqueStrings(config.repository.exclude) || config.repository.exclude.some((entry) => !portableInitPath(entry) || entry.includes("/"))
@@ -836,42 +916,55 @@ function validAssertInitContent(init) {
     && JSON.stringify(init.nextCommands[0]?.arguments) === JSON.stringify(["audit", ".", "--json"]);
 }
 
-function validAssertSkill(content) {
-  return typeof content === "string" && content.startsWith("---\nname: assertledger\ndescription: Analyze a repository, submit candidate tests, and accept only deterministic AssertLedger evidence.\nmetadata:\n  version: \"1.0.0\"\n---\n")
-    && content.includes("\n# AssertLedger skill\n") && content.includes("assertledger doctor")
-    && content.includes("assertledger replay") && content.includes("UNSANDBOXED");
-}
-
-function validNodeAndCli(node, cli) {
-  return typeof node === "string" && /(?:^|[/\\])node(?:\.exe)?$/iu.test(node)
-    && typeof cli === "string" && /(?:^|[/\\])assertledger[/\\]dist[/\\]cli\.js$/u.test(cli);
-}
-
-function validAssertConnectionContent(connection, client, root) {
+function parsedAssertConnection(connection, client, root) {
   const config = connection.artifacts.find((artifact) => artifact.kind === "configuration")?.content;
-  const skill = connection.artifacts.find((artifact) => artifact.kind === "skill")?.content;
-  if (!validAssertSkill(skill) || typeof config !== "string") return false;
+  if (typeof config !== "string") return null;
   if (client === "claude-code") {
     let value;
-    try { value = JSON.parse(config); } catch { return false; }
-    if (`${JSON.stringify(value, null, 2)}\n` !== config) return false;
+    try { value = JSON.parse(config); } catch { return null; }
+    if (`${JSON.stringify(value, null, 2)}\n` !== config) return null;
     const server = value?.mcpServers?.assertledger;
     return jsonRecord(value, ["mcpServers"]) && jsonRecord(value.mcpServers, ["assertledger"])
       && jsonRecord(server, ["type", "command", "args"]) && server.type === "stdio"
-      && validNodeAndCli(server.command, server.args?.[0])
-      && JSON.stringify(server.args.slice(1)) === JSON.stringify(["mcp", "--root", root]);
+      && Array.isArray(server.args) && JSON.stringify(server.args.slice(1)) === JSON.stringify(["mcp", "--root", root])
+      ? { node: server.command, cli: server.args[0] } : null;
   }
   const lines = config.split("\n");
   if (lines.length !== 5 || lines[0] !== "[mcp_servers.assertledger]" || lines[4] !== ""
-    || !lines[1].startsWith("command = ") || !lines[2].startsWith("args = ") || !lines[3].startsWith("cwd = ")) return false;
+    || !lines[1].startsWith("command = ") || !lines[2].startsWith("args = ") || !lines[3].startsWith("cwd = ")) return null;
   try {
     const node = JSON.parse(lines[1].replace(/^command = /u, ""));
     const args = JSON.parse(lines[2].replace(/^args = /u, ""));
     const cwd = JSON.parse(lines[3].replace(/^cwd = /u, ""));
-    return validNodeAndCli(node, args?.[0]) && JSON.stringify(args.slice(1)) === JSON.stringify(["mcp", "--root", root])
-      && cwd === root;
+    return Array.isArray(args) && JSON.stringify(args.slice(1)) === JSON.stringify(["mcp", "--root", root])
+      && cwd === root ? { node, cli: args[0] } : null;
   } catch {
-    return false;
+    return null;
+  }
+}
+
+function assertPackageAnchor(rt, connection, client, root, version) {
+  const invocation = parsedAssertConnection(connection, client, root);
+  const skill = connection.artifacts.find((artifact) => artifact.kind === "skill")?.content;
+  if (!invocation || !isStableVersion(version) || typeof invocation.node !== "string" || typeof invocation.cli !== "string") return null;
+  try {
+    const admittedNode = rt.which("node");
+    const node = rt.realpath(invocation.node);
+    const cli = rt.realpath(invocation.cli);
+    if (!admittedNode || node !== rt.realpath(admittedNode) || basename(cli) !== "cli.js"
+      || basename(dirname(cli)) !== "dist") return null;
+    const packageRoot = dirname(dirname(cli));
+    if (basename(packageRoot) !== "assertledger") return null;
+    const manifestPath = join(packageRoot, "package.json");
+    const packagedSkillPath = join(packageRoot, "integrations", "skill", "SKILL.md");
+    if (!rt.plainFilePresent(cli) || !rt.plainFilePresent(manifestPath) || !rt.plainFilePresent(packagedSkillPath)) return null;
+    const manifest = JSON.parse(rt.readPlainText(manifestPath));
+    if (manifest?.name !== "assertledger" || manifest.version !== version
+      || manifest.bin?.assertledger !== "dist/cli.js" || manifest.bin?.testforge !== "dist/cli.js"
+      || skill !== rt.readPlainText(packagedSkillPath)) return null;
+    return packageRoot;
+  } catch {
+    return null;
   }
 }
 
@@ -905,6 +998,8 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     : true;
   const initFiles = parsed?.init?.files;
   const initActions = parsed?.init?.actions;
+  const packageRoot = Array.isArray(parsed?.connection?.artifacts)
+    ? assertPackageAnchor(rt, parsed.connection, client, root, options.version) : null;
   const expectedInitPaths = ["assertledger.config.json", "assertledger.lock.json"];
   const nestedSuccess = ["UNCHANGED", mode === "dry-run" ? "WOULD_CREATE" : "CREATED"].includes(parsed?.status);
   const initArtifactByPath = new Map(expectedInitPaths.map((relativePath) => [
@@ -920,7 +1015,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && initActions.every((action) => expectedInitPaths.includes(action?.path)
       && (action.kind === "CREATE" || (action.kind === "REGENERATE" && action.path === "assertledger.lock.json")))
     && new Set(initActions.map((action) => action.path)).size === initActions.length
-    && validAssertInitContent(parsed.init)
+    && packageRoot !== null && validAssertInitContent(rt, packageRoot, parsed.init)
     && (!nestedSuccess || expectedInitPaths.every((relativePath, index) => (
       initActions.some((action) => action.path === relativePath) === (initArtifactByPath.get(relativePath)?.state === changedState)
     )));
@@ -941,8 +1036,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
     && connectionArtifacts.every((outer) => nestedConnectionArtifacts.filter((nested) => (
       nested?.path === outer.path && nested.kind === expectedConnectionKinds.get(outer.path)
         && typeof nested.content === "string"
-    )).length === 1)
-    && validAssertConnectionContent(parsed.connection, client, root);
+    )).length === 1);
   const rollbackConsistent = parsed?.rollback !== null && !Array.isArray(parsed?.rollback)
     && typeof parsed?.rollback === "object" && parsed.rollback.status === "NOT_REQUIRED"
     && Array.isArray(parsed.rollback.removed) && parsed.rollback.removed.length === 0
@@ -1260,7 +1354,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     }
     const parsed = nativeResult(result, `assertledger setup (${client})`, report);
     if (!parsed) continue;
-    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
+    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"], { version })) {
       problem(report, "ASSERTLEDGER_CONFLICT", JSON.stringify(parsed).slice(0, 600));
       continue;
     }
@@ -1381,22 +1475,24 @@ async function applyAssert(rt, root, hosts, version, preflight) {
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
     const preview = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
+    requireAssertLedgerTools(rt, preflight.manager);
+    admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
     const previewReport = parseJsonOutput(preview);
-    if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
+    if (preview.code !== 0 || !validAssertSetupReport(rt, previewReport, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"], { version })) {
       throw new Error(`AssertLedger project preflight (${client}): ${shortError(preview)}`);
     }
+    const result = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--write", "--json"]), root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    const result = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--write", "--json"]), root);
     const parsed = parseJsonOutput(result);
-    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"])) {
+    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "write", ["CREATED", "UNCHANGED"], ["CREATED", "UNCHANGED"], { version })) {
       throw new Error(`AssertLedger setup (${client}): ${shortError(result)}`);
     }
+    const verify = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     requireAssertLedgerTools(rt, preflight.manager);
     admission = assertAssertAdmission(rt, root, preflight.manager, [version], [version]);
-    const verify = await rt.exec(localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"]), root);
     const verified = parseJsonOutput(verify);
-    if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"])) {
+    if (verify.code !== 0 || !validAssertSetupReport(rt, verified, root, client, "dry-run", ["UNCHANGED"], ["UNCHANGED"], { version })) {
       throw new Error(`AssertLedger post-install verification (${client}): ${shortError(verify)}`);
     }
   }
@@ -1493,12 +1589,13 @@ async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [ve
     return item.exitCode === exitCodes[item.report?.status]
       && validAssertSetupReport(rt, item.report, root, client, "dry-run",
         Object.keys(exitCodes), ["UNCHANGED", "WOULD_CREATE", "CONFLICT"], {
+          version,
           initStatuses: ["UNCHANGED", "WOULD_CREATE", "BLOCKED", "CONFLICT"],
           connectionStatuses: ["EMITTED", "CONFLICT"],
         });
   });
   const configured = admitted && checks.every((item) => item.exitCode === 0 && item.report.status === "UNCHANGED"
-    && validAssertSetupReport(rt, item.report, root, item.command.slice(6), "dry-run", ["UNCHANGED"], ["UNCHANGED"]));
+    && validAssertSetupReport(rt, item.report, root, item.command.slice(6), "dry-run", ["UNCHANGED"], ["UNCHANGED"], { version }));
   return {
     name: "assertledger", version, installed: "yes", configured: !admitted ? "unknown" : configured ? "yes" : "no",
     loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured, evidenceInvalid: !admitted,
