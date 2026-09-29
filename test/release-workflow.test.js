@@ -57,7 +57,7 @@ function assertExactRun(step, command, label, shell) {
 
 function assertNoShellStartupOverrides(workflow) {
   const forbidden = new Set([
-    "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "PROMPT_COMMAND", "NODE_OPTIONS", "BUN_OPTIONS",
+    "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "PROMPT_COMMAND", "NODE_OPTIONS", "BUN_OPTIONS", "PATH",
   ]);
   const inspect = (owner) => {
     if (owner && Object.prototype.hasOwnProperty.call(owner, "env")
@@ -707,6 +707,28 @@ test("runtime preload options are rejected at workflow job and step scope", () =
         };
         expect(() => validate(workflow), `${path.pathname}:${name}:${scope}`).toThrow(/startup override/u);
       }
+    }
+  }
+});
+
+test("PATH overrides are rejected case-insensitively at workflow job and step scope", () => {
+  const sources = [
+    [workflowPath, validateReleaseGraph, "verify", 7],
+    [bootstrapPath, validateBootstrapGraph, "verify", 6],
+    [ciPath, validateCiCheckout, "package", 3],
+    [nativePath, (workflow) => validateNativeNoLc(
+      workflow, readFileSync(nativeHarnessPath, "utf8"),
+    ), "native", 4],
+  ];
+  for (const [path, validate, jobName, stepIndex] of sources) {
+    const original = Bun.YAML.parse(readFileSync(path, "utf8"));
+    expect(() => validate(structuredClone(original)), `${path.pathname}:canonical`).not.toThrow();
+    for (const [scope, name] of [["workflow", "PATH"], ["job", "Path"], ["step", "path"]]) {
+      const workflow = structuredClone(original);
+      const target = scope === "workflow" ? workflow : scope === "job" ? workflow.jobs[jobName]
+        : workflow.jobs[jobName].steps[stepIndex];
+      target.env = { ...(target.env ?? {}), [name]: "/attacker/shadow-bin" };
+      expect(() => validate(workflow), `${path.pathname}:${scope}:${name}`).toThrow(/startup override/u);
     }
   }
 });
