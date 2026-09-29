@@ -1,0 +1,99 @@
+name: Native no-LC
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+      source-sha: ${{ steps.package.outputs.source-sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+          no-cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.15.0
+          package-manager-cache: false
+      - id: package
+        name: Build the one native smoke artifact
+        shell: bash
+        run: |
+          bun run check
+          version="$(node -p 'require("./package.json").version')"
+          source_sha="$(git rev-parse HEAD)"
+          mkdir native-package
+          tarball="$(npm pack --silent --ignore-scripts --pack-destination native-package)"
+          test "$tarball" = "hoklims-devkit-${version}.tgz"
+          digest="$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "native-package/$tarball")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source-sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: devkit-native-package
+          path: native-package/hoklims-devkit-*.tgz
+          if-no-files-found: error
+
+  native:
+    needs: build
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+          no-cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.15.0
+          package-manager-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: devkit-native-package
+          path: ${{ runner.temp }}/native-package
+      - name: Run four owned native lanes without Latent Compass
+        shell: bash
+        env:
+          DEVKIT_VERSION: ${{ needs.build.outputs.version }}
+          DEVKIT_SHA256: ${{ needs.build.outputs.sha256 }}
+          DEVKIT_SOURCE_SHA: ${{ needs.build.outputs.source-sha }}
+        run: |
+          tarball="$RUNNER_TEMP/native-package/hoklims-devkit-${DEVKIT_VERSION}.tgz"
+          test -f "$tarball"
+          test "$(git rev-parse HEAD)" = "$DEVKIT_SOURCE_SHA"
+          npm_cli="$(node scripts/native-runtime-paths.mjs)"
+          semctx_sha="$(npm view semctx@0.3.7 gitHead)"
+          physical_temp="$(node -p 'require("node:fs").realpathSync(process.argv[1])' "$RUNNER_TEMP")"
+          run_root="$physical_temp/devkit-native-no-lc"
+          config="$physical_temp/devkit-native-no-lc-config.json"
+          node scripts/native-no-lc-config.mjs "$config" "$run_root" "$PWD" "$tarball" "$semctx_sha" "$npm_cli"
+          node scripts/native-no-lc-smoke.mjs "$config"
+          test -f "$run_root/evidence/PASS"
+      - name: Preserve native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-no-lc-${{ matrix.os }}
+          path: ${{ runner.temp }}/devkit-native-no-lc/evidence
+          if-no-files-found: warn

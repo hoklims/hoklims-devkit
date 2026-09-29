@@ -1,6 +1,6 @@
 # Release sequence
 
-The launcher must be released **after** its native integrations. At the first public release, verify that npm `semctx` has a safe `setup --dry-run` (0.3.4 or later) and that its `stable` Codex and Claude plugin manifests declare the same version. AssertLedger must have published its `setup` CLI (1.3.0 or later). Latent Compass must have published its persistent-host CLI wheel on PyPI (0.3.0 or later). These are release identities, not source-branch claims.
+The launcher must be released **after** its native integrations. At the first public release, verify that npm `semctx` has safe read-only host diagnostics and a safe `setup --dry-run` (0.3.7 or later), and that its `stable` Codex and Claude plugin manifests declare the same version. AssertLedger must have published its `setup` CLI (1.3.0 or later). Latent Compass must have published its persistent-host CLI wheel on PyPI (0.3.0 or later). These are release identities, not source-branch claims.
 
 ## One-time npm bootstrap
 
@@ -11,7 +11,7 @@ npm requires a package to exist before its first trusted publisher can be regist
 3. Verify `npm view hoklims-devkit@0.1.0 version dist.integrity`, then dispatch `.github/workflows/bootstrap-verify.yml` from `main` with `verified_run_id=<RUN_ID>`. It checks that the run was the successful release-tag workflow on the exact tag SHA and that the public tarball integrity equals the tested tarball. It then installs the public package into a fresh consumer, runs the full Codex and Claude smoke, and creates the GitHub Release only after it passes. Retain its exact-SHA run URL as the first-publication evidence.
 4. In npm package settings, register `hoklims/hoklims-devkit`, workflow `release.yml`, with direct `npm publish` permission as its trusted publisher. Restrict traditional token publishing only after that publisher works.
 
-Tag the next version (`v0.1.1` or later) from the verified main commit. The tag workflow tests Windows, Linux, and macOS, publishes through GitHub OIDC, installs the public package again on a fresh Linux runner, then creates its GitHub Release. A publication is incomplete if the public install smoke fails, even when `npm publish` succeeded.
+Tag the next version (`v0.1.1` or later) from the verified main commit. The tag workflow tests Windows, Linux, and macOS, publishes through GitHub OIDC, installs the public package again from `https://registry.npmjs.org` on a fresh Linux runner, and verifies the installed lock entry's resolved URL and integrity against the build job's retained tarball digest before running the CLI. It creates the GitHub Release only after that check and the smoke pass. A publication is incomplete if the public install smoke fails, even when `npm publish` succeeded.
 
 PyPI supports a pending trusted publisher for a new project. Latent Compass uses project `latent-compass`, owner `hoklims`, repository `latent-compass`, workflow `release.yml`, and environment `pypi`; its first PyPI upload can use OIDC without a bootstrap API token.
 

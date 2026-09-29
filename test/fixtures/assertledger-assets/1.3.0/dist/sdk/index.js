@@ -1,0 +1,295 @@
+import { agenticBenchmarkAcquisitionReplayResultJsonSchema, agenticBenchmarkAcquisitionRequestJsonSchema, agenticBenchmarkAcquisitionResultJsonSchema, agenticBenchmarkArtifactJsonSchema, agenticBenchmarkReplayResultJsonSchema, agenticBenchmarkRequestJsonSchema, agenticCorpusAllocationCommitmentJsonSchema, agenticCorpusAllocationCommitmentReplayResultJsonSchema, agenticCorpusAllocationJsonSchema, agenticCorpusAllocationReplayResultJsonSchema, agenticCorpusAllocationRequestJsonSchema, agenticCorpusAllocationRevealJsonSchema, agenticCorpusExperimentArtifactJsonSchema, agenticCorpusExperimentPlanJsonSchema, agenticCorpusExperimentPlanReplayResultJsonSchema, agenticCorpusExperimentReplayRequestJsonSchema, agenticCorpusExperimentReplayResultJsonSchema, agenticCorpusExperimentRequestJsonSchema, agenticProfileReplayResultJsonSchema, agenticProfileReplayResultV2JsonSchema, agenticProfileReportJsonSchema, agenticProfileReportV2JsonSchema, agenticProfileRequestJsonSchema, agenticProfileRequestV2JsonSchema, evidenceExportJsonSchema, evidenceExportReplayResultJsonSchema, evidenceExportRequestJsonSchema, evidenceManifestJsonSchema, evidenceManifestV2JsonSchema, evidenceManifestV3JsonSchema, evidenceProviderManifestJsonSchema, parseAgenticBenchmarkAcquisitionReplayResult, parseAgenticBenchmarkAcquisitionRequest, parseAgenticBenchmarkAcquisitionResult, parseAgenticBenchmarkArtifact, parseAgenticBenchmarkReplayResult, parseAgenticBenchmarkRequest, parseAgenticCorpusAllocation, parseAgenticCorpusAllocationCommitmentReplayResult, parseAgenticCorpusAllocationReplayResult, parseAgenticCorpusAllocationRequest, parseAgenticCorpusExperimentArtifact, parseAgenticCorpusExperimentPlan, parseAgenticCorpusExperimentReplayResult, parseAgenticCorpusExperimentRequest, parseAgenticProfileReplayResult, parseAgenticProfileReplayResultV2, parseAgenticProfileReport, parseAgenticProfileReportV2, parseAgenticProfileRequest, parseAgenticProfileRequestV2, parseEvidenceExport, parseEvidenceExportReplayResult, parseEvidenceExportRequest, parseEvidenceProviderManifest, parseReplayResult, parseRepositoryAnalysis, parseRepositoryAudit, parseVersionedRepositoryInitResult, parseEvidenceManifest, parseEvidenceManifestV2, parseEvidenceManifestV3, parseVerificationRequest, parseVerificationRequestV2, parseVerificationRequestV3, parseVersionedEvidenceManifest, replayResultJsonSchema, repositoryAnalysisJsonSchema, repositoryAuditJsonSchema, repositoryInitConfigJsonSchema, repositoryInitConfigV2JsonSchema, repositoryInitLockJsonSchema, repositoryInitLockV2JsonSchema, repositoryInitResultJsonSchema, repositoryInitResultV2JsonSchema, verificationRequestJsonSchema, verificationRequestV2JsonSchema, verificationRequestV3JsonSchema, } from "../contracts/index.js";
+import { parseVersionedRuntimeDoctorResult, } from "../contracts/runtime-doctor.js";
+import { ASSERTLEDGER_SOURCE_REVISION } from "../build-info.js";
+import { createAgenticBenchmark, createAgenticCorpusAllocation, createAgenticCorpusExperimentArtifact, createAgenticProfile, createAgenticProfileV2, createEvidenceExport, createEvidenceProviderManifest, replayAgenticBenchmark, replayAgenticBenchmarkAcquisition, replayAgenticCorpusAllocation, replayAgenticCorpusAllocationCommitment, replayAgenticCorpusExperimentArtifact, replayAgenticProfile, replayAgenticProfileV2, replayEvidenceExport, replayEvidenceManifest, } from "../core/index.js";
+import { explainReasonCodes } from "../diagnostics.js";
+import { NODE_TEST_ADAPTER_PROFILE } from "../engine/adapters/node-test-profile.js";
+import { qualifyGitRegression, qualifyGitRegressionV2, } from "../engine/git-regression.js";
+import { acquireAgenticBenchmark, analyzeRepository, auditRepository, doctorRepositoryRuntime, initializeRepository, verifyCampaign, } from "../engine/index.js";
+import { replayAgenticCorpusProvenance, verifyAgenticCorpusAllocationCommitmentSignatures, } from "../evaluation/agentic-corpus.js";
+import { ASSERTLEDGER_VERSION } from "../version.js";
+/** Provider-neutral programmatic facade over AssertLedger's deterministic components. */
+export class AssertLedger {
+    explain(codes) {
+        return explainReasonCodes(codes);
+    }
+    async analyze(root) {
+        return parseRepositoryAnalysis(await analyzeRepository(root, { configuredExcludes: true }));
+    }
+    async audit(root, options = {}) {
+        return parseRepositoryAudit(await auditRepository(root, options));
+    }
+    async init(root, options = {}) {
+        return parseVersionedRepositoryInitResult(await initializeRepository(root, options));
+    }
+    async doctor(root, options = {}) {
+        return this.init(root, { ...options, dryRun: true });
+    }
+    async doctorRuntime(root, options) {
+        return parseVersionedRuntimeDoctorResult(await doctorRepositoryRuntime(root, options));
+    }
+    async verify(request) {
+        return parseEvidenceManifest(await verifyCampaign(parseVerificationRequest(request)));
+    }
+    /**
+     * Executes a v2 campaign. A container request runs through the operator-owned runtime command in
+     * `options`; the request itself can never select a host executable.
+     */
+    async verifyV2(request, options = {}) {
+        return parseEvidenceManifestV2(await verifyCampaign(parseVerificationRequestV2(request), options));
+    }
+    async verifyV3(request, options = {}) {
+        return parseEvidenceManifestV3(await verifyCampaign(parseVerificationRequestV3(request), options));
+    }
+    async checkGitRegression(options) {
+        return qualifyGitRegression(options);
+    }
+    /** Qualifies a committed regression inside digest-pinned containers and returns v2 evidence. */
+    async checkGitRegressionV2(options) {
+        return qualifyGitRegressionV2(options);
+    }
+    replay(manifest) {
+        let parsedManifest;
+        try {
+            parsedManifest = parseVersionedEvidenceManifest(manifest);
+        }
+        catch {
+            return parseReplayResult({
+                valid: false,
+                schemaValid: false,
+                decisionDigestValid: false,
+                artifactDigestValid: false,
+                decisionSemanticsValid: false,
+            });
+        }
+        return parseReplayResult({ ...replayEvidenceManifest(parsedManifest), schemaValid: true });
+    }
+    profile(request) {
+        return parseAgenticProfileReport(createAgenticProfile(parseAgenticProfileRequest(request)));
+    }
+    replayProfile(report) {
+        try {
+            return parseAgenticProfileReplayResult(replayAgenticProfile(parseAgenticProfileReport(report)));
+        }
+        catch {
+            return parseAgenticProfileReplayResult({
+                valid: false,
+                schemaValid: false,
+                sourceManifestValid: false,
+                policyDigestValid: false,
+                reportDigestValid: false,
+                semanticsValid: false,
+            });
+        }
+    }
+    exportEvidence(request) {
+        return parseEvidenceExport(createEvidenceExport(parseEvidenceExportRequest(request)));
+    }
+    replayEvidenceExport(evidenceExport) {
+        try {
+            return parseEvidenceExportReplayResult(replayEvidenceExport(evidenceExport));
+        }
+        catch {
+            return parseEvidenceExportReplayResult({
+                valid: false,
+                schemaValid: false,
+                sourceManifestValid: false,
+                exportDigestValid: false,
+                semanticsValid: false,
+            });
+        }
+    }
+    providerManifest() {
+        return parseEvidenceProviderManifest(createEvidenceProviderManifest({
+            version: ASSERTLEDGER_VERSION,
+            sourceRevision: ASSERTLEDGER_SOURCE_REVISION,
+            adapters: [
+                {
+                    kind: "node-test",
+                    profileId: NODE_TEST_ADAPTER_PROFILE.profileId,
+                    profileVersion: NODE_TEST_ADAPTER_PROFILE.profileVersion,
+                    official: NODE_TEST_ADAPTER_PROFILE.official,
+                },
+                { kind: "testforge-command", profileId: null, profileVersion: null, official: false },
+            ],
+        }));
+    }
+    benchmark(request) {
+        return parseAgenticBenchmarkArtifact(createAgenticBenchmark(parseAgenticBenchmarkRequest(request)));
+    }
+    replayBenchmark(artifact) {
+        try {
+            return parseAgenticBenchmarkReplayResult(replayAgenticBenchmark(parseAgenticBenchmarkArtifact(artifact)));
+        }
+        catch {
+            return parseAgenticBenchmarkReplayResult({
+                valid: false,
+                schemaValid: false,
+                sourceManifestValid: false,
+                sourceBindingValid: false,
+                policyDigestValid: false,
+                protocolDigestValid: false,
+                fingerprintDigestValid: false,
+                comparisonScopeDigestValid: false,
+                artifactDigestValid: false,
+                summarySemanticsValid: false,
+            });
+        }
+    }
+    async acquireBenchmark(request) {
+        return parseAgenticBenchmarkAcquisitionResult(await acquireAgenticBenchmark(parseAgenticBenchmarkAcquisitionRequest(request)));
+    }
+    replayBenchmarkAcquisition(result) {
+        return parseAgenticBenchmarkAcquisitionReplayResult(replayAgenticBenchmarkAcquisition(result));
+    }
+    profileV2(request) {
+        return parseAgenticProfileReportV2(createAgenticProfileV2(parseAgenticProfileRequestV2(request)));
+    }
+    replayProfileV2(report) {
+        try {
+            return parseAgenticProfileReplayResultV2(replayAgenticProfileV2(parseAgenticProfileReportV2(report)));
+        }
+        catch {
+            return parseAgenticProfileReplayResultV2({
+                valid: false,
+                schemaValid: false,
+                sourceBenchmarkValid: false,
+                sourceBindingValid: false,
+                policyDigestValid: false,
+                reportDigestValid: false,
+                semanticsValid: false,
+            });
+        }
+    }
+    allocateCorpus(request) {
+        return parseAgenticCorpusAllocation(createAgenticCorpusAllocation(parseAgenticCorpusAllocationRequest(request)));
+    }
+    replayCorpusAllocation(allocation) {
+        try {
+            return parseAgenticCorpusAllocationReplayResult(replayAgenticCorpusAllocation(parseAgenticCorpusAllocation(allocation)));
+        }
+        catch {
+            return parseAgenticCorpusAllocationReplayResult({
+                valid: false,
+                schemaValid: false,
+                allocationDigestValid: false,
+                sourceCaseIdsValid: false,
+                assignmentScoresValid: false,
+                partitionSemanticsValid: false,
+            });
+        }
+    }
+    corpusExperiment(request, plan) {
+        return parseAgenticCorpusExperimentArtifact(createAgenticCorpusExperimentArtifact(parseAgenticCorpusExperimentRequest(request), parseAgenticCorpusExperimentPlan(plan)));
+    }
+    replayCorpusExperiment(artifact, options) {
+        return parseAgenticCorpusExperimentReplayResult(replayAgenticCorpusExperimentArtifact({ artifact }, {
+            ...options,
+            replayProvenance: replayAgenticCorpusProvenance,
+            verifyCommitmentSignatures: verifyAgenticCorpusAllocationCommitmentSignatures,
+        }));
+    }
+    replayCorpusAllocationCommitment(input) {
+        return parseAgenticCorpusAllocationCommitmentReplayResult(replayAgenticCorpusAllocationCommitment(input, {
+            verifySignatures: verifyAgenticCorpusAllocationCommitmentSignatures,
+        }));
+    }
+    schema(name) {
+        switch (name) {
+            case "agentic-corpus-allocation-request":
+                return agenticCorpusAllocationRequestJsonSchema();
+            case "agentic-corpus-allocation":
+                return agenticCorpusAllocationJsonSchema();
+            case "agentic-corpus-allocation-replay-result":
+                return agenticCorpusAllocationReplayResultJsonSchema();
+            case "agentic-corpus-allocation-commitment":
+                return agenticCorpusAllocationCommitmentJsonSchema();
+            case "agentic-corpus-allocation-reveal":
+                return agenticCorpusAllocationRevealJsonSchema();
+            case "agentic-corpus-allocation-commitment-replay-result":
+                return agenticCorpusAllocationCommitmentReplayResultJsonSchema();
+            case "agentic-corpus-experiment-plan":
+                return agenticCorpusExperimentPlanJsonSchema();
+            case "agentic-corpus-experiment-plan-replay-result":
+                return agenticCorpusExperimentPlanReplayResultJsonSchema();
+            case "agentic-corpus-experiment-request":
+                return agenticCorpusExperimentRequestJsonSchema();
+            case "agentic-corpus-experiment-artifact":
+                return agenticCorpusExperimentArtifactJsonSchema();
+            case "agentic-corpus-experiment-replay-request":
+                return agenticCorpusExperimentReplayRequestJsonSchema();
+            case "agentic-corpus-experiment-replay-result":
+                return agenticCorpusExperimentReplayResultJsonSchema();
+            case "agentic-benchmark-request":
+                return agenticBenchmarkRequestJsonSchema();
+            case "agentic-benchmark-artifact":
+                return agenticBenchmarkArtifactJsonSchema();
+            case "agentic-benchmark-replay-result":
+                return agenticBenchmarkReplayResultJsonSchema();
+            case "agentic-benchmark-acquisition-request":
+                return agenticBenchmarkAcquisitionRequestJsonSchema();
+            case "agentic-benchmark-acquisition-result":
+                return agenticBenchmarkAcquisitionResultJsonSchema();
+            case "agentic-benchmark-acquisition-replay-result":
+                return agenticBenchmarkAcquisitionReplayResultJsonSchema();
+            case "agentic-profile-request":
+                return agenticProfileRequestJsonSchema();
+            case "agentic-profile-report":
+                return agenticProfileReportJsonSchema();
+            case "agentic-profile-replay-result":
+                return agenticProfileReplayResultJsonSchema();
+            case "agentic-profile-request-v2":
+                return agenticProfileRequestV2JsonSchema();
+            case "agentic-profile-report-v2":
+                return agenticProfileReportV2JsonSchema();
+            case "agentic-profile-replay-result-v2":
+                return agenticProfileReplayResultV2JsonSchema();
+            case "verification-request":
+                return verificationRequestJsonSchema();
+            case "verification-request-v2":
+                return verificationRequestV2JsonSchema();
+            case "verification-request-v3":
+                return verificationRequestV3JsonSchema();
+            case "repository-analysis":
+                return repositoryAnalysisJsonSchema();
+            case "repository-audit":
+                return repositoryAuditJsonSchema();
+            case "repository-init-config":
+                return repositoryInitConfigJsonSchema();
+            case "repository-init-config-v2":
+                return repositoryInitConfigV2JsonSchema();
+            case "repository-init-lock":
+                return repositoryInitLockJsonSchema();
+            case "repository-init-lock-v2":
+                return repositoryInitLockV2JsonSchema();
+            case "repository-init-result":
+                return repositoryInitResultJsonSchema();
+            case "repository-init-result-v2":
+                return repositoryInitResultV2JsonSchema();
+            case "evidence-manifest":
+                return evidenceManifestJsonSchema();
+            case "evidence-manifest-v2":
+                return evidenceManifestV2JsonSchema();
+            case "evidence-manifest-v3":
+                return evidenceManifestV3JsonSchema();
+            case "replay-result":
+                return replayResultJsonSchema();
+            case "evidence-provider-manifest":
+                return evidenceProviderManifestJsonSchema();
+            case "evidence-export-request":
+                return evidenceExportRequestJsonSchema();
+            case "evidence-export":
+                return evidenceExportJsonSchema();
+            case "evidence-export-replay-result":
+                return evidenceExportReplayResultJsonSchema();
+        }
+    }
+}
+/** @deprecated Use `AssertLedger`. Alias retained for v1 compatibility. */
+export class TestForge extends AssertLedger {
+}
+export { parseVerificationRequest, verificationRequestJsonSchema } from "../contracts/index.js";
+export { createAgenticBenchmark, createAgenticCorpusAllocation, createAgenticCorpusExperimentArtifact, createAgenticProfile, createAgenticProfileV2, createEvidenceExport, createEvidenceProviderManifest, replayAgenticBenchmark, replayAgenticBenchmarkAcquisition, replayAgenticCorpusAllocation, replayAgenticCorpusExperimentArtifact, replayAgenticProfile, replayAgenticProfileV2, replayEvidenceExport, replayEvidenceManifest, verifyDecisionDigest, verifyManifestIntegrity, } from "../core/index.js";
+export { qualifyGitRegression } from "../engine/git-regression.js";
+export { acquireAgenticBenchmark, analyzeRepository, auditRepository, doctorRepositoryRuntime, initializeRepository, verifyCampaign, } from "../engine/index.js";
+//# sourceMappingURL=index.js.map

@@ -4,16 +4,19 @@ import { join } from "node:path";
 export function snapshot(path) {
   let root;
   try {
-    root = lstatSync(path);
+    root = lstatSync(path, { bigint: true });
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
-  if (root.isSymbolicLink()) return { link: readlinkSync(path) };
-  if (root.isFile()) return { file: Buffer.from(readFileSync(path)).toString("base64"), mode: root.mode & 0o7777 };
+  const identity = { device: String(root.dev), inode: String(root.ino) };
+  const mode = Number(root.mode & 0o7777n);
+  if (root.isSymbolicLink()) return { link: readlinkSync(path), mode, ...identity };
+  if (root.isFile()) return { file: Buffer.from(readFileSync(path)).toString("base64"), mode, ...identity };
   if (!root.isDirectory()) throw new Error(`Unexpected special file in smoke profile: ${path}`);
   return {
-    mode: root.mode & 0o7777,
+    mode,
+    ...identity,
     entries: readdirSync(path).sort().map((name) => [name, snapshot(join(path, name))]),
   };
 }
@@ -25,12 +28,5 @@ export function assertSnapshotUnchanged(paths, before, label) {
 }
 
 export function protectedProfilePaths(profile) {
-  return [
-    join(profile, ".codex"), join(profile, ".claude"),
-    join(profile, ".config"),
-    join(profile, "uv-tools"), join(profile, "uv-bin"),
-    join(profile, "uv-python"), join(profile, "uv-python-bin"),
-    join(profile, "AppData", "Local", "hoklims-devkit"),
-    join(profile, ".local", "state", "hoklims-devkit"),
-  ];
+  return [profile];
 }
