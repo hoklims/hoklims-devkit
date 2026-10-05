@@ -228,6 +228,20 @@ test("an available prior version remains valid while its owned source is awaitin
   await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).resolves.toMatchObject({ installed: false, registerMarketplace: false });
 });
 
+test("an explicitly disabled available plugin cannot be enabled by onboarding", async () => {
+  const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
+  const available = nativeItem(root, { installed: false, enabled: false });
+  const calls = [];
+  const rt = { codexHome: () => home, realpath: realpathSync,
+    exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace")
+      ? { marketplaces: [{ name: "hoklims-devkit", root }] } : { installed: [], available: [available] }) }; } };
+  const before = readFileSync(join(root, ".agents", "plugins", "hoklims-proof", "ownership.json"));
+  await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow("explicitly disabled");
+  expect(calls.some(argv => argv.includes("add"))).toBe(false);
+  expect(readFileSync(join(root, ".agents", "plugins", "hoklims-proof", "ownership.json"))).toEqual(before);
+});
+
 test("matching native bytes cannot conceal an extra unowned cache file", async () => {
   const root = repo(), home = repo();
   const plan = pluginPlan(root);

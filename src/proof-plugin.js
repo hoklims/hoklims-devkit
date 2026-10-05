@@ -269,7 +269,7 @@ export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = fa
       || selectedAvailable.some(item => item.version !== sourceManifest.version)) throw new Error("Native available plugin version differs from its physical source manifest");
   }
   const installed = selectedInstalled[0];
-  if (installed?.enabled === false) throw new Error("The native plugin is explicitly disabled; resolve its configuration before onboarding");
+  if (items.some(item => item.enabled === false)) throw new Error("The native plugin is explicitly disabled; resolve its configuration before onboarding");
   {
     const cachedVersion = installed?.version ?? packageJson.version;
     if (typeof cachedVersion !== "string" || !/^(?:\d+\.\d+\.\d+|local)$/u.test(cachedVersion)) throw new Error("Native plugin version is unsupported");
