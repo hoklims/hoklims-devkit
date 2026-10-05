@@ -143,9 +143,15 @@ export function applyPlugin(plan) {
 }
 
 function snapshotMatches(root, plan, cached = false) {
-  return plan.changes.filter(change => change.name.startsWith(`${PREFIX}/`)).every(change => {
+  const expected = plan.changes.filter(change => change.name.startsWith(`${PREFIX}/`));
+  const directory = cached ? root : safePath(root, PREFIX);
+  if (!existsSync(directory) || !lstatSync(directory).isDirectory()) return false;
+  const inventory = {};
+  collect(directory, directory, cached ? "snapshot" : PREFIX, inventory);
+  if (Object.keys(inventory).length !== expected.length) return false;
+  return expected.every(change => {
     const name = cached ? change.name.slice(PREFIX.length + 1) : change.name;
-    return read(root, name)?.equals(change.bytes);
+    return inventory[cached ? `snapshot/${name}` : name]?.equals(change.bytes);
   });
 }
 
@@ -167,10 +173,14 @@ export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = fa
     try { marketplaceRoot = rt.realpath(markets[0].root); } catch { throw new Error("Existing marketplace root is unavailable"); }
     if (marketplaceRoot !== root && !snapshotMatches(marketplaceRoot, plan)) throw new Error("A foreign or incompatible native marketplace already uses this name; preserve it and choose its source explicitly");
   }
-  const items = [...catalog.installed, ...catalog.available].filter(item => item.pluginId === plan.selector || item.name === NAME);
+  const selectedInstalled = catalog.installed.filter(item => item.pluginId === plan.selector || item.name === NAME);
+  const selectedAvailable = catalog.available.filter(item => item.pluginId === plan.selector || item.name === NAME);
+  const items = [...selectedInstalled, ...selectedAvailable];
   if (items.length > 1) throw new Error("Ambiguous native plugin identity");
-  const installed = items.find(item => item.installed === true);
-  if (items.some(item => item.pluginId !== plan.selector || item.name !== NAME)) throw new Error("Native plugin name resolves to a foreign identity");
+  if (items.some(item => item.pluginId !== plan.selector || item.name !== NAME || item.marketplaceName !== marketplaceName
+    || typeof item.enabled !== "boolean" || typeof item.version !== "string" || !/^(?:\d+\.\d+\.\d+|local)$/u.test(item.version))
+    || selectedInstalled.some(item => item.installed !== true) || selectedAvailable.some(item => item.installed !== false)) throw new Error("Native plugin inventory has missing or unsupported identity fields");
+  const installed = selectedInstalled[0];
   if (installed?.enabled === false) throw new Error("The native plugin is explicitly disabled; resolve its configuration before onboarding");
   {
     const cachedVersion = installed?.version ?? packageJson.version;
@@ -204,8 +214,9 @@ export async function installNativePlugin(rt, root, plan, native) {
   const installed = await nativeJson(rt, ["codex", "plugin", "add", plan.selector, "--json"], root);
   if (installed.pluginId !== plan.selector || installed.name !== NAME || installed.version !== packageJson.version || typeof installed.installedPath !== "string") throw new Error("Native plugin installation returned a foreign identity");
   const cache = rt.realpath(installed.installedPath);
-  const relativeCache = relative(rt.realpath(rt.codexHome()), cache);
-  if (!relativeCache || relativeCache.startsWith("..") || resolve(rt.codexHome(), relativeCache) !== cache || !snapshotMatches(cache, plan, true)) throw new Error("Native installed plugin bytes differ from the planned snapshot");
+  const home = rt.realpath(rt.codexHome());
+  const expectedCaches = [packageJson.version, "local"].map(version => safePath(home, `plugins/cache/${plan.selector.slice(NAME.length + 1)}/${NAME}/${version}`));
+  if (!expectedCaches.some(path => existsSync(path) && rt.realpath(path) === cache) || !snapshotMatches(cache, plan, true)) throw new Error("Native installed plugin bytes or cache identity differ from the planned snapshot");
   const listed = await nativeJson(rt, ["codex", "plugin", "list", "--marketplace", plan.selector.slice(NAME.length + 1), "--json"], root);
   const matches = listed.installed?.filter(item => item.pluginId === plan.selector);
   if (matches?.length !== 1 || matches[0].installed !== true || matches[0].enabled !== true || matches[0].version !== packageJson.version) throw new Error("Native installed/enabled state could not be verified");

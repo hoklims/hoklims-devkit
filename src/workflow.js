@@ -76,6 +76,11 @@ export function hash(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function compatibleRegression(request) {
+  return request.intent === "regression" && request.regression?.framework === "node:test"
+    && [request.regression.test, ...request.regression.baseTests].every(path => /\.(?:js|mjs|cjs)$/iu.test(path));
+}
+
 export async function safeGitReader(rt, root) {
   const filterOverrides = [];
   const gitOptions = ["git", "--no-optional-locks", "--no-replace-objects", "--no-lazy-fetch", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"];
@@ -193,7 +198,7 @@ export async function prepareWorkflow(options, rt, root, report) {
   if (request.intent === "regression") {
     const r = request.regression;
     if (r.framework !== "node:test") report.limitations.push("ASSERTLEDGER_FRAMEWORK_UNSUPPORTED");
-    else if (![r.test, ...r.baseTests].every(path => /\.(?:js|mjs|cjs)$/iu.test(path))) report.limitations.push("ASSERTLEDGER_GIT_TEST_SCOPE_UNSUPPORTED");
+    else if (!compatibleRegression(request)) report.limitations.push("ASSERTLEDGER_GIT_TEST_SCOPE_UNSUPPORTED");
     else {
       report.checks.push({ id: "assertledger-regression", tool: "assertledger check", status: "native-preflight-required", request: { ...r, after: request.scope.head } });
       report.nextActions.push("Use AssertLedger's native preflight to check dependencies, revisions and execution policy before qualifying this named regression");

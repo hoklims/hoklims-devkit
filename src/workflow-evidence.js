@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { canonical, hash, readRequest } from "./workflow.js";
+import { canonical, compatibleRegression, hash, readRequest } from "./workflow.js";
 import { PROOF_PINS } from "./proof-plugin.js";
 
 export async function associateEvidence(options, rt, root, report, request, reader) {
@@ -26,7 +26,7 @@ export async function associateEvidence(options, rt, root, report, request, read
   if (![0, 4].includes(replayResult.code) || !replay || Object.keys(replay).length !== rails.length
     || rails.some(key => typeof replay[key] !== "boolean")) return refuse("WORKFLOW_EVIDENCE_REPLAY_UNAVAILABLE", "Native export replay failed operationally; no detection is inferred", 3);
   if (replayResult.code !== 0 || rails.some(key => replay[key] !== true)) return refuse("WORKFLOW_EVIDENCE_REPLAY_INVALID", "The native provider rejected the schema, manifest, digest or semantic reconstruction");
-  if (request.intent !== "regression" || request.regression.framework !== "node:test") return refuse("WORKFLOW_EVIDENCE_SCOPE_UNSUPPORTED", "This adapter associates only an explicitly named node:test Git regression");
+  if (!compatibleRegression(request)) return refuse("WORKFLOW_EVIDENCE_SCOPE_UNSUPPORTED", "This adapter associates only a named node:test Git regression with JavaScript candidate and base-test paths");
   if (evidence.schemaVersion !== "1.0.0" || evidence.consumerRequest?.reference !== `sha256:${report.requestDigest}`
     || evidence.consumerRequest.profileId !== null) return refuse("WORKFLOW_EVIDENCE_REQUEST_MISMATCH", "The export does not bind this exact canonical request");
   if (!["assertledger", "testforge"].includes(evidence.authenticity?.declaredProducer?.name)

@@ -93,7 +93,7 @@ Object-key ordering does not change the request digest.
 No control is waived. `execution` is always `not-run`, `authority` is `none`,
 provider readiness/authenticity is unknown, and no obligation becomes verified.
 No AssertLedger unsafe-execution flag is added or accepted by this command.
-Native replay and evidence admission are outside this tranche.
+Candidate execution and admission by the repository's gate remain separate steps.
 
 Exit `0` is a prepared plan, `4` is invalid/inapplicable context, `3` is an
 unavailable source/prerequisite, `64` is invalid CLI usage, and `5` is an

@@ -103,3 +103,34 @@ test("a foreign native marketplace and an unregistered foreign cache stop onboar
   await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).rejects.toThrow();
   expect(readFileSync(join(cache, "foreign"), "utf8")).toBe("preserved");
 });
+
+test("matching native bytes cannot conceal an extra unowned cache file", async () => {
+  const root = repo(), home = repo();
+  const plan = pluginPlan(root);
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  for (const change of plan.changes.filter(item => item.name.startsWith(".agents/plugins/hoklims-proof/"))) {
+    const path = join(cache, change.name.slice(".agents/plugins/hoklims-proof/".length));
+    mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, change.bytes);
+  }
+  mkdirSync(join(cache, "hooks")); writeFileSync(join(cache, "hooks", "hooks.json"), "{}");
+  const calls = [];
+  const rt = { codexHome: () => home, realpath: realpathSync,
+    exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace") ? { marketplaces: [] } : { installed: [], available: [] }) }; } };
+  await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow("Native cached plugin content differs");
+  expect(calls.some(argv => argv.includes("add"))).toBe(false);
+  expect(readFileSync(join(cache, "hooks", "hooks.json"), "utf8")).toBe("{}");
+});
+
+test("missing native installation identity fields cannot become configured", async () => {
+  const root = repo(), home = repo(), plan = pluginPlan(root);
+  const complete = { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.1.0", installed: true, enabled: true };
+  for (const field of ["enabled", "version", "installed"]) {
+    const item = { ...complete }; delete item[field];
+    const calls = [];
+    const rt = { codexHome: () => home, realpath: realpathSync,
+      exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace") ? { marketplaces: [] } : { installed: [item], available: [] }) }; } };
+    await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow("missing or unsupported identity fields");
+    expect(calls.some(argv => argv.includes("add"))).toBe(false);
+    expect(existsSync(join(root, ".agents", "plugins", "hoklims-proof"))).toBe(false);
+  }
+});

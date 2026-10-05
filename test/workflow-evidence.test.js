@@ -16,17 +16,17 @@ const request = { schemaVersion: 1, kind: "proof-routing-request", repositoryRoo
 const fixtures = [];
 afterAll(() => { for (const directory of fixtures) if (dirname(directory) === realpathSync(tmpdir())) rmSync(directory, { recursive: true, force: true }); });
 
-async function associate(input = evidence, mode = "valid") {
+async function associate(input = evidence, mode = "valid", selectedRequest = request) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "devkit-evidence-"))); fixtures.push(directory);
   const path = join(directory, "export.json"); writeFileSync(path, JSON.stringify(input));
-  const report = { ok: true, verdict: "PLANNED", authority: "none", execution: "not-run", requestDigest: hash(JSON.stringify(canonical(request))), conflicts: [], checks: [], limitations: [], unprovenObligationIds: [...request.proofObligationIds] };
+  const report = { ok: true, verdict: "PLANNED", authority: "none", execution: "not-run", requestDigest: hash(JSON.stringify(canonical(selectedRequest))), conflicts: [], checks: [], limitations: [], unprovenObligationIds: [...selectedRequest.proofObligationIds] };
   const calls = [];
   const rt = { resolve: value => value, exists: () => true, which: () => "node",
     readText: () => { if (mode === "absent") throw new Error("absent"); return JSON.stringify({ version: "1.4.0" }); },
     exec: async (...args) => { calls.push(args); return mode === "crash" ? { code: 5, stdout: "", stderr: "operational failure" }
       : { code: mode === "invalid" ? 4 : 0, stdout: JSON.stringify({ valid: mode !== "invalid", schemaValid: true, sourceManifestValid: true, exportDigestValid: mode !== "invalid", semanticsValid: true }), stderr: "" }; } };
   const reader = { git: async (...args) => ({ code: 0, stderr: "", stdout: args[0] === "show" ? "// synthetic candidate\n" : "e".repeat(40) }) };
-  await associateEvidence({ evidence: path }, rt, root, report, request, reader);
+  await associateEvidence({ evidence: path }, rt, root, report, selectedRequest, reader);
   return { report, calls };
 }
 
@@ -68,6 +68,21 @@ test("provider absence, invalid replay and operational failure never become dete
     const { report } = await associate(evidence, mode);
     expect(report.ok).toBe(false);
     expect(report.conflicts[0].code).toBe(code);
+    expect(report.evidence).toBeUndefined();
+    expect(report.unprovenObligationIds).toEqual(["compat", "detect"]);
+  }
+});
+
+test("unsupported candidate or base-test paths cannot gain associated observations", async () => {
+  for (const field of ["test", "baseTests"]) {
+    const selected = structuredClone(request);
+    selected.regression[field] = field === "test" ? "tests/candidate.test.ts" : ["tests/base.test.ts"];
+    const input = structuredClone(evidence);
+    input.consumerRequest.reference = `sha256:${hash(JSON.stringify(canonical(selected)))}`;
+    input.result.candidates[0].digest = `sha256:${hash(JSON.stringify(canonical([{ path: selected.regression.test, content: "// synthetic candidate\n" }])))}`;
+    const { report } = await associate(input, "valid", selected);
+    expect(report.ok).toBe(false);
+    expect(report.conflicts[0].code).toBe("WORKFLOW_EVIDENCE_SCOPE_UNSUPPORTED");
     expect(report.evidence).toBeUndefined();
     expect(report.unprovenObligationIds).toEqual(["compat", "detect"]);
   }
