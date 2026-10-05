@@ -57,6 +57,42 @@ function installRuntime(home, root, cache, readback) {
     } } };
 }
 
+for (const bucket of ["installed", "available"]) {
+  test(`an unidentifiable disabled ${bucket} row stops onboarding before native add`, async () => {
+    const root = repo(), home = repo();
+    applyPlugin(pluginPlan(root));
+    const plan = pluginPlan(root);
+    const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+    writeSnapshot(cache, plan);
+    const item = nativeItem(root, { enabled: false, installed: bucket === "installed" });
+    delete item.pluginId; delete item.name;
+    const before = readFileSync(join(cache, "ownership.json"), "utf8");
+    const calls = [];
+    const rt = { codexHome: () => home, realpath: realpathSync,
+      exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace")
+        ? { marketplaces: [{ name: "hoklims-devkit", root }] }
+        : { installed: bucket === "installed" ? [item] : [], available: bucket === "available" ? [item] : [] }) }; } };
+    await expect((async () => {
+      const native = await preflightNativePlugin(rt, root, plan);
+      applyPlugin(plan);
+      await installNativePlugin(rt, root, plan, native);
+    })()).rejects.toThrow("unidentifiable row");
+    expect(calls.some(argv => argv.includes("add"))).toBe(false);
+    expect(readFileSync(join(cache, "ownership.json"), "utf8")).toBe(before);
+    expect(pluginPlan(root).changes.every(change => change.action === "unchanged")).toBe(true);
+  });
+}
+
+test("an unidentifiable marketplace row cannot authorize a new registration", async () => {
+  const root = repo(), home = repo(), plan = pluginPlan(root), calls = [];
+  const rt = { codexHome: () => home, realpath: realpathSync,
+    exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace")
+      ? { marketplaces: [{ root }] } : { installed: [], available: [] }) }; } };
+  await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow("unidentifiable marketplace");
+  expect(calls.some(argv => argv.includes("add"))).toBe(false);
+  expect(existsSync(join(root, ".agents", "plugins", "hoklims-proof"))).toBe(false);
+});
+
 test("a repository plugin preserves foreign providers and has an idempotent owned snapshot", () => {
   const root = repo();
   mkdirSync(join(root, ".agents", "plugins"), { recursive: true });

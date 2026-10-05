@@ -236,6 +236,10 @@ export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = fa
   const inventory = await nativeJson(rt, ["codex", "plugin", "marketplace", "list", "--json"], root);
   const catalog = await nativeJson(rt, ["codex", "plugin", "list", "--marketplace", marketplaceName, "--available", "--json"], root);
   if (!Array.isArray(inventory.marketplaces) || !Array.isArray(catalog.installed) || !Array.isArray(catalog.available)) throw new Error("Codex plugin inventory is unsupported");
+  if (inventory.marketplaces.some(item => !item || typeof item !== "object" || Array.isArray(item)
+    || typeof item.name !== "string" || item.name.length === 0)) throw new Error("Native inventory contains an unidentifiable marketplace");
+  if ([...catalog.installed, ...catalog.available].some(item => !item || typeof item !== "object" || Array.isArray(item)
+    || typeof item.pluginId !== "string" || item.pluginId.length === 0 || typeof item.name !== "string" || item.name.length === 0)) throw new Error("Native plugin inventory contains an unidentifiable row");
   const markets = inventory.marketplaces.filter(item => item.name === marketplaceName);
   if (markets.length > 1) throw new Error("Ambiguous native marketplace identity");
   let marketplaceRoot = root;
