@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, toNamespacedPath } from "node:path";
-import { applyPlugin, pluginPlan, preflightNativePlugin, PROOF_PINS } from "../src/proof-plugin.js";
+import { applyPlugin, installNativePlugin, pluginPlan, preflightNativePlugin, PROOF_PINS } from "../src/proof-plugin.js";
 
 const fixtures = [];
 function repo() { const root = realpathSync(mkdtempSync(join(tmpdir(), "devkit-plugin-"))); fixtures.push(root); return root; }
@@ -44,6 +44,17 @@ function nativeRuntime(home, item, marketplaceRoot) {
   return { calls, rt: { codexHome: () => home, realpath: realpathSync,
     exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace")
       ? { marketplaces: [{ name: "hoklims-devkit", root: marketplaceRoot }] } : { installed: [item], available: [] }) }; } } };
+}
+
+function installRuntime(home, root, cache, readback) {
+  const calls = [];
+  return { calls, rt: { codexHome: () => home, realpath: realpathSync,
+    exec: async argv => {
+      calls.push(argv);
+      if (argv.includes("marketplace")) return { code: 0, stderr: "", stdout: JSON.stringify({ marketplaces: [{ name: "hoklims-devkit", root }] }) };
+      if (argv.includes("add")) return { code: 0, stderr: "", stdout: JSON.stringify({ pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.1.0", installedPath: cache, authPolicy: "ON_INSTALL" }) };
+      return { code: 0, stderr: "", stdout: JSON.stringify({ installed: [readback], available: [] }) };
+    } } };
 }
 
 test("a repository plugin preserves foreign providers and has an idempotent owned snapshot", () => {
@@ -276,6 +287,20 @@ test("a complete supported prior native cache can be replaced explicitly", async
   await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).resolves.toMatchObject({ installed: true });
 });
 
+test("an explicit upgrade refuses a foreign current-version destination beside the intact old cache", async () => {
+  const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
+  const oldCache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.0.9");
+  const currentCache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  writeSnapshot(oldCache, plan, "0.0.9");
+  mkdirSync(currentCache, { recursive: true });
+  writeFileSync(join(currentCache, "foreign"), "preserved destination");
+  const { rt } = nativeRuntime(home, nativeItem(root, { version: "0.0.9" }), root);
+  const before = readFileSync(join(currentCache, "foreign"), "utf8");
+  await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).rejects.toThrow("cache identity");
+  expect(readFileSync(join(currentCache, "foreign"), "utf8")).toBe(before);
+});
+
 test("a native declared version must match the prior ownership version", async () => {
   const root = repo(), home = repo(), plan = pluginPlan(root);
   applyPlugin(plan);
@@ -324,4 +349,49 @@ test("missing native version identity cannot become configured", async () => {
 
 test("missing native installed identity cannot become configured", async () => {
   await expectMissingNativeIdentityRejected("installed");
+});
+
+async function expectMalformedPostInstallReadbackRejected(mutate) {
+  const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  writeSnapshot(cache, plan);
+  const native = { marketplaceRoot: root, registerMarketplace: false, selector: plan.selector, installed: false };
+  const validRuntime = installRuntime(home, root, cache, nativeItem(root));
+  await expect(installNativePlugin(validRuntime.rt, root, plan, native)).resolves.toMatchObject({ installed: "yes", configured: "yes" });
+  const malformed = mutate(nativeItem(root));
+  const invalidRuntime = installRuntime(home, root, cache, malformed);
+  const before = readFileSync(join(cache, "ownership.json"), "utf8");
+  await expect(installNativePlugin(invalidRuntime.rt, root, plan, native)).rejects.toThrow();
+  expect(readFileSync(join(cache, "ownership.json"), "utf8")).toBe(before);
+}
+
+test("post-install readback missing the plugin name cannot become configured", async () => {
+  await expectMalformedPostInstallReadbackRejected(item => { delete item.name; return item; });
+});
+
+test("post-install readback missing the marketplace name cannot become configured", async () => {
+  await expectMalformedPostInstallReadbackRejected(item => { delete item.marketplaceName; return item; });
+});
+
+test("post-install readback missing the plugin source cannot become configured", async () => {
+  await expectMalformedPostInstallReadbackRejected(item => { delete item.source; return item; });
+});
+
+test("post-install readback with a foreign source cannot become configured", async () => {
+  await expectMalformedPostInstallReadbackRejected(item => ({ ...item, source: { source: "local", path: dirname(item.source.path) } }));
+});
+
+test("post-install readback with the same name and a foreign plugin ID cannot become configured", async () => {
+  await expectMalformedPostInstallReadbackRejected(item => ({ ...item, pluginId: "foreign@hoklims-devkit" }));
+});
+
+test("post-install readback cannot switch the retained marketplace root", async () => {
+  const root = repo(), other = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  writeSnapshot(cache, plan);
+  const runtime = installRuntime(home, root, cache, nativeItem(root));
+  const native = { marketplaceRoot: other, registerMarketplace: false, selector: plan.selector, installed: false };
+  await expect(installNativePlugin(runtime.rt, root, plan, native)).rejects.toThrow("installed/enabled state");
 });

@@ -266,7 +266,7 @@ export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = fa
     const cachedVersion = installed?.version ?? packageJson.version;
     if (typeof cachedVersion !== "string" || !/^(?:\d+\.\d+\.\d+|local)$/u.test(cachedVersion)) throw new Error("Native plugin version is unsupported");
     if (installed && cachedVersion !== packageJson.version && !upgradePlugin) throw new Error("Existing native plugin version differs; review --upgrade-plugin explicitly");
-    const candidates = [...new Set([cachedVersion, "local"])].map(version => safePath(rt.realpath(rt.codexHome()), `plugins/cache/${marketplaceName}/${NAME}/${version}`));
+    const candidates = [...new Set([cachedVersion, packageJson.version, "local"])].map(version => safePath(rt.realpath(rt.codexHome()), `plugins/cache/${marketplaceName}/${NAME}/${version}`));
     const present = candidates.filter(path => existsSync(path));
     if (present.length > 1 || (installed && present.length !== 1)) throw new Error("Native plugin cache identity cannot be established");
     if (present.length) {
@@ -291,8 +291,11 @@ export async function installNativePlugin(rt, root, plan, native) {
   const home = rt.realpath(rt.codexHome());
   const expectedCaches = [packageJson.version, "local"].map(version => safePath(home, `plugins/cache/${plan.selector.slice(NAME.length + 1)}/${NAME}/${version}`));
   if (!expectedCaches.some(path => existsSync(path) && rt.realpath(path) === cache) || !snapshotMatches(cache, plan, true)) throw new Error("Native installed plugin bytes or cache identity differ from the planned snapshot");
-  const listed = await nativeJson(rt, ["codex", "plugin", "list", "--marketplace", plan.selector.slice(NAME.length + 1), "--json"], root);
-  const matches = listed.installed?.filter(item => item.pluginId === plan.selector);
-  if (matches?.length !== 1 || matches[0].installed !== true || matches[0].enabled !== true || matches[0].version !== packageJson.version) throw new Error("Native installed/enabled state could not be verified");
+  const verified = await preflightNativePlugin(rt, root, plan);
+  let expectedMarketplaceRoot;
+  try { expectedMarketplaceRoot = rt.realpath(native.marketplaceRoot); }
+  catch { throw new Error("Native installed marketplace root could not be verified"); }
+  if (!verified.installed || verified.registerMarketplace || verified.selector !== plan.selector
+    || verified.marketplaceRoot !== expectedMarketplaceRoot) throw new Error("Native installed/enabled state could not be verified");
   return { ...plan.report, installed: "yes", configured: "yes", native: { pluginId: plan.selector, installedPath: cache, contentMatchesSnapshot: true } };
 }
