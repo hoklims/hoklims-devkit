@@ -6,6 +6,17 @@ import { dirname, join, resolve } from "node:path";
 const COMPONENT_NAMES = new Set(["semctx", "assertledger", "latent-compass"]);
 const HOST_NAMES = new Set(["codex", "claude"]);
 
+export function resolveToolCommand(argv, host = platform(), which = name => Bun.which(name), exists = existsSync) {
+  if (host !== "win32" || !["npm", "codex"].includes(argv[0])) return argv;
+  const launcher = which(argv[0]);
+  if (!launcher || !/\.(?:cmd|bat)$/iu.test(launcher)) return argv;
+  const node = which("node");
+  const entry = argv[0] === "npm" ? join(dirname(launcher), "node_modules", "npm", "bin", "npm-cli.js")
+    : join(dirname(launcher), "node_modules", "@openai", "codex", "bin", "codex.js");
+  if (!node || !exists(entry)) throw new Error(`Windows ${argv[0]} needs its Node JavaScript entrypoint; inspect the native installation`);
+  return [node, entry, ...argv.slice(1)];
+}
+
 export function validateState(state) {
   if (state === null) return null;
   if (!state || Array.isArray(state) || typeof state !== "object" || state.schemaVersion !== 1
@@ -45,10 +56,11 @@ export function validateState(state) {
 export function createRuntime() {
   return {
     which: (name) => Bun.which(name),
-    exec: async (argv, cwd, timeoutMs = 120_000, captureBytes = false) => {
+    exec: async (argv, cwd, timeoutMs = 120_000, captureBytes = false, input = null) => {
       let child;
       try {
-        child = Bun.spawn({ cmd: argv, cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+        child = Bun.spawn({ cmd: resolveToolCommand(argv), cwd, stdout: "pipe", stderr: "pipe", stdin: input === null ? "ignore" : "pipe" });
+        if (input !== null) { child.stdin.write(input); child.stdin.end(); }
       } catch (error) {
         return { code: 5, stdout: "", stderr: String(error) };
       }
@@ -81,6 +93,7 @@ export function createRuntime() {
     exists: existsSync,
     readText: (path) => readFileSync(path, "utf8"),
     realpath: realpathSync,
+    codexHome: () => resolve(process.env.CODEX_HOME || join(homedir(), ".codex")),
     statePath: (root) => {
       const base = platform() === "win32"
         ? process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local")

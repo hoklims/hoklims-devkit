@@ -80,7 +80,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
       if (argv[0] === "uv" && argv.includes("run")) return { code: 0, stdout: JSON.stringify(compassInstallReport(argv)), stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("--version")) return { code: 0, stdout: "latent-compass 0.3.0\n", stderr: "" };
       if (argv[0] === join("/uvbin", process.platform === "win32" ? "latent-compass.exe" : "latent-compass") && argv.includes("status")) return { code: 0, stdout: JSON.stringify({ schema_version: 1, operation: "status", version: "0.3.0", project_root: "/repo", hosts: [{ host: "codex", status: compassStatus }], states: { codex: { installed: true, configured: compassStatus === "NO_OBSERVATIONS", observed: false } } }), stderr: "" };
-      if (argv[0] === "npm" && argv.includes("exec")) return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
+      if (argv[0] === "bunx" && argv[1]?.startsWith("assertledger@")) return { code: 0, stdout: JSON.stringify(assertSetupReport(argv, "WOULD_CREATE", "dry-run")), stderr: "" };
       if (argv[0] === "npm" && argv.includes("install")) return { code: failAssertInstall ? 5 : 0, stdout: "", stderr: failAssertInstall ? "package install failed" : "" };
       if (argv.includes("plugin-status")) {
         return {
@@ -138,6 +138,15 @@ describe("public CLI", () => {
     expect(parseArgs(["setup", ".", "--with", "assertledger,latent-compass"]).with).toEqual(["assertledger", "latent-compass"]);
     expect(() => parseArgs(["setup", ".", "--with", "unknown"])).toThrow();
     expect(() => parseArgs(["setup", ".", "--refresh-pending"])).toThrow();
+  });
+
+  test("onboard selects the explicit Codex pair and workflow input modes stay distinct", () => {
+    expect(parseArgs(["onboard", "."]).host).toBe("codex");
+    expect(parseArgs(["onboard", "."]).with).toEqual(["assertledger"]);
+    expect(() => parseArgs(["onboard", ".", "--host", "all"])).toThrow();
+    expect(() => parseArgs(["workflow", ".", "--request", "request.json", "--base", "main", "--obligation", "detect"])).toThrow();
+    expect(() => parseArgs(["workflow", ".", "--request", "request.json", "--test", "tests/new.js"])).toThrow();
+    expect(() => parseArgs(["workflow", ".", "--base", "main"])).toThrow();
   });
 
   test("blocks published Semctx 0.3.3 before invoking its unsafe dry-run", async () => {
@@ -583,7 +592,7 @@ describe("public CLI", () => {
       files: { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture" }) },
     });
     const nativeExec = rt.exec;
-    rt.exec = async (argv, cwd) => argv[0] === "npm" && argv.includes("exec")
+    rt.exec = async (argv, cwd) => argv.includes("setup") && argv.includes("--client") && argv.includes("--dry-run")
       ? { code: 0, stdout: JSON.stringify({
         ...assertSetupReport(argv, "WOULD_CREATE", "dry-run"),
         artifacts: [

@@ -24,6 +24,7 @@
     "src/",
     "scripts/",
     "docs/",
+    "plugins/",
     "README.md",
     "README.fr.md",
     "LICENSE"

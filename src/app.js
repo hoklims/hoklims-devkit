@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import packageJson from "../package.json" with { type: "json" };
 import { createRuntime, parseJsonOutput, shortError, validateState } from "./runtime.js";
 import { prepareWorkflow } from "./workflow.js";
+import { applyPlugin, installNativePlugin, pluginPlan, preflightNativePlugin, PROOF_PINS } from "./proof-plugin.js";
 
 const COMPONENTS = ["semctx", "assertledger", "latent-compass"];
 const HOSTS = ["codex", "claude"];
@@ -12,7 +13,7 @@ export function parseArgs(argv) {
   if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) return { help: true };
   if (argv.includes("--version")) return { version: true };
   const command = argv[0];
-  if (!["setup", "doctor", "upgrade", "workflow"].includes(command)) throw new UsageError(`Unknown command: ${command}`);
+  if (!["setup", "doctor", "upgrade", "workflow", "onboard"].includes(command)) throw new UsageError(`Unknown command: ${command}`);
   const options = { command, project: ".", host: "auto", with: [], dryRun: false, json: false, refreshPending: false };
   let hasProject = false;
   for (let i = 1; i < argv.length; i += 1) {
@@ -27,7 +28,16 @@ export function parseArgs(argv) {
       const value = argv[++i];
       if (!value || value.startsWith("--")) throw new UsageError("--request needs a file path");
       options.request = value;
+    } else if (["--base", "--obligation", "--test", "--intent", "--claim", "--framework", "--neutral", "--neutral-reason", "--regression-test", "--base-test", "--evidence"].includes(arg)) {
+      if (command !== "workflow") throw new UsageError(`${arg} is only accepted by workflow`);
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) throw new UsageError(`${arg} needs a value`);
+      const key = arg.slice(2).replace(/-([a-z])/gu, (_, letter) => letter.toUpperCase());
+      if (["obligation", "test", "baseTest"].includes(key)) (options[key] ??= []).push(value);
+      else if (options[key] !== undefined) throw new UsageError(`${arg} is accepted once`);
+      else options[key] = value;
     } else if (arg === "--dry-run") options.dryRun = true;
+    else if (arg === "--upgrade-plugin" && command === "onboard") options.upgradePlugin = true;
     else if (arg === "--json") options.json = true;
     else if (arg === "--refresh-pending") options.refreshPending = true;
     else if (arg.startsWith("-")) throw new UsageError(`Unknown option: ${arg}`);
@@ -39,8 +49,16 @@ export function parseArgs(argv) {
   }
   if (!["auto", "codex", "claude", "all"].includes(options.host)) throw new UsageError("--host must be auto, codex, claude, or all");
   if (options.refreshPending && command !== "upgrade") throw new UsageError("--refresh-pending is only valid with upgrade");
-  if (command === "workflow" && (!options.request || argv.includes("--host") || argv.includes("--with"))) {
-    throw new UsageError("workflow requires --request and accepts only --json or --dry-run with a repository");
+  if (command === "workflow") {
+    const capture = options.base !== undefined || options.obligation !== undefined;
+    if ((!options.request && (!options.base || !options.obligation?.length)) || (options.request && capture)
+      || argv.includes("--host") || argv.includes("--with")) throw new UsageError("workflow needs --request FILE or --base REF --obligation ID; choose one input mode");
+    if (options.request && ["test", "intent", "claim", "framework", "neutral", "neutralReason", "regressionTest", "baseTest"].some(key => options[key] !== undefined)) throw new UsageError("Capture options cannot modify a supplied request");
+  }
+  if (command === "onboard") {
+    if (argv.includes("--host") || argv.includes("--with")) throw new UsageError("onboard uses the Codex Semctx/AssertLedger profile; use setup for other selectors");
+    options.host = "codex";
+    options.with = ["assertledger"];
   }
   if (options.with.some((name) => !COMPONENTS.slice(1).includes(name))) {
     throw new UsageError("--with accepts assertledger and latent-compass");
@@ -385,7 +403,7 @@ async function resolveComponents(rt, options, state, root, report) {
         if (listed.code !== 0) throw new Error(`uv tool list: ${shortError(listed)}`);
         versions[name] = uvToolVersion(listed.stdout, listed.stderr) ?? await resolveVersion(rt, name);
       } else {
-        versions[name] = await resolveVersion(rt, name);
+        versions[name] = options.proofWorkflow ? PROOF_PINS[name] : await resolveVersion(rt, name);
       }
       if (!isStableVersion(versions[name])) throw new Error(`Invalid ${name} version`);
       // 0.3.3 accepts `setup --dry-run` but writes workspace files. Never invoke it as a preflight.
@@ -506,7 +524,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     const client = host === "claude" ? "claude-code" : "codex";
     const previewCommand = !needsInstall
       ? localAssertCommand(localEntry, ["setup", root, "--client", client, "--dry-run", "--json"])
-      : ["npm", "exec", "--yes", "--ignore-scripts", `--package=assertledger@${version}`, "--", "assertledger", "setup", root, "--client", client, "--dry-run", "--json"];
+      : ["bunx", `assertledger@${version}`, "setup", root, "--client", client, "--dry-run", "--json"];
     const result = await rt.exec(previewCommand, root);
     const parsed = nativeResult(result, `assertledger setup (${client})`, report);
     if (!parsed) continue;
@@ -755,6 +773,7 @@ async function diagnoseCompass(rt, root, hosts, version) {
 
 export async function execute(options, rt = createRuntime()) {
   const report = reportFor(options);
+  if (options.command === "onboard") options = { ...options, command: "setup", host: "codex", with: ["assertledger"], proofWorkflow: true };
   if (!rt.which("bun") || !rt.which("bunx")) return problem(report, "BUN_REQUIRED", "Bun >=1.4 is required", 3);
   const bun = await rt.exec(["bun", "--version"], ".");
   const bunVersion = bun.stdout.trim().match(/^(\d+)\.(\d+)\./u);
@@ -816,6 +835,16 @@ export async function execute(options, rt = createRuntime()) {
   }
   const versions = await resolveComponents(rt, options, state, root, report);
   if (report.conflicts.length) return report;
+  let nativePlugin;
+  if (options.proofWorkflow) {
+    if (Object.entries(PROOF_PINS).some(([name, version]) => versions[name] !== version)) return problem(report, "WORKFLOW_VERSION_CONFLICT", "The common workflow requires Semctx 0.4.1 and AssertLedger 1.4.0; it preserves existing versions instead of upgrading implicitly");
+    try {
+      const plan = pluginPlan(root, options);
+      nativePlugin = await preflightNativePlugin(rt, root, plan, options);
+      report.plugin = { ...plan.report, sourceSnapshot: plan.report.installed, installed: nativePlugin.installed ? "yes" : "no", configured: nativePlugin.installed ? "yes" : "no", plannedCommands: nativePlugin.plannedCommands };
+    }
+    catch (error) { return problem(report, "WORKFLOW_PLUGIN_CONFLICT", String(error.message ?? error)); }
+  }
   if (options.command === "upgrade") {
     for (const name of selected) {
       const previous = state?.components?.[name];
@@ -906,12 +935,36 @@ export async function execute(options, rt = createRuntime()) {
   } finally {
     releaseLock?.();
   }
+  if (options.proofWorkflow && report.conflicts.length === 0) {
+    try {
+      const plan = pluginPlan(root, options);
+      applyPlugin(plan);
+      const currentNative = await preflightNativePlugin(rt, root, plan, options);
+      report.plugin = await installNativePlugin(rt, root, plan, currentNative);
+      report.nextActions.push("Open a fresh trusted Codex session and verify proof-workflow skill visibility; loaded, approved and observed remain unknown until checked");
+    }
+    catch (error) { problem(report, "WORKFLOW_PLUGIN_CONFLICT", String(error.message ?? error)); }
+  }
   report.ok = report.conflicts.length === 0;
   return report;
 }
 
 function usage() {
-  return `hoklims-devkit ${VERSION}\n\nUsage:\n  hoklims-devkit setup [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json]\n  hoklims-devkit doctor [repository] [--host auto|codex|claude|all] [--json]\n  hoklims-devkit upgrade [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json] [--refresh-pending]\n  hoklims-devkit workflow [repository] --request FILE [--dry-run] [--json]\n\nsetup installs Semctx by default. --with adds optional tools. setup keeps installed versions; upgrade resolves new stable versions. --refresh-pending explicitly replaces an interrupted plan with current stable releases.\nworkflow only prepares a read-only plan; it does not execute or accept proof.\n`;
+  return `hoklims-devkit ${VERSION}
+
+Usage:
+  hoklims-devkit onboard [repository] [--dry-run] [--json] [--upgrade-plugin]
+  hoklims-devkit setup [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json]
+  hoklims-devkit doctor [repository] [--host auto|codex|claude|all] [--json]
+  hoklims-devkit upgrade [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json] [--refresh-pending]
+  hoklims-devkit workflow [repository] --request FILE [--evidence EXPORT_FILE] [--dry-run] [--json]
+  hoklims-devkit workflow [repository] --base REF --obligation ID [--test PATH] [--intent change|regression|migration] [--evidence EXPORT_FILE] [--json]
+
+onboard installs the pinned Codex Semctx/AssertLedger profile and the common plugin using native installers; Codex plugin registration is user-level.
+setup installs Semctx by default. --with adds optional tools. setup keeps installed versions; upgrade resolves new stable versions.
+workflow captures or consumes a request, optionally replays evidence, and leaves every obligation unproven. It never executes candidates or admits proof.
+Regression capture also requires --claim CLAIM --neutral REF --neutral-reason REASON --regression-test PATH --base-test PATH; --framework defaults to node:test.
+`;
 }
 
 export async function main(argv, rt = createRuntime(), out = process.stdout, err = process.stderr) {
