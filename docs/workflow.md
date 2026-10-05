@@ -39,7 +39,9 @@ The strict JSON object contains:
 Calculate `scope.diffSha256` over the **raw bytes**, including the final newline,
 of `git diff --no-ext-diff --no-textconv --binary --full-index BASE HEAD`.
 Every revision must resolve to that exact commit. Planning rechecks HEAD and
-worktree state before returning; drift refuses the plan. Git reads disable
+worktree/index state before returning; drift refuses the plan. Assume-unchanged
+and skip-worktree entries are refused because they can hide source changes.
+Git reads disable
 replacement objects, filesystem-monitor hooks and optional index writes.
 
 For a regression, `before` must equal `scope.base`; the fixed revision is

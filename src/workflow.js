@@ -101,6 +101,11 @@ export async function prepareWorkflow(options, rt, root, report) {
   const head = await git("rev-parse", "--verify", "HEAD");
   if (head.code !== 0) return blocked("WORKFLOW_SOURCE_UNAVAILABLE", "Cannot resolve the current Git HEAD", 3);
   if (head.stdout.trim() !== request.scope.head) return blocked("WORKFLOW_HEAD_MISMATCH", "The requested head differs from the current Git HEAD");
+  const indexFlags = await git("ls-files", "-v", "-z");
+  if (indexFlags.code !== 0) return blocked("WORKFLOW_SOURCE_UNAVAILABLE", "Cannot inspect Git index flags", 3);
+  if (indexFlags.stdout.split("\0").some(entry => entry && (entry[0] === "S" || /[a-z]/u.test(entry[0])))) {
+    return blocked("WORKFLOW_HIDDEN_INDEX", "Assume-unchanged or skip-worktree entries can conceal source changes; clear the flags before capturing a request");
+  }
   const status = await git("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none");
   if (status.code !== 0) return blocked("WORKFLOW_SOURCE_UNAVAILABLE", "Cannot inspect the working tree", 3);
   if (status.stdout.length) return blocked("WORKFLOW_DIRTY_SOURCE", "This first profile requires a clean committed source; keep the request outside the working tree");
@@ -115,7 +120,9 @@ export async function prepareWorkflow(options, rt, root, report) {
   if (hash(diff.stdoutBytes) !== request.scope.diffSha256) return blocked("WORKFLOW_DIFF_MISMATCH", "The requested diff digest differs from the observed Git diff");
   const finalHead = await git("rev-parse", "--verify", "HEAD");
   const finalStatus = await git("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none");
-  if (finalHead.code !== 0 || finalStatus.code !== 0 || finalHead.stdout !== head.stdout || finalStatus.stdout !== status.stdout) {
+  const finalIndexFlags = await git("ls-files", "-v", "-z");
+  if (finalHead.code !== 0 || finalStatus.code !== 0 || finalIndexFlags.code !== 0
+    || finalHead.stdout !== head.stdout || finalStatus.stdout !== status.stdout || finalIndexFlags.stdout !== indexFlags.stdout) {
     return blocked("WORKFLOW_SOURCE_CHANGED", "Git source changed during planning; capture a new request");
   }
   Object.assign(report, { requestDigest: hash(JSON.stringify(canonical(request))), source: request.source, scope: request.scope });

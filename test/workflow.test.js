@@ -45,7 +45,7 @@ beforeAll(() => {
     proofObligationIds: ["evidence.value-behaviour"],
     tests: ["tests/value.test.js"],
   };
-});
+}, 15000);
 
 afterAll(() => {
   if (fixture && dirname(fixture) === realpathSync(tmpdir())) rmSync(fixture, { recursive: true, force: true });
@@ -130,6 +130,23 @@ test("uncommitted code invalidates the committed profile and restoration recover
   }
   expect((await plan()).code).toBe(0);
 });
+
+test("hidden index flags cannot conceal uncommitted code", async () => {
+  for (const flag of ["assume-unchanged", "skip-worktree"]) {
+    git("update-index", `--${flag}`, "value.js");
+    writeFileSync(join(root, "value.js"), "export const value = 99;\n");
+    try {
+      expect(git("status", "--porcelain=v1")).toBe("");
+      const result = await plan();
+      expect(result.code).toBe(4);
+      expect(result.report.conflicts[0].code).toBe("WORKFLOW_HIDDEN_INDEX");
+    } finally {
+      writeFileSync(join(root, "value.js"), "export const value = 3;\n");
+      git("update-index", `--no-${flag}`, "value.js");
+    }
+  }
+  expect((await plan()).code).toBe(0);
+}, 15000);
 
 function regression(framework = "node:test") {
   return { ...request, intent: "regression", regression: {
