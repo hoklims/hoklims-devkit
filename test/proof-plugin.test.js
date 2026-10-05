@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, toNamespacedPath } from "node:path";
 import { applyPlugin, pluginPlan, preflightNativePlugin, PROOF_PINS } from "../src/proof-plugin.js";
 
 const fixtures = [];
@@ -36,7 +36,7 @@ function writeSnapshot(destination, plan, version = "0.1.0", only = null) {
 
 function nativeItem(root, overrides = {}) {
   return { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.1.0", installed: true, enabled: true,
-    source: { source: "local", path: join(root, ".agents", "plugins", "hoklims-proof") }, marketplaceSource: { sourceType: "local", source: root }, ...overrides };
+    source: { source: "local", path: join(root, ".agents", "plugins", "hoklims-proof") }, marketplaceSource: { sourceType: "local", source: toNamespacedPath(root) }, ...overrides };
 }
 
 function nativeRuntime(home, item, marketplaceRoot) {

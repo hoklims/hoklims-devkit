@@ -210,6 +210,13 @@ async function nativeJson(rt, argv, root) {
   try { return JSON.parse(result.stdout); } catch { throw new Error("Codex returned an unsupported plugin report"); }
 }
 
+function nativeRealpath(rt, path) {
+  // Native Codex serializes Win32 drive sources with the extended-path prefix.
+  const local = process.platform === "win32" && /^\\\\\?\\[A-Za-z]:\\/u.test(path) ? path.slice(4) : path;
+  const resolved = rt.realpath(local);
+  return process.platform === "win32" && /^\\\\\?\\[A-Za-z]:\\/u.test(resolved) ? resolved.slice(4) : resolved;
+}
+
 function nativeMarketplaceRoot(rt, marketplaceRoot, marketplaceName) {
   const catalogBytes = read(marketplaceRoot, CATALOG);
   let catalog;
@@ -249,8 +256,8 @@ export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = fa
     || item.marketplaceSource?.sourceType !== "local" || typeof item.marketplaceSource.source !== "string"))) throw new Error("Native plugin inventory has missing or unsupported source identity");
   if (items.length) {
     try {
-      if (items.some(item => rt.realpath(item.source.path) !== nativeSource.pluginRoot
-        || rt.realpath(item.marketplaceSource.source) !== nativeSource.marketplaceRoot)) throw new Error("mismatch");
+      if (items.some(item => nativeRealpath(rt, item.source.path) !== nativeSource.pluginRoot
+        || nativeRealpath(rt, item.marketplaceSource.source) !== nativeSource.marketplaceRoot)) throw new Error("mismatch");
     } catch { throw new Error("Native plugin inventory source differs from its registered marketplace"); }
   }
   const installed = selectedInstalled[0];
