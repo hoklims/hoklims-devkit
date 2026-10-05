@@ -90,7 +90,7 @@ export async function prepareWorkflow(options, rt, root, report) {
   }
   if (!validRequest(request)) return blocked("WORKFLOW_REQUEST_INVALID", "Expected proof-routing-request v1 with source identity, committed scope and declared obligations");
   try {
-    if (rt.resolve(request.repositoryRoot) !== request.repositoryRoot || rt.realpath(request.repositoryRoot) !== root) {
+    if (request.repositoryRoot !== root || rt.resolve(request.repositoryRoot) !== request.repositoryRoot || rt.realpath(request.repositoryRoot) !== root) {
       return blocked("WORKFLOW_ROOT_MISMATCH", "The request must name this canonical absolute Git repository root");
     }
   } catch {

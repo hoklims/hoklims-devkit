@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { execute, parseArgs } from "../src/app.js";
@@ -96,6 +96,14 @@ test("preview invokes only bounded Git reads and the runtime version check", asy
 
 test("a foreign repository root is rejected", async () => {
   const result = await plan({ ...request, repositoryRoot: fixture });
+  expect(result.code).toBe(4);
+  expect(result.report.conflicts[0].code).toBe("WORKFLOW_ROOT_MISMATCH");
+});
+
+test("a same-root junction or symlink cannot stand in for the canonical root", async () => {
+  const alias = join(fixture, "alias");
+  symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
+  const result = await plan({ ...request, repositoryRoot: alias });
   expect(result.code).toBe(4);
   expect(result.report.conflicts[0].code).toBe("WORKFLOW_ROOT_MISMATCH");
 });
