@@ -8,6 +8,7 @@ import { createRuntime } from "../src/runtime.js";
 
 const cli = resolve(import.meta.dir, "../bin/hoklims-devkit.js");
 let fixture, root, before, head, neutral, request;
+let requestSequence = 0;
 
 function git(...args) {
   const result = Bun.spawnSync(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" });
@@ -52,7 +53,7 @@ afterAll(() => {
 });
 
 async function plan(input = request, extra = []) {
-  const requestPath = join(fixture, "request.json");
+  const requestPath = join(fixture, `request-${requestSequence++}.json`);
   writeFileSync(requestPath, JSON.stringify(input));
   const child = Bun.spawn([process.execPath, cli, "workflow", root, "--request", requestPath, "--json", ...extra], { stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -70,6 +71,30 @@ test("a real CLI invocation prepares a read-only plan bound to the committed dif
   expect(result.report.unprovenObligationIds).toEqual(request.proofObligationIds);
   expect(result.report.checks.map(x => x.id)).toEqual(["semctx-impact", "native-tests"]);
   expect(git("status", "--porcelain=v1", "--untracked-files=all")).toBe("");
+});
+
+test("Codex can capture the same request without a hand-written JSON file", async () => {
+  const result = Bun.spawnSync([process.execPath, cli, "workflow", root, "--base", before,
+    "--obligation", request.proofObligationIds[0], "--test", request.tests[0], "--json"], { stdout: "pipe", stderr: "pipe" });
+  expect(result.exitCode).toBe(0);
+  const captured = JSON.parse(result.stdout.toString());
+  const supplied = await plan();
+  expect(captured.requestDigest).toBe(supplied.report.requestDigest);
+  expect(captured.scope).toEqual(request.scope);
+  expect(captured.unprovenObligationIds).toEqual(request.proofObligationIds);
+  expect(captured.providerRequest.consumerRequest.reference).toBe(`sha256:${captured.requestDigest}`);
+  expect(captured.execution).toBe("not-run");
+  expect(git("status", "--porcelain=v1", "--untracked-files=all")).toBe("");
+}, 15000);
+
+test("capture keeps hidden-index and dirty-source refusals", () => {
+  git("update-index", "--assume-unchanged", "value.js");
+  try {
+    const result = Bun.spawnSync([process.execPath, cli, "workflow", root, "--base", before,
+      "--obligation", "evidence.value-behaviour", "--json"], { stdout: "pipe", stderr: "pipe" });
+    expect(result.exitCode).toBe(4);
+    expect(JSON.parse(result.stdout.toString()).conflicts[0].code).toBe("WORKFLOW_HIDDEN_INDEX");
+  } finally { git("update-index", "--no-assume-unchanged", "value.js"); }
 });
 
 test("unknown request versions and omitted obligations cannot produce a plan", async () => {
@@ -205,7 +230,10 @@ test("unsafe test paths and an invented neutral revision are rejected", async ()
 
 test("request key ordering does not alter the digest or plan", async () => {
   const reordered = Object.fromEntries(Object.entries(request).reverse());
-  expect((await plan(reordered)).report).toEqual((await plan()).report);
+  const [left, right] = await Promise.all([plan(reordered), plan()]);
+  expect(left.code).toBe(0);
+  expect(right.code).toBe(0);
+  expect(left.report).toEqual(right.report);
 });
 
 test("migration advice retains a separate plan and all unresolved obligations", async () => {

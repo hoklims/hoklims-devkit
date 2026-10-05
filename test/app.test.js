@@ -140,6 +140,15 @@ describe("public CLI", () => {
     expect(() => parseArgs(["setup", ".", "--refresh-pending"])).toThrow();
   });
 
+  test("onboard selects the explicit Codex pair and workflow input modes stay distinct", () => {
+    expect(parseArgs(["onboard", "."]).host).toBe("codex");
+    expect(parseArgs(["onboard", "."]).with).toEqual(["assertledger"]);
+    expect(() => parseArgs(["onboard", ".", "--host", "all"])).toThrow();
+    expect(() => parseArgs(["workflow", ".", "--request", "request.json", "--base", "main", "--obligation", "detect"])).toThrow();
+    expect(() => parseArgs(["workflow", ".", "--request", "request.json", "--test", "tests/new.js"])).toThrow();
+    expect(() => parseArgs(["workflow", ".", "--base", "main"])).toThrow();
+  });
+
   test("blocks published Semctx 0.3.3 before invoking its unsafe dry-run", async () => {
     const rt = fakeRuntime({ version: "0.3.3" });
     const report = await execute(setupOptions(), rt);

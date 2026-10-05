@@ -1,10 +1,9 @@
 # Hoklims Devkit
 
-La commande `workflow` prépare en lecture seule les prochaines vérifications à
-partir d'une demande liée au changement exact. `PLANNED` laisse toutes les
-obligations non prouvées ; aucun provider ni test candidat n'est exécuté.
-Le [contrat de demande et ses limites](docs/workflow.md) décrit cette première
-tranche. Le plugin Codex commun et le rattachement des preuves restent à livrer.
+Le plugin Codex commun prépare les vérifications et associe les observations
+AssertLedger au changement exact. `PLANNED` conserve les obligations non prouvées ;
+la préparation et le replay n'exécutent aucun test candidat. Le
+[contrat de demande et ses limites](docs/workflow.md) décrit ce parcours.
 
 Hoklims Devkit prépare un dépôt Git pour [Semctx](https://github.com/hoklims/semctx), avec [AssertLedger](https://github.com/hoklims/assertledger) et [Latent Compass](https://github.com/hoklims/latent-compass) en option. Il appelle les installateurs propres à chaque projet et conserve leurs données séparées.
 
@@ -20,6 +19,27 @@ Hoklims Devkit prépare un dépôt Git pour [Semctx](https://github.com/hoklims/
 Le lanceur n'installe pas Bun, Node ou uv à l'insu de l'utilisateur. Un prérequis manquant est signalé avant toute modification.
 
 ## Première utilisation
+
+Pour le workflow Codex commun, lancer depuis ce checkout :
+
+```sh
+bun bin/hoklims-devkit.js onboard . --dry-run --json
+```
+
+Retirer `--dry-run` pour appliquer. Après publication, l'entrée publique sera
+`bunx hoklims-devkit@latest onboard .`. Ce profil fixe Semctx 0.4.1 et
+AssertLedger 1.4.0, réutilise leurs installateurs et installe `hoklims-proof`
+par les commandes natives de marketplace Codex. Cette installation inscrit
+explicitement le plugin dans le profil utilisateur Codex ; le fichier de
+configuration AssertLedger du dépôt reste identique. Le plugin commun ne déclare
+ni serveur MCP supplémentaire ni hook.
+
+Les fichiers étrangers, les plugins désactivés, les versions incompatibles et
+les snapshots modifiés sont signalés avant application. Une relance conserve les
+versions et les octets possédés. `onboard --upgrade-plugin` permet explicitement
+de mettre à niveau un snapshot possédé encore intact. Ouvrir ensuite une session
+Codex neuve et de confiance pour vérifier le chargement ; installation, chargement,
+approbation et usage observé restent des états distincts.
 
 Après publication, lancer depuis un dépôt Git :
 
@@ -42,6 +62,14 @@ Si un composant est enregistré pour Codex et Claude, utiliser `upgrade --host a
 `doctor --json` distingue le paquet installé, la configuration, le chargement dans la session, l'approbation et l'usage observé. L'installation seule ne prouve ni le chargement ni l'approbation. Ouvrir une nouvelle tâche Codex ou recharger les plugins Claude lorsque le rapport le demande. Examiner le hook Latent Compass dans l'hôte avant de l'approuver.
 
 ## Usage courant
+
+Le skill `proof-workflow` prépare la demande sans JSON rédigé par le développeur.
+Codex choisit les obligations et chemins utiles, puis appelle par exemple
+`workflow . --base origin/main --obligation ID --test PATH --json`.
+`--evidence EXPORT_FILE` rejoue un export AssertLedger avec le runtime local fixé,
+contrôle son rattachement et conserve sa portée consultative. Les limites
+d'authenticité, d'environnement et de couverture restent visibles ; aucune
+obligation Semctx n'est clôturée automatiquement.
 
 - Semctx sert à examiner l'impact d'un changement et les obligations associées, par exemple avec `semctx verify diff --base origin/main`.
 - AssertLedger sert à vérifier une affirmation précise sur un test de régression. Son installation n'invente ni défaut ni preuve. L'exécution locale non isolée exige toujours `--allow-unsafe-execution` donné par l'opérateur.

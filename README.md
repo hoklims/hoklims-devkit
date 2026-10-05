@@ -17,6 +17,20 @@ The launcher never installs Bun, Node, or uv for you. It reports a missing prere
 
 ## First use
 
+For the common Codex workflow, use `bun bin/hoklims-devkit.js onboard . --dry-run --json`
+from this checkout, then remove `--dry-run` to apply. After registry publication,
+the same entrypoint is `bunx hoklims-devkit@latest onboard .`.
+It pins Semctx 0.4.1 and AssertLedger 1.4.0, reuses their native installers,
+and installs the versioned `hoklims-proof` plugin through Codex's native local
+marketplace commands. Those commands explicitly update user-level Codex plugin
+registration; the repository's AssertLedger configuration stays byte-identical.
+The plugin declares no MCP server or hook. Missing prerequisites, foreign files,
+modified cache contents and disabled/conflicting plugins stop before application.
+Reruns retain versions and owned bytes; `onboard --upgrade-plugin` explicitly
+allows an unchanged owned plugin snapshot to be upgraded. Open a fresh trusted
+Codex session to verify loading; installation reports keep loading, approval and
+observed use unknown until checked.
+
 After the public release, run this **from a Git repository**:
 
 ```sh
@@ -39,11 +53,14 @@ If a component is recorded for both hosts, change its version with `upgrade --ho
 
 ## Daily use
 
-The read-only `workflow` command prepares a bounded next-check plan from a
-machine-authored, source-bound request. `PLANNED` leaves every obligation
-unproven; it does not run providers or accept evidence. See the
-[request contract and limits](docs/workflow.md). The common Codex plugin and
-native evidence admission remain separate delivery steps.
+The plugin's `proof-workflow` skill captures requests without developer-authored
+JSON: `workflow . --base origin/main --obligation ID --test PATH --json`.
+Codex supplies meaningful obligations and test paths using current repository
+context. `PLANNED` leaves every obligation unproven. Optional `--evidence FILE`
+calls the pinned native export replay and associates matching observations as
+advisory, preserving authenticity, environment and partial-coverage limits.
+It never executes candidates or closes Semctx obligations. See the
+[request contract and limits](docs/workflow.md).
 
 - Use Semctx to inspect change impact and authored obligations, for example `semctx verify diff --base origin/main`.
 - Use AssertLedger for a named regression claim. Its repository setup does **not** invent faults, worlds, candidates, or proof. Its read-only MCP connection does not permit candidate execution; the unsandboxed path still requires `--allow-unsafe-execution` from the operator.

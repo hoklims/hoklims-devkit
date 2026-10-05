@@ -1,0 +1,656 @@
+{
+  "schemaVersion": "1.0.0",
+  "sourceManifest": {
+    "schemaVersion": "1.0.0",
+    "repositoryDigest": "sha256:b9076c8aec70e5b03fd821e7cbc120093ef7bd4c07b25805076c35e30e74f8b2",
+    "evidenceContext": {
+      "engine": {
+        "name": "assertledger",
+        "version": "1.4.0"
+      },
+      "adapter": {
+        "name": "node-test",
+        "version": "22.23.2",
+        "configuration": {
+          "kind": "node-test",
+          "executable": "node"
+        }
+      },
+      "execution": {
+        "isolation": "UNSANDBOXED",
+        "environmentAllowlist": [
+          "CI"
+        ],
+        "budgets": {},
+        "candidateRoots": [
+          "tests"
+        ]
+      },
+      "worlds": [
+        {
+          "id": "neutral",
+          "provenance": "{\"commit\":\"cccccccccccccccccccccccccccccccccccccccc\",\"format\":\"assertledger-git-regression/1\",\"objectFormat\":\"sha1\",\"projection\":\"SELECTED_TEST_REMOVED_FOR_CONTROLS\",\"reason\":\"synthetic fixture revision\",\"role\":\"neutral\",\"tree\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+          "digest": "sha256:3ae3f40fcd8592146d113c4252e5f8d69b2b5b1e25f93fd626360aa52cd6ac06"
+        },
+        {
+          "id": "reference",
+          "provenance": "{\"commit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"format\":\"assertledger-git-regression/1\",\"objectFormat\":\"sha1\",\"projection\":\"SELECTED_TEST_REMOVED_FOR_CONTROLS\",\"reason\":\"synthetic fixture revision\",\"role\":\"reference\",\"tree\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+          "digest": "sha256:19f3324c3f857f03845ad6c701306ce05333e0e28afde3a82c85d00b903879c6"
+        },
+        {
+          "id": "target",
+          "provenance": "{\"commit\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"format\":\"assertledger-git-regression/1\",\"objectFormat\":\"sha1\",\"projection\":\"SELECTED_TEST_REMOVED_FOR_CONTROLS\",\"reason\":\"synthetic fixture revision\",\"role\":\"target\",\"tree\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+          "digest": "sha256:be18811d2679c0575fc8854fb95113170b781d882aa5bff9717f8cbfd218e9e6"
+        }
+      ]
+    },
+    "policy": {
+      "policyVersion": "1.0.0",
+      "requiredAttempts": 3,
+      "minimumTargetWeightPermille": 1000,
+      "maximumSelectedCandidates": 1,
+      "acceptedTargetOutcomes": [
+        "ASSERTION_FAILURE"
+      ]
+    },
+    "worlds": [
+      {
+        "id": "neutral",
+        "kind": "NEUTRAL",
+        "required": true,
+        "weight": 0
+      },
+      {
+        "id": "reference",
+        "kind": "REFERENCE",
+        "required": true,
+        "weight": 0
+      },
+      {
+        "id": "target",
+        "kind": "TARGET",
+        "required": true,
+        "weight": 10
+      }
+    ],
+    "candidates": [
+      {
+        "id": "candidate",
+        "digest": "sha256:f19a3cfda7a76b694f7db5f8f6095021f8439e20a9f961050e5e4066c7160728",
+        "sizeBytes": 73,
+        "status": "ELIGIBLE",
+        "killedTargetIds": [
+          "target"
+        ],
+        "targetWeightKilled": 10,
+        "gates": [
+          {
+            "name": "COMPLETENESS",
+            "status": "PASSED",
+            "evidenceRunIds": [
+              "candidate:neutral:1",
+              "candidate:neutral:2",
+              "candidate:neutral:3",
+              "candidate:reference:1",
+              "candidate:reference:2",
+              "candidate:reference:3",
+              "candidate:target:1",
+              "candidate:target:2",
+              "candidate:target:3"
+            ],
+            "reasonCodes": []
+          },
+          {
+            "name": "STABILITY",
+            "status": "PASSED",
+            "evidenceRunIds": [
+              "candidate:neutral:1",
+              "candidate:neutral:2",
+              "candidate:neutral:3",
+              "candidate:reference:1",
+              "candidate:reference:2",
+              "candidate:reference:3",
+              "candidate:target:1",
+              "candidate:target:2",
+              "candidate:target:3"
+            ],
+            "reasonCodes": []
+          },
+          {
+            "name": "DISCOVERY",
+            "status": "PASSED",
+            "evidenceRunIds": [
+              "candidate:neutral:1",
+              "candidate:neutral:2",
+              "candidate:neutral:3",
+              "candidate:reference:1",
+              "candidate:reference:2",
+              "candidate:reference:3",
+              "candidate:target:1",
+              "candidate:target:2",
+              "candidate:target:3"
+            ],
+            "reasonCodes": []
+          },
+          {
+            "name": "REFERENCE",
+            "status": "PASSED",
+            "evidenceRunIds": [
+              "candidate:reference:1",
+              "candidate:reference:2",
+              "candidate:reference:3"
+            ],
+            "reasonCodes": []
+          },
+          {
+            "name": "NEUTRAL",
+            "status": "PASSED",
+            "evidenceRunIds": [
+              "candidate:neutral:1",
+              "candidate:neutral:2",
+              "candidate:neutral:3"
+            ],
+            "reasonCodes": []
+          },
+          {
+            "name": "TARGET_STRENGTH",
+            "status": "PASSED",
+            "evidenceRunIds": [
+              "candidate:target:1",
+              "candidate:target:2",
+              "candidate:target:3"
+            ],
+            "reasonCodes": []
+          }
+        ],
+        "reasonCodes": [
+          "POLICY_SATISFIED"
+        ]
+      }
+    ],
+    "observations": [
+      {
+        "runId": "control:neutral:1",
+        "candidateId": null,
+        "worldId": "neutral",
+        "attempt": 1,
+        "outcome": "PASS",
+        "testsDiscovered": 1,
+        "candidateTestsDiscovered": 0,
+        "attributed": false,
+        "durationMs": 5
+      },
+      {
+        "runId": "control:neutral:2",
+        "candidateId": null,
+        "worldId": "neutral",
+        "attempt": 2,
+        "outcome": "PASS",
+        "testsDiscovered": 1,
+        "candidateTestsDiscovered": 0,
+        "attributed": false,
+        "durationMs": 5
+      },
+      {
+        "runId": "control:neutral:3",
+        "candidateId": null,
+        "worldId": "neutral",
+        "attempt": 3,
+        "outcome": "PASS",
+        "testsDiscovered": 1,
+        "candidateTestsDiscovered": 0,
+        "attributed": false,
+        "durationMs": 5
+      },
+      {
+        "runId": "control:reference:1",
+        "candidateId": null,
+        "worldId": "reference",
+        "attempt": 1,
+        "outcome": "PASS",
+        "testsDiscovered": 1,
+        "candidateTestsDiscovered": 0,
+        "attributed": false,
+        "durationMs": 5
+      },
+      {
+        "runId": "control:reference:2",
+        "candidateId": null,
+        "worldId": "reference",
+        "attempt": 2,
+        "outcome": "PASS",
+        "testsDiscovered": 1,
+        "candidateTestsDiscovered": 0,
+        "attributed": false,
+        "durationMs": 5
+      },
+      {
+        "runId": "control:reference:3",
+        "candidateId": null,
+        "worldId": "reference",
+        "attempt": 3,
+        "outcome": "PASS",
+        "testsDiscovered": 1,
+        "candidateTestsDiscovered": 0,
+        "attributed": false,
+        "durationMs": 5
+      },
+      {
+        "runId": "control:target:1",
+        "candidateId": null,
+        "worldId": "target",
+        "attempt": 1,
+        "outcome": "PASS",
+        "testsDiscovered": 1,
+        "candidateTestsDiscovered": 0,
+        "attributed": false,
+        "durationMs": 5
+      },
+      {
+        "runId": "control:target:2",
+        "candidateId": null,
+        "worldId": "target",
+        "attempt": 2,
+        "outcome": "PASS",
+        "testsDiscovered": 1,
+        "candidateTestsDiscovered": 0,
+        "attributed": false,
+        "durationMs": 5
+      },
+      {
+        "runId": "control:target:3",
+        "candidateId": null,
+        "worldId": "target",
+        "attempt": 3,
+        "outcome": "PASS",
+        "testsDiscovered": 1,
+        "candidateTestsDiscovered": 0,
+        "attributed": false,
+        "durationMs": 5
+      },
+      {
+        "runId": "candidate:neutral:1",
+        "candidateId": "candidate",
+        "worldId": "neutral",
+        "attempt": 1,
+        "outcome": "PASS",
+        "testsDiscovered": 2,
+        "candidateTestsDiscovered": 1,
+        "attributed": true,
+        "durationMs": 20
+      },
+      {
+        "runId": "candidate:neutral:2",
+        "candidateId": "candidate",
+        "worldId": "neutral",
+        "attempt": 2,
+        "outcome": "PASS",
+        "testsDiscovered": 2,
+        "candidateTestsDiscovered": 1,
+        "attributed": true,
+        "durationMs": 20
+      },
+      {
+        "runId": "candidate:neutral:3",
+        "candidateId": "candidate",
+        "worldId": "neutral",
+        "attempt": 3,
+        "outcome": "PASS",
+        "testsDiscovered": 2,
+        "candidateTestsDiscovered": 1,
+        "attributed": true,
+        "durationMs": 20
+      },
+      {
+        "runId": "candidate:reference:1",
+        "candidateId": "candidate",
+        "worldId": "reference",
+        "attempt": 1,
+        "outcome": "PASS",
+        "testsDiscovered": 2,
+        "candidateTestsDiscovered": 1,
+        "attributed": true,
+        "durationMs": 20
+      },
+      {
+        "runId": "candidate:reference:2",
+        "candidateId": "candidate",
+        "worldId": "reference",
+        "attempt": 2,
+        "outcome": "PASS",
+        "testsDiscovered": 2,
+        "candidateTestsDiscovered": 1,
+        "attributed": true,
+        "durationMs": 20
+      },
+      {
+        "runId": "candidate:reference:3",
+        "candidateId": "candidate",
+        "worldId": "reference",
+        "attempt": 3,
+        "outcome": "PASS",
+        "testsDiscovered": 2,
+        "candidateTestsDiscovered": 1,
+        "attributed": true,
+        "durationMs": 20
+      },
+      {
+        "runId": "candidate:target:1",
+        "candidateId": "candidate",
+        "worldId": "target",
+        "attempt": 1,
+        "outcome": "ASSERTION_FAILURE",
+        "testsDiscovered": 2,
+        "candidateTestsDiscovered": 1,
+        "attributed": true,
+        "durationMs": 20
+      },
+      {
+        "runId": "candidate:target:2",
+        "candidateId": "candidate",
+        "worldId": "target",
+        "attempt": 2,
+        "outcome": "ASSERTION_FAILURE",
+        "testsDiscovered": 2,
+        "candidateTestsDiscovered": 1,
+        "attributed": true,
+        "durationMs": 20
+      },
+      {
+        "runId": "candidate:target:3",
+        "candidateId": "candidate",
+        "worldId": "target",
+        "attempt": 3,
+        "outcome": "ASSERTION_FAILURE",
+        "testsDiscovered": 2,
+        "candidateTestsDiscovered": 1,
+        "attributed": true,
+        "durationMs": 20
+      }
+    ],
+    "decision": {
+      "status": "VERIFIED",
+      "selectedCandidateIds": [
+        "candidate"
+      ],
+      "reasonCodes": [
+        "POLICY_SATISFIED"
+      ]
+    },
+    "decisionDigest": "sha256:29ff5a06a15622b8e22096051b33897b7dffa54c5ccedc0e09cd88cae82d1b26",
+    "artifactDigest": "sha256:d589ac0ad5285013618e807cf38b8dbd9ba92610f38649f45f0db461694411ae",
+    "adapter": {
+      "kind": "node-test"
+    },
+    "isolation": {
+      "kind": "trusted-local",
+      "level": "UNSANDBOXED",
+      "acknowledgedUnsafeExecution": true
+    },
+    "limitations": [
+      "Synthetic recorded observations only; no candidate code was executed."
+    ]
+  },
+  "sourceArtifactDigest": "sha256:d589ac0ad5285013618e807cf38b8dbd9ba92610f38649f45f0db461694411ae",
+  "consumerRequest": {
+    "reference": "sha256:9a03232f2ddc3c6a4d0024f559440c7e4a229e4e1f5cb4ddff17520a87da7acd",
+    "profileId": null,
+    "obligations": [
+      {
+        "id": "detect",
+        "control": "REGRESSION_DETECTION"
+      }
+    ]
+  },
+  "result": {
+    "detection": "OBSERVED",
+    "modality": "TEST_OBSERVED",
+    "reasonCode": "REGRESSION_ASSERTION_OBSERVED",
+    "decision": {
+      "status": "VERIFIED",
+      "selectedCandidateIds": [
+        "candidate"
+      ],
+      "reasonCodes": [
+        "POLICY_SATISFIED"
+      ]
+    },
+    "candidates": [
+      {
+        "id": "candidate",
+        "digest": "sha256:f19a3cfda7a76b694f7db5f8f6095021f8439e20a9f961050e5e4066c7160728",
+        "status": "ELIGIBLE",
+        "selected": true,
+        "reasonCodes": [
+          "POLICY_SATISFIED"
+        ],
+        "worlds": [
+          {
+            "worldId": "neutral",
+            "kind": "NEUTRAL",
+            "required": true,
+            "weight": 0,
+            "outcome": "PASS",
+            "attempts": 3,
+            "signal": "GREEN",
+            "detection": "NOT_APPLICABLE"
+          },
+          {
+            "worldId": "reference",
+            "kind": "REFERENCE",
+            "required": true,
+            "weight": 0,
+            "outcome": "PASS",
+            "attempts": 3,
+            "signal": "GREEN",
+            "detection": "NOT_APPLICABLE"
+          },
+          {
+            "worldId": "target",
+            "kind": "TARGET",
+            "required": true,
+            "weight": 10,
+            "outcome": "ASSERTION_FAILURE",
+            "attempts": 3,
+            "signal": "RED",
+            "detection": "OBSERVED"
+          }
+        ]
+      }
+    ]
+  },
+  "integrity": {
+    "sourceReplay": "VALID",
+    "verifiedRails": [
+      "SCHEMA",
+      "DECISION_DIGEST",
+      "ARTIFACT_DIGEST",
+      "DECISION_SEMANTICS"
+    ],
+    "bindings": {
+      "artifactDigest": "sha256:d589ac0ad5285013618e807cf38b8dbd9ba92610f38649f45f0db461694411ae",
+      "decisionDigest": "sha256:29ff5a06a15622b8e22096051b33897b7dffa54c5ccedc0e09cd88cae82d1b26",
+      "repositoryDigest": "sha256:b9076c8aec70e5b03fd821e7cbc120093ef7bd4c07b25805076c35e30e74f8b2",
+      "policyDigest": "sha256:31c0b3ec5758cedea4f82e800172a28ace581fc75c2d36aead595397210d2aa2",
+      "worldDigests": [
+        {
+          "worldId": "neutral",
+          "digest": "sha256:3ae3f40fcd8592146d113c4252e5f8d69b2b5b1e25f93fd626360aa52cd6ac06"
+        },
+        {
+          "worldId": "reference",
+          "digest": "sha256:19f3324c3f857f03845ad6c701306ce05333e0e28afde3a82c85d00b903879c6"
+        },
+        {
+          "worldId": "target",
+          "digest": "sha256:be18811d2679c0575fc8854fb95113170b781d882aa5bff9717f8cbfd218e9e6"
+        }
+      ]
+    }
+  },
+  "authenticity": {
+    "status": "UNAUTHENTICATED",
+    "attestation": "NONE",
+    "declaredProducer": {
+      "name": "assertledger",
+      "version": "1.4.0"
+    }
+  },
+  "environment": {
+    "isolation": {
+      "kind": "trusted-local",
+      "level": "UNSANDBOXED"
+    },
+    "environmentAllowlist": [
+      "CI"
+    ],
+    "adapter": {
+      "kind": "node-test",
+      "name": "node-test",
+      "version": "22.23.2",
+      "framework": {
+        "status": "UNKNOWN"
+      }
+    }
+  },
+  "confidence": {
+    "level": "REPLAY_CONSISTENT_UNAUTHENTICATED",
+    "established": [
+      "SOURCE_SCHEMA_VALID",
+      "DECISION_DIGEST_RECOMPUTED",
+      "ARTIFACT_DIGEST_RECOMPUTED",
+      "DECISION_RECOMPUTED_FROM_RECORDED_OBSERVATIONS"
+    ],
+    "notEstablished": [
+      "PRODUCER_AUTHENTICITY",
+      "OBSERVATION_TRUTHFULNESS",
+      "EXECUTION_ISOLATION",
+      "EXECUTION_FRESHNESS",
+      "WORLD_SEMANTIC_RELEVANCE"
+    ]
+  },
+  "scope": {
+    "requiredAttempts": 3,
+    "candidates": 1,
+    "observations": 18,
+    "gitRevisions": "RECORDED",
+    "worlds": [
+      {
+        "id": "neutral",
+        "kind": "NEUTRAL",
+        "required": true,
+        "weight": 0,
+        "digest": "sha256:3ae3f40fcd8592146d113c4252e5f8d69b2b5b1e25f93fd626360aa52cd6ac06",
+        "declaredProvenance": "{\"commit\":\"cccccccccccccccccccccccccccccccccccccccc\",\"format\":\"assertledger-git-regression/1\",\"objectFormat\":\"sha1\",\"projection\":\"SELECTED_TEST_REMOVED_FOR_CONTROLS\",\"reason\":\"synthetic fixture revision\",\"role\":\"neutral\",\"tree\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+        "git": {
+          "role": "neutral",
+          "commit": "cccccccccccccccccccccccccccccccccccccccc",
+          "tree": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "objectFormat": "sha1"
+        }
+      },
+      {
+        "id": "reference",
+        "kind": "REFERENCE",
+        "required": true,
+        "weight": 0,
+        "digest": "sha256:19f3324c3f857f03845ad6c701306ce05333e0e28afde3a82c85d00b903879c6",
+        "declaredProvenance": "{\"commit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"format\":\"assertledger-git-regression/1\",\"objectFormat\":\"sha1\",\"projection\":\"SELECTED_TEST_REMOVED_FOR_CONTROLS\",\"reason\":\"synthetic fixture revision\",\"role\":\"reference\",\"tree\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+        "git": {
+          "role": "reference",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tree": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "objectFormat": "sha1"
+        }
+      },
+      {
+        "id": "target",
+        "kind": "TARGET",
+        "required": true,
+        "weight": 10,
+        "digest": "sha256:be18811d2679c0575fc8854fb95113170b781d882aa5bff9717f8cbfd218e9e6",
+        "declaredProvenance": "{\"commit\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"format\":\"assertledger-git-regression/1\",\"objectFormat\":\"sha1\",\"projection\":\"SELECTED_TEST_REMOVED_FOR_CONTROLS\",\"reason\":\"synthetic fixture revision\",\"role\":\"target\",\"tree\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+        "git": {
+          "role": "target",
+          "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "tree": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "objectFormat": "sha1"
+        }
+      }
+    ]
+  },
+  "controls": {
+    "executed": [
+      {
+        "control": "CONTROL_WITHOUT_CANDIDATE",
+        "status": "EXECUTED",
+        "observations": 9
+      },
+      {
+        "control": "REFERENCE_PASS",
+        "status": "EXECUTED",
+        "observations": 3
+      },
+      {
+        "control": "REGRESSION_DETECTION",
+        "status": "EXECUTED",
+        "observations": 3
+      },
+      {
+        "control": "NEUTRAL_PASS",
+        "status": "EXECUTED",
+        "observations": 3
+      },
+      {
+        "control": "STABILITY_REPETITION",
+        "status": "EXECUTED",
+        "observations": 12
+      }
+    ],
+    "requested": {
+      "status": "COVERED",
+      "obligations": [
+        {
+          "id": "detect",
+          "control": "REGRESSION_DETECTION",
+          "coverage": "EXECUTED"
+        }
+      ]
+    },
+    "omittedGates": []
+  },
+  "profile": {
+    "status": "NOT_REQUESTED"
+  },
+  "policy": {
+    "policyVersion": "1.0.0",
+    "digest": "sha256:31c0b3ec5758cedea4f82e800172a28ace581fc75c2d36aead595397210d2aa2"
+  },
+  "cost": {
+    "estimated": {
+      "unit": "PROCESS_EXECUTIONS",
+      "value": 18,
+      "basis": "RECORDED_CAMPAIGN_SHAPE",
+      "assumptions": [
+        "One candidate-free control run per world and attempt precedes the candidate runs.",
+        "Each run is one process execution bounded by the campaign timeout."
+      ]
+    },
+    "observed": {
+      "unit": "PROCESS_EXECUTIONS",
+      "executions": 18,
+      "recordedWallTimeMs": 225,
+      "wallTimeCoverage": "COMPLETE"
+    },
+    "execution": {
+      "freshness": "UNKNOWN",
+      "cache": "NOT_RECORDED"
+    }
+  },
+  "limitations": [
+    "The export restates replay-valid recorded evidence; it does not rerun tests or authenticate the producer.",
+    "Detection covers only the recorded target worlds and attempts.",
+    "Consumers decide admissibility; rejecting or ignoring an export does not change AssertLedger results."
+  ],
+  "exportDigest": "sha256:1d24a8e9fa8e6c9a8344eb1786c8df91a03854bfede9a58ce30083df234bfbe2"
+}

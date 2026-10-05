@@ -45,10 +45,11 @@ export function validateState(state) {
 export function createRuntime() {
   return {
     which: (name) => Bun.which(name),
-    exec: async (argv, cwd, timeoutMs = 120_000, captureBytes = false) => {
+    exec: async (argv, cwd, timeoutMs = 120_000, captureBytes = false, input = null) => {
       let child;
       try {
-        child = Bun.spawn({ cmd: argv, cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+        child = Bun.spawn({ cmd: argv, cwd, stdout: "pipe", stderr: "pipe", stdin: input === null ? "ignore" : "pipe" });
+        if (input !== null) { child.stdin.write(input); child.stdin.end(); }
       } catch (error) {
         return { code: 5, stdout: "", stderr: String(error) };
       }
@@ -81,6 +82,7 @@ export function createRuntime() {
     exists: existsSync,
     readText: (path) => readFileSync(path, "utf8"),
     realpath: realpathSync,
+    codexHome: () => resolve(process.env.CODEX_HOME || join(homedir(), ".codex")),
     statePath: (root) => {
       const base = platform() === "win32"
         ? process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local")

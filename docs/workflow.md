@@ -1,14 +1,32 @@
 # Read-only proof routing
 
 `hoklims-devkit workflow <repository> --request <file> --json` prepares the next
-checks for an explicitly bound change. It never executes candidate tests, invokes
-providers, changes installation state, accepts evidence, or authorizes an action.
+checks for an explicitly bound change. It never executes candidate tests, changes
+installation state, accepts evidence as proof, or authorizes an action.
 `--dry-run` is optional because this command is always read-only.
 
-This is the adapter boundary for the forthcoming common Codex workflow. The agent
-or integration prepares the request; this first tranche does not yet generate it
-from a native Semctx handoff. It does not ask developers to author a campaign,
-implement an AssertLedger adapter, or replace their repository's checks.
+The common Codex plugin supplies the `proof-workflow` skill. Codex can capture the
+request without a developer-authored file using `--base REF --obligation ID`, with
+optional repeated `--test PATH` and `--intent change|regression|migration`.
+Git resolves the selected base and current HEAD and captures the raw diff digest.
+Semctx 0.4.1 is a declared source version; completeness, provider authentication
+and native Semctx-handoff generation remain unproven. The existing v1 request
+format and original file-based entrypoint remain available.
+
+A named regression also needs `--claim`, `--neutral`, `--neutral-reason`,
+`--regression-test` and original repeated `--base-test` paths. `--framework` defaults
+to `node:test`. All committed-source refusals apply to both input modes.
+
+`providerRequest.consumerRequest.reference` binds the canonical request digest.
+Use the provider's existing export API with that reference and only the obligations
+actually mapped to its controls. `--evidence EXPORT_FILE` calls project-local
+AssertLedger 1.4.0 `export-replay` on the captured export through stdin, then checks
+reference, obligations, declared producer, Git commits/trees and selected test
+content. It preserves the embedded manifest, export identity, observations and
+limitations. Partial coverage is explicit. All obligations remain unproven;
+`TEST_OBSERVED` evidence stays advisory and `UNAUTHENTICATED`. Replay establishes
+neither truthful/fresh observations, isolation, world relevance nor gate admission.
+The source is checked again after replay. No test candidate is executed.
 
 During development, run the checkout CLI with Bun:
 
