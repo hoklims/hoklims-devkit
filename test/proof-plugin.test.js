@@ -34,10 +34,16 @@ function writeSnapshot(destination, plan, version = "0.1.0", only = null) {
   }, null, 2)}\n`);
 }
 
-function nativeRuntime(home, item) {
+function nativeItem(root, overrides = {}) {
+  return { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.1.0", installed: true, enabled: true,
+    source: { source: "local", path: join(root, ".agents", "plugins", "hoklims-proof") }, marketplaceSource: { sourceType: "local", source: root }, ...overrides };
+}
+
+function nativeRuntime(home, item, marketplaceRoot) {
   const calls = [];
   return { calls, rt: { codexHome: () => home, realpath: realpathSync,
-    exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace") ? { marketplaces: [] } : { installed: [item], available: [] }) }; } } };
+    exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace")
+      ? { marketplaces: [{ name: "hoklims-devkit", root: marketplaceRoot }] } : { installed: [item], available: [] }) }; } } };
 }
 
 test("a repository plugin preserves foreign providers and has an idempotent owned snapshot", () => {
@@ -131,9 +137,55 @@ test("a foreign native marketplace and an unregistered foreign cache stop onboar
   rt.exec = async argv => ({ code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace") ? { marketplaces: [] } : { installed: [], available: [] }) });
   const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
   mkdirSync(cache, { recursive: true }); writeFileSync(join(cache, "foreign"), "preserved");
-  await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow("Native cached plugin content differs");
+  await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow("no ownership record");
   await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).rejects.toThrow();
   expect(readFileSync(join(cache, "foreign"), "utf8")).toBe("preserved");
+});
+
+test("matching plugin bytes cannot conceal a registered marketplace catalog with a foreign target", async () => {
+  const root = repo(), other = repo(), home = repo(), plan = pluginPlan(root);
+  writeSnapshot(join(other, ".agents", "plugins", "hoklims-proof"), plan);
+  const catalogPath = join(other, ".agents", "plugins", "marketplace.json");
+  const foreignPath = join(other, "foreign-payload");
+  mkdirSync(foreignPath, { recursive: true });
+  writeFileSync(join(foreignPath, "payload"), "preserved foreign payload");
+  writeFileSync(catalogPath, `${JSON.stringify({ name: "hoklims-devkit", plugins: [{ name: "hoklims-proof", source: { source: "local", path: "./foreign-payload" } }] }, null, 2)}\n`);
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  writeSnapshot(cache, plan);
+  const item = { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.1.0", installed: true, enabled: true,
+    source: { source: "local", path: foreignPath }, marketplaceSource: { sourceType: "local", source: other } };
+  const calls = [];
+  const rt = { codexHome: () => home, realpath: realpathSync,
+    exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace")
+      ? { marketplaces: [{ name: "hoklims-devkit", root: other }] } : { installed: [item], available: [] }) }; } };
+  const before = { catalog: readFileSync(catalogPath, "utf8"), payload: readFileSync(join(foreignPath, "payload"), "utf8"), owner: readFileSync(join(cache, "ownership.json"), "utf8") };
+  await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow();
+  expect(calls.some(argv => argv.includes("add"))).toBe(false);
+  expect({ catalog: readFileSync(catalogPath, "utf8"), payload: readFileSync(join(foreignPath, "payload"), "utf8"), owner: readFileSync(join(cache, "ownership.json"), "utf8") }).toEqual(before);
+});
+
+test("a compatible registered repository is reusable only with its bound native source identity", async () => {
+  const root = repo(), other = repo(), home = repo(), plan = pluginPlan(root);
+  mkdirSync(join(other, ".agents", "plugins"), { recursive: true });
+  const provider = { name: "other", source: { source: "local", path: "./other" } };
+  writeFileSync(join(other, ".agents", "plugins", "marketplace.json"), JSON.stringify({ name: "hoklims-devkit", plugins: [provider] }));
+  applyPlugin(pluginPlan(other));
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  writeSnapshot(cache, plan);
+  const item = nativeItem(other);
+  const valid = nativeRuntime(home, item, other);
+  await expect(preflightNativePlugin(valid.rt, root, plan)).resolves.toMatchObject({ marketplaceRoot: other, installed: true });
+  const catalog = JSON.parse(readFileSync(join(other, ".agents", "plugins", "marketplace.json"), "utf8"));
+  expect(catalog.plugins[0]).toEqual(provider);
+  const wrongSource = nativeItem(other, { source: { source: "local", path: join(other, ".agents", "plugins") } });
+  const invalid = nativeRuntime(home, wrongSource, other);
+  const before = readFileSync(join(cache, "ownership.json"), "utf8");
+  await expect(preflightNativePlugin(invalid.rt, root, plan)).rejects.toThrow("source differs from its registered marketplace");
+  expect(invalid.calls.some(argv => argv.includes("add"))).toBe(false);
+  expect(readFileSync(join(cache, "ownership.json"), "utf8")).toBe(before);
+  const wrongMarketplace = nativeItem(other, { marketplaceSource: { sourceType: "local", source: root } });
+  await expect(preflightNativePlugin(nativeRuntime(home, wrongMarketplace, other).rt, root, plan)).rejects.toThrow("source differs from its registered marketplace");
+  expect(readFileSync(join(cache, "ownership.json"), "utf8")).toBe(before);
 });
 
 test("matching native bytes cannot conceal an extra unowned cache file", async () => {
@@ -148,7 +200,7 @@ test("matching native bytes cannot conceal an extra unowned cache file", async (
   const calls = [];
   const rt = { codexHome: () => home, realpath: realpathSync,
     exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace") ? { marketplaces: [] } : { installed: [], available: [] }) }; } };
-  await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow("Native cached plugin content differs");
+  await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow("missing or unowned files");
   expect(calls.some(argv => argv.includes("add"))).toBe(false);
   expect(readFileSync(join(cache, "hooks", "hooks.json"), "utf8")).toBe("{}");
 });
@@ -206,43 +258,60 @@ test("owned manifests and runtime pins must match the prior ownership record", (
 
 test("a truncated prior native cache cannot authorize replacement", async () => {
   const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
   const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.0.9");
   writeSnapshot(cache, plan, "0.0.9", [`.agents/plugins/hoklims-proof/plugin.json`]);
-  const installed = { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.0.9", installed: true, enabled: true };
-  const { rt } = nativeRuntime(home, installed);
+  const installed = nativeItem(root, { version: "0.0.9" });
+  const { rt } = nativeRuntime(home, installed, root);
   await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).rejects.toThrow();
 });
 
 test("a complete supported prior native cache can be replaced explicitly", async () => {
   const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
   const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.0.9");
   writeSnapshot(cache, plan, "0.0.9");
-  const installed = { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.0.9", installed: true, enabled: true };
-  const { rt } = nativeRuntime(home, installed);
+  const installed = nativeItem(root, { version: "0.0.9" });
+  const { rt } = nativeRuntime(home, installed, root);
   await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).resolves.toMatchObject({ installed: true });
 });
 
 test("a native declared version must match the prior ownership version", async () => {
   const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
   const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.0.8");
   writeSnapshot(cache, plan, "0.0.9");
-  const installed = { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.0.8", installed: true, enabled: true };
-  const { rt } = nativeRuntime(home, installed);
+  const installed = nativeItem(root, { version: "0.0.8" });
+  const { rt } = nativeRuntime(home, installed, root);
   await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).rejects.toThrow("version differs from its ownership record");
+});
+
+test("current snapshot bytes in an older native cache directory cannot bypass ownership version binding", async () => {
+  const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.0.9");
+  writeSnapshot(cache, plan);
+  const installed = nativeItem(root, { version: "0.0.9" });
+  const { rt } = nativeRuntime(home, installed, root);
+  const before = readFileSync(join(cache, "ownership.json"), "utf8");
+  await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).rejects.toThrow("version differs from its ownership record");
+  expect(readFileSync(join(cache, "ownership.json"), "utf8")).toBe(before);
 });
 
 async function expectMissingNativeIdentityRejected(field) {
   const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
   const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
   writeSnapshot(cache, plan);
-  const complete = { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.1.0", installed: true, enabled: true };
-  const valid = nativeRuntime(home, complete);
+  const complete = nativeItem(root);
+  const valid = nativeRuntime(home, complete, root);
   await expect(preflightNativePlugin(valid.rt, root, plan)).resolves.toMatchObject({ installed: true });
   const malformed = { ...complete }; delete malformed[field];
-  const invalid = nativeRuntime(home, malformed);
+  const invalid = nativeRuntime(home, malformed, root);
+  const before = readFileSync(join(root, ".agents", "plugins", "hoklims-proof", "ownership.json"), "utf8");
   await expect(preflightNativePlugin(invalid.rt, root, plan)).rejects.toThrow("missing or unsupported identity fields");
   expect(invalid.calls.some(argv => argv.includes("add"))).toBe(false);
-  expect(existsSync(join(root, ".agents", "plugins", "hoklims-proof"))).toBe(false);
+  expect(readFileSync(join(root, ".agents", "plugins", "hoklims-proof", "ownership.json"), "utf8")).toBe(before);
 }
 
 test("missing native enabled identity cannot become configured", async () => {

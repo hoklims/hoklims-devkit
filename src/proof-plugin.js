@@ -12,6 +12,7 @@ const CATALOG = ".agents/plugins/marketplace.json";
 const CONFIG = ".codex/config.toml";
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+const marketplaceEntry = () => ({ name: NAME, source: { source: "local", path: `./${PREFIX}` }, policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" }, category: "Productivity" });
 
 function safePath(root, name) {
   if (!name || name.split("/").some(part => !part || part === "." || part === "..") || /[\\:]/u.test(name)) throw new Error("Unsafe plugin path");
@@ -135,7 +136,7 @@ export function pluginPlan(root, { upgradePlugin = false } = {}) {
   if (typeof catalog.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(catalog.name) || !Array.isArray(catalog.plugins)
     || catalog.plugins.some(entry => !entry || typeof entry !== "object" || typeof entry.name !== "string")) throw new Error("Unsupported repository marketplace");
   const matches = catalog.plugins.filter(entry => entry.name === NAME);
-  const pluginEntry = { name: NAME, source: { source: "local", path: `./${PREFIX}` }, policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" }, category: "Productivity" };
+  const pluginEntry = marketplaceEntry();
   if (matches.length > 1 || (matches.length && JSON.stringify(matches[0]) !== JSON.stringify(pluginEntry))) throw new Error("A foreign marketplace entry already uses hoklims-proof");
   if (!matches.length) { catalog.plugins.push(pluginEntry); files[CATALOG] = Buffer.from(`${JSON.stringify(catalog, null, 2)}\n`); }
   const configBefore = read(root, CONFIG);
@@ -209,6 +210,20 @@ async function nativeJson(rt, argv, root) {
   try { return JSON.parse(result.stdout); } catch { throw new Error("Codex returned an unsupported plugin report"); }
 }
 
+function nativeMarketplaceRoot(rt, marketplaceRoot, marketplaceName) {
+  const catalogBytes = read(marketplaceRoot, CATALOG);
+  let catalog;
+  try { catalog = JSON.parse(catalogBytes?.toString("utf8") ?? ""); }
+  catch { throw new Error("Registered native marketplace has an invalid catalog"); }
+  if (!catalog || typeof catalog !== "object" || Array.isArray(catalog) || catalog.name !== marketplaceName || !Array.isArray(catalog.plugins)
+    || catalog.plugins.some(entry => !entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.name !== "string")) throw new Error("Registered native marketplace catalog is unsupported");
+  const matches = catalog.plugins.filter(entry => entry.name === NAME);
+  if (matches.length !== 1 || JSON.stringify(matches[0]) !== JSON.stringify(marketplaceEntry())) throw new Error("Registered native marketplace has a foreign hoklims-proof source");
+  const pluginRoot = safePath(marketplaceRoot, PREFIX);
+  try { return { marketplaceRoot: rt.realpath(marketplaceRoot), pluginRoot: rt.realpath(pluginRoot) }; }
+  catch { throw new Error("Registered native marketplace plugin source is unavailable"); }
+}
+
 export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = false } = {}) {
   const marketplaceName = plan.selector.slice(NAME.length + 1);
   const inventory = await nativeJson(rt, ["codex", "plugin", "marketplace", "list", "--json"], root);
@@ -217,9 +232,11 @@ export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = fa
   const markets = inventory.marketplaces.filter(item => item.name === marketplaceName);
   if (markets.length > 1) throw new Error("Ambiguous native marketplace identity");
   let marketplaceRoot = root;
+  let nativeSource = null;
   if (markets.length) {
     try { marketplaceRoot = rt.realpath(markets[0].root); } catch { throw new Error("Existing marketplace root is unavailable"); }
     if (marketplaceRoot !== root && !snapshotMatches(marketplaceRoot, plan)) throw new Error("A foreign or incompatible native marketplace already uses this name; preserve it and choose its source explicitly");
+    nativeSource = nativeMarketplaceRoot(rt, marketplaceRoot, marketplaceName);
   }
   const selectedInstalled = catalog.installed.filter(item => item.pluginId === plan.selector || item.name === NAME);
   const selectedAvailable = catalog.available.filter(item => item.pluginId === plan.selector || item.name === NAME);
@@ -228,6 +245,14 @@ export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = fa
   if (items.some(item => item.pluginId !== plan.selector || item.name !== NAME || item.marketplaceName !== marketplaceName
     || typeof item.enabled !== "boolean" || typeof item.version !== "string" || !/^(?:\d+\.\d+\.\d+|local)$/u.test(item.version))
     || selectedInstalled.some(item => item.installed !== true) || selectedAvailable.some(item => item.installed !== false)) throw new Error("Native plugin inventory has missing or unsupported identity fields");
+  if (items.length && (!nativeSource || items.some(item => item.source?.source !== "local" || typeof item.source.path !== "string"
+    || item.marketplaceSource?.sourceType !== "local" || typeof item.marketplaceSource.source !== "string"))) throw new Error("Native plugin inventory has missing or unsupported source identity");
+  if (items.length) {
+    try {
+      if (items.some(item => rt.realpath(item.source.path) !== nativeSource.pluginRoot
+        || rt.realpath(item.marketplaceSource.source) !== nativeSource.marketplaceRoot)) throw new Error("mismatch");
+    } catch { throw new Error("Native plugin inventory source differs from its registered marketplace"); }
+  }
   const installed = selectedInstalled[0];
   if (installed?.enabled === false) throw new Error("The native plugin is explicitly disabled; resolve its configuration before onboarding");
   {
@@ -237,11 +262,11 @@ export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = fa
     const candidates = [...new Set([cachedVersion, "local"])].map(version => safePath(rt.realpath(rt.codexHome()), `plugins/cache/${marketplaceName}/${NAME}/${version}`));
     const present = candidates.filter(path => existsSync(path));
     if (present.length > 1 || (installed && present.length !== 1)) throw new Error("Native plugin cache identity cannot be established");
-    if (present.length && !snapshotMatches(present[0], plan, true)) {
-      if (!upgradePlugin) throw new Error("Native cached plugin content differs; no implicit replacement is allowed");
-      // Upgrade may replace only a complete, byte-bound prior Devkit snapshot.
+    if (present.length) {
+      // Every accepted cache is a complete, byte-bound Devkit snapshot with the native version it declares.
       ownedSnapshot(present[0], plan.changes.filter(change => change.name.startsWith(`${PREFIX}/`) && change.name !== OWNER).map(change => change.name),
         { cached: true, nativeVersion: cachedVersion });
+      if (!snapshotMatches(present[0], plan, true) && !upgradePlugin) throw new Error("Native cached plugin content differs; no implicit replacement is allowed");
     }
   }
   return { marketplaceRoot, registerMarketplace: markets.length === 0, selector: plan.selector, installed: Boolean(installed),
