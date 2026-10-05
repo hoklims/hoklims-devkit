@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import packageJson from "../package.json" with { type: "json" };
 import { createRuntime, parseJsonOutput, shortError, validateState } from "./runtime.js";
+import { prepareWorkflow } from "./workflow.js";
 
 const COMPONENTS = ["semctx", "assertledger", "latent-compass"];
 const HOSTS = ["codex", "claude"];
@@ -11,7 +12,7 @@ export function parseArgs(argv) {
   if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) return { help: true };
   if (argv.includes("--version")) return { version: true };
   const command = argv[0];
-  if (!["setup", "doctor", "upgrade"].includes(command)) throw new UsageError(`Unknown command: ${command}`);
+  if (!["setup", "doctor", "upgrade", "workflow"].includes(command)) throw new UsageError(`Unknown command: ${command}`);
   const options = { command, project: ".", host: "auto", with: [], dryRun: false, json: false, refreshPending: false };
   let hasProject = false;
   for (let i = 1; i < argv.length; i += 1) {
@@ -21,6 +22,11 @@ export function parseArgs(argv) {
       if (!value || value.startsWith("--")) throw new UsageError(`${arg} needs a value`);
       if (arg === "--host") options.host = value;
       else options.with.push(...value.split(",").filter(Boolean));
+    } else if (arg === "--request") {
+      if (command !== "workflow" || options.request) throw new UsageError("--request is accepted once, only by workflow");
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) throw new UsageError("--request needs a file path");
+      options.request = value;
     } else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--json") options.json = true;
     else if (arg === "--refresh-pending") options.refreshPending = true;
@@ -33,6 +39,9 @@ export function parseArgs(argv) {
   }
   if (!["auto", "codex", "claude", "all"].includes(options.host)) throw new UsageError("--host must be auto, codex, claude, or all");
   if (options.refreshPending && command !== "upgrade") throw new UsageError("--refresh-pending is only valid with upgrade");
+  if (command === "workflow" && (!options.request || argv.includes("--host") || argv.includes("--with"))) {
+    throw new UsageError("workflow requires --request and accepts only --json or --dry-run with a repository");
+  }
   if (options.with.some((name) => !COMPONENTS.slice(1).includes(name))) {
     throw new UsageError("--with accepts assertledger and latent-compass");
   }
@@ -757,6 +766,7 @@ export async function execute(options, rt = createRuntime()) {
   if (rootResult.code !== 0) return problem(report, "GIT_REPOSITORY_REQUIRED", "Open a Git repository and retry", 3);
   const root = rt.realpath(rootResult.stdout.trim());
   report.projectRoot = root;
+  if (options.command === "workflow") return prepareWorkflow(options, rt, root, report);
   const hosts = options.host === "auto" ? HOSTS.filter((host) => rt.which(host))
     : options.host === "all" ? HOSTS : [options.host];
   if (hosts.length === 0 || hosts.some((host) => !rt.which(host))) {
@@ -901,7 +911,7 @@ export async function execute(options, rt = createRuntime()) {
 }
 
 function usage() {
-  return `hoklims-devkit ${VERSION}\n\nUsage:\n  hoklims-devkit setup [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json]\n  hoklims-devkit doctor [repository] [--host auto|codex|claude|all] [--json]\n  hoklims-devkit upgrade [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json] [--refresh-pending]\n\nsetup installs Semctx by default. --with adds optional tools. setup keeps installed versions; upgrade resolves new stable versions. --refresh-pending explicitly replaces an interrupted plan with current stable releases.\n`;
+  return `hoklims-devkit ${VERSION}\n\nUsage:\n  hoklims-devkit setup [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json]\n  hoklims-devkit doctor [repository] [--host auto|codex|claude|all] [--json]\n  hoklims-devkit upgrade [repository] [--host auto|codex|claude|all] [--with assertledger,latent-compass] [--dry-run] [--json] [--refresh-pending]\n  hoklims-devkit workflow [repository] --request FILE [--dry-run] [--json]\n\nsetup installs Semctx by default. --with adds optional tools. setup keeps installed versions; upgrade resolves new stable versions. --refresh-pending explicitly replaces an interrupted plan with current stable releases.\nworkflow only prepares a read-only plan; it does not execute or accept proof.\n`;
 }
 
 export async function main(argv, rt = createRuntime(), out = process.stdout, err = process.stderr) {
@@ -922,7 +932,9 @@ export async function main(argv, rt = createRuntime(), out = process.stdout, err
   }
   if (options.json) out.write(`${JSON.stringify(report)}\n`);
   else {
-    out.write(`${report.ok ? "OK" : "BLOCKED"} ${options.command} ${report.projectRoot ?? options.project}\n`);
+    out.write(`${report.kind === "workflow_plan" ? report.verdict : report.ok ? "OK" : "BLOCKED"} ${options.command} ${report.projectRoot ?? options.project}\n`);
+    for (const check of report.checks ?? []) out.write(`  Check: ${check.id} (${check.status})\n`);
+    if (report.unprovenObligationIds) out.write(`  Unproven obligations: ${report.unprovenObligationIds.length}\n`);
     for (const component of report.components) out.write(`  ${component.name} ${component.version ?? ""} ${component.state ?? component.configured ?? "unknown"}\n`);
     for (const conflict of report.conflicts) err.write(`  ${conflict.code}: ${conflict.detail}\n`);
     for (const next of [...new Set(report.nextActions)]) out.write(`Next: ${next}\n`);

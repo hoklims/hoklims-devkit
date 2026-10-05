@@ -45,7 +45,7 @@ export function validateState(state) {
 export function createRuntime() {
   return {
     which: (name) => Bun.which(name),
-    exec: async (argv, cwd, timeoutMs = 120_000) => {
+    exec: async (argv, cwd, timeoutMs = 120_000, captureBytes = false) => {
       let child;
       try {
         child = Bun.spawn({ cmd: argv, cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
@@ -59,11 +59,16 @@ export function createRuntime() {
       }, timeoutMs);
       try {
         const [stdout, stderr, code] = await Promise.all([
-          new Response(child.stdout).text(),
+          captureBytes ? new Response(child.stdout).arrayBuffer() : new Response(child.stdout).text(),
           new Response(child.stderr).text(),
           child.exited,
         ]);
-        return { code: timedOut ? 5 : code, stdout, stderr: timedOut ? `Timed out after ${timeoutMs} ms` : stderr };
+        return {
+          code: timedOut ? 5 : code,
+          stdout: captureBytes ? Buffer.from(stdout).toString("utf8") : stdout,
+          ...(captureBytes ? { stdoutBytes: new Uint8Array(stdout) } : {}),
+          stderr: timedOut ? `Timed out after ${timeoutMs} ms` : stderr,
+        };
       } finally {
         clearTimeout(timer);
       }
