@@ -1,0 +1,13 @@
+package/bin/hoklims-devkit.js
+package/docs/releasing.md
+package/docs/state-safety.md
+package/LICENSE
+package/package.json
+package/README.fr.md
+package/README.md
+package/scripts/profile-snapshot.js
+package/scripts/release-report.js
+package/scripts/release-smoke.js
+package/scripts/release-upgrade.js
+package/src/app.js
+package/src/runtime.js

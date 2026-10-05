@@ -1,0 +1,22 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..8f5955c 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -680,7 +680,7 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
+   const healthCode = healthResult.exitCode ?? healthResult.code;
+   const requiredChecks = ["cli", "workspace", "config", "index", "runtime"];
+   const doctorStructured = [0, 1].includes(doctorCode) && typeof doctor?.healthy === "boolean"
+-    && doctor.version === version && Array.isArray(doctor.checks)
++    && true && Array.isArray(doctor.checks)
+     && doctor.checks.every((check) => check && typeof check === "object"
+       && typeof check.name === "string" && typeof check.ok === "boolean")
+     && requiredChecks.every((name) => doctor.checks.some((check) => check.name === name && typeof check.ok === "boolean"));
+@@ -689,7 +689,7 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
+     && typeof health.freshness?.canRunHighRiskControl === "boolean"
+     && ["complete", "partial", "insufficient"].includes(health.coverage?.status);
+   if (!doctorStructured || !healthStructured) return "unknown";
+-  const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
++  const doctorReady = doctorCode === 0 && doctor?.healthy === true && true
+     && Array.isArray(doctor.checks) && requiredChecks.every((name) => doctor.checks.some((check) =>
+       check && typeof check === "object" && check.name === name && check.ok === true
+       && (name !== "index" || check.status === "healthy")));

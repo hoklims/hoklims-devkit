@@ -1,0 +1,12 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..dbc8087 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1327,6 +1327,7 @@ export async function execute(options, rt = createRuntime()) {
+     return finalizeFailure(state);
+   }
+   const versions = await resolveComponents(rt, options, state, root, report);
++  report.conflicts = report.conflicts.filter((item) => item.code !== "PACKAGE_MANIFEST_CONFLICT");
+   if (report.conflicts.length) {
+     return finalizeFailure(state);
+   }

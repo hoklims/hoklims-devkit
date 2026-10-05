@@ -1,0 +1,13 @@
+diff --git a/scripts/profile-snapshot.js b/scripts/profile-snapshot.js
+index 0f1237d..9a7a0ea 100644
+--- a/scripts/profile-snapshot.js
++++ b/scripts/profile-snapshot.js
+@@ -28,7 +28,7 @@ export function protectedProfilePaths(profile) {
+   return [
+     join(profile, ".codex"), join(profile, ".claude"),
+     join(profile, ".config"),
+-    join(profile, "uv-tools"), join(profile, "uv-bin"),
++    join(profile, "uv-tools"),
+     join(profile, "uv-python"), join(profile, "uv-python-bin"),
+     join(profile, "AppData", "Local", "hoklims-devkit"),
+     join(profile, ".local", "state", "hoklims-devkit"),

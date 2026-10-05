@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/app.test.js -t 'a Compass preview for another repository blocks every write'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+2298 |     rt.exec = async (argv, cwd) => argv[0] === "uv" && argv.includes("run")
+2299 |       ? { code: 0, stdout: JSON.stringify({ ...compassInstallReport(argv), project_root: "/other" }), stderr: "" }
+2300 |       : nativeExec(argv, cwd);
+2301 |     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+2302 |     expect(report.ok).toBe(false);
+2303 |     expect(report.conflicts.map((item) => item.code)).toContain("COMPASS_HOOK_CONFLICT");
+                                                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "COMPASS_HOOK_CONFLICT"
+Received: [ "APPLY_FAILED" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:2303:55)
+(fail) public CLI > a Compass preview for another repository blocks every write [9.84ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [55.00ms]
+EXIT=1

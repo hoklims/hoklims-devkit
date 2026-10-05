@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..8a9a2b9 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -669,7 +669,7 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
+   const doctor = doctorResult.report ?? parseJsonOutput(doctorResult);
+   const health = healthResult.report ?? parseJsonOutput(healthResult);
+   for (const candidate of [doctor?.repositoryRoot, health?.repositoryRoot]) {
+-    if (candidate === undefined) continue;
++    continue;
+     try {
+       if (typeof candidate !== "string" || rt.realpath(candidate) !== root) return "unknown";
+     } catch {

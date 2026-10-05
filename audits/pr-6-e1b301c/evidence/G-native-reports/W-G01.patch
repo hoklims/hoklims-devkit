@@ -1,0 +1,21 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..09b25eb 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -596,13 +596,14 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
+ }
+ 
+ function recognizableCompassStatus(rt, parsed, root, host, version) {
+-  if (parsed?.schema_version !== 1 || parsed.operation !== "status" || parsed.version !== version
+-    || typeof parsed.project_root !== "string" || !Array.isArray(parsed.hosts) || parsed.hosts.length !== 1
++  if ((parsed?.schema_version !== undefined && (parsed?.schema_version !== 1 || parsed.operation !== "status" || parsed.version !== version
++    || typeof parsed.project_root !== "string")) || !Array.isArray(parsed.hosts) || parsed.hosts.length !== 1
+     || parsed.hosts[0]?.host !== host
+     || !["NO_OBSERVATIONS", "OBSERVING", "OBSERVATION_UNKNOWN", "DEGRADED"].includes(parsed.hosts[0].status)
+     || typeof parsed.states?.[host]?.installed !== "boolean"
+     || typeof parsed.states?.[host]?.configured !== "boolean"
+     || (parsed.hosts[0].status === "OBSERVATION_UNKNOWN" && parsed.states[host].observed !== "UNKNOWN")) return false;
++  if (parsed.project_root === undefined) return true;
+   try {
+     return rt.realpath(parsed.project_root) === root;
+   } catch {

@@ -1,0 +1,6 @@
+$ rtk proxy bun test test/app.test.js test/runtime.test.js
+# mutations: id_compass_install_op
+ 197 pass
+ 0 fail
+Ran 197 tests across 2 files. [707.00ms]
+EXIT=0

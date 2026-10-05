@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'recovery prerequisites follow the same admitted saved plan as the retry command'
+bun test v1.4.2 (744846f84)
+
+ 1 pass
+ 158 filtered out
+ 0 fail
+ 9 expect() calls
+Ran 1 test across 1 file. [50.00ms]
+EXIT=0

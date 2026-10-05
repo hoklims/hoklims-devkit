@@ -1,0 +1,12 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..2736837 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -704,6 +704,7 @@ async function resolveComponents(rt, options, state, root, report) {
+   for (const name of selectedComponents(options, state)) {
+     try {
+       if (state?.inProgress?.versions[name] && !options.refreshPending) {
++        await resolveVersion(rt, name);
+         versions[name] = state.inProgress.versions[name];
+       } else if (options.command !== "upgrade" && state?.components?.[name]?.version) {
+         versions[name] = state.components[name].version;

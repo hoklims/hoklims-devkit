@@ -1,0 +1,39 @@
+$ rtk proxy bun test test/runtime.test.js -t 'removes an owned partial'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+685 |       writeFileSync(fd, data.slice(0, 8));
+686 |       throw Object.assign(new Error("disk quota exceeded"), { code: "ENOSPC" });
+687 |     },
+688 |   });
+689 |   expect(() => rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} })).toThrow(/disk quota exceeded/u);
+690 |   expect(existsSync(`${statePath}.partial.tmp`)).toBe(false);
+                                                       ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:690:50)
+(fail) runtime removes an owned partial temporary state file after a write failure [3.65ms]
+971 |       writeFileSync(fd, data.slice(0, 5));
+972 |       throw Object.assign(new Error("lock write failed"), { code: "ENOSPC" });
+973 |     },
+974 |   });
+975 |   expect(() => rt.acquireLock(statePath)).toThrow(/lock write failed/u);
+976 |   expect(existsSync(lockPath)).toBe(false);
+                                     ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:976:32)
+(fail) runtime removes an owned partial lock after its write fails [1.76ms]
+
+ 0 pass
+ 36 filtered out
+ 2 fail
+ 4 expect() calls
+Ran 2 tests across 1 file. [34.00ms]
+EXIT=1

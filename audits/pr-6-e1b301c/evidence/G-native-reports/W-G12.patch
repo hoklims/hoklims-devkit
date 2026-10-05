@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..f6d5c77 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -804,7 +804,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
+       problem(report, "SEMCTX_WORKSPACE_STATUS_INVALID", "Semctx doctor or index-health returned malformed workspace evidence; inspect the native reports before retrying");
+       return null;
+     }
+-    skipSetup = workspaceStatus === "yes";
++    skipSetup = workspaceStatus !== "unknown";
+   }
+   report.plannedChanges.push({ component: "semctx", workspace: setupJson, hosts: hostJson.hosts });
+   return { setup: setupJson, host: hostJson, hostInstallNeeded, skipSetup };

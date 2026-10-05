@@ -1,0 +1,11 @@
+S1_assert_second_host_conflict {"ok":false,"codes":["ASSERTLEDGER_CONFLICT"],"versions":{"semctx":"0.3.4","assertledger":"1.2.0"},"stateWrites":0,"nonDryRunNative":[]}
+S2_compass_second_host_conflict {"ok":false,"codes":["COMPASS_HOOK_CONFLICT"],"versions":{"semctx":"0.3.4","latent-compass":"0.3.0"},"stateWrites":0,"nonDryRunNative":[]}
+S3_semctx_second_host_drift {"ok":false,"codes":["SEMCTX_CONTENT_DRIFT"],"versions":{"semctx":"0.3.4"},"stateWrites":0,"nonDryRunNative":[]}
+S4_third_component_conflict {"ok":false,"codes":["COMPASS_HOOK_CONFLICT"],"versions":{"semctx":"0.3.4","assertledger":"1.2.0","latent-compass":"0.3.0"},"stateWrites":0,"nonDryRunNative":[]}
+S5_setup_existing_semctx_other_version {"ok":false,"codes":["EXISTING_VERSION"],"versions":{"semctx":"0.3.5"},"stateWrites":0,"nonDryRunNative":[]}
+S6_setup_existing_assert_other_version {"ok":true,"codes":[],"versions":{"semctx":"0.3.4","assertledger":"1.1.0"},"stateWrites":0,"nonDryRunNative":[]}
+S7_setup_existing_compass_other_version {"ok":false,"codes":["COMPASS_HOOK_CONFLICT"],"versions":{"semctx":"0.3.4","latent-compass":"0.2.0"},"stateWrites":0,"nonDryRunNative":[]}
+S8_setup_recorded_registry_offline {"ok":true,"codes":[],"versions":{"semctx":"0.3.4"},"stateWrites":0,"nonDryRunNative":[]}
+S9_compass_apply_installed_not_configured {"ok":false,"codes":["APPLY_FAILED"],"versions":{"semctx":"0.3.4","latent-compass":"0.3.0"},"stateWrites":2,"nonDryRunNative":["bunx semctx@0.3.4 install --host","bunx semctx@0.3.4 setup --root"],"compass":{"name":"latent-compass","version":"0.3.0","state":"partial","installed":"unknown","configured":"unknown","loaded":"unknown","approved":"unknown","observed":"unknown"}}
+S10_compass_doctor_installed_not_configured {"ok":false,"compass":{"name":"latent-compass","version":"0.3.0","installed":"yes","configured":"no","loaded":"unknown","approved":"unknown","observed":"unknown","checks":[{"command":"host-status:codex","exitCode":0,"report":{"schema_version":1,"operation":"status","version":"0.3.0","project_root":"/repo","hosts":[{"host":"codex","status":"OBSERVING"}],"states":{"codex":{"installed":true,"configured":false,"observed":true}}}}]}}
+S11_replica_1564_without_tool_loss {"ok":false,"codes":["COMPASS_HOOK_CONFLICT"],"versions":{"semctx":"0.3.4","assertledger":"1.2.0","latent-compass":"0.3.0"},"stateWrites":0,"nonDryRunNative":[]}

@@ -1,0 +1,40 @@
+$ rtk proxy bun test test/app.test.js -t 'malformed AssertLedger artifacts preserve the saved recovery plan|doctor does not infer AssertLedger configuration from empty artifacts'
+# mutation:  1 file changed, 7 deletions(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+781 |     rt.exec = async (argv, cwd) => argv[0] === "node" && argv.includes("setup")
+782 |       ? { code: 0, stdout: JSON.stringify({ ...assertSetupReport(argv, "UNCHANGED", "dry-run"), artifacts: [] }), stderr: "" }
+783 |       : nativeExec(argv, cwd);
+784 |     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+785 |     expect(report.ok).toBe(false);
+786 |     expect(report.components.find((item) => item.name === "assertledger").configured).toBe("unknown");
+                                                                                            ^
+error: expect(received).toBe(expected)
+
+Expected: "unknown"
+Received: "yes"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:786:87)
+(fail) public CLI > doctor does not infer AssertLedger configuration from empty artifacts [12.68ms]
+869 |       continue;
+870 |     }
+871 |     previews.push({
+872 |       host,
+873 |       status: parsed.status,
+874 |       artifacts: (parsed.artifacts ?? []).map(({ owner, path, state }) => ({ owner, path, state })),
+                                                                                          ^
+TypeError: Cannot destructure property 'owner' from null or undefined value
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/src/app.js:874:85)
+      at map (1:11)
+      at preflightAssert (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/src/app.js:874:43)
+      at async execute (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/src/app.js:1351:30)
+      at async <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:1706:28)
+(fail) public CLI > malformed AssertLedger artifacts preserve the saved recovery plan [4.47ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 2 expect() calls
+Ran 2 tests across 1 file. [64.00ms]
+EXIT=1

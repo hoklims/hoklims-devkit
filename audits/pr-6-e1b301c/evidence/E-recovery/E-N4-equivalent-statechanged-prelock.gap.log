@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js
+ 159 pass
+ 0 fail
+ 1345 expect() calls
+Ran 159 tests across 1 file. [391.00ms]
+$ rtk proxy bun test /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/evidence/E-recovery/probe/recovery-probe.test.js -t 'probe N4'
+ 1 pass
+ 0 fail
+N4OUT {"conflicts":[{"code":"STATE_CHANGED","detail":"Installation state changed during preflight. Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit upgrade /repo --host codex --with assertledger."}],"nextActions":["Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit upgrade /repo --host codex --with assertledger"]}

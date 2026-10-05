@@ -1,0 +1,44 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'malformed packageManager declarations block before state writes|optional package-manager conflict blocks Semctx application too'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+1131 |         [join("/repo", "pnpm-lock.yaml")]: "lockfileVersion: 9",
+1132 |       },
+1133 |     });
+1134 |     const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+1135 |     expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_CONFLICT");
+1136 |     expect(rt.calls.some((args) => args.includes("install") && !args.includes("--dry-run"))).toBe(false);
+                                                                                                    ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:1136:94)
+(fail) public CLI > optional package-manager conflict blocks Semctx application too [15.20ms]
+1175 |       });
+1176 |       const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+1177 |       expect(report.ok).toBe(false);
+1178 |       expect(report.conflicts.map((item) => item.code)).toContain("PACKAGE_MANAGER_CONFLICT");
+1179 |       expect(report.conflicts.map((item) => item.detail).join("\n")).toMatch(/packageManager must be a string/u);
+1180 |       expect(rt.writes).toHaveLength(0);
+                               ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 0
+Received length: 2
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:1180:25)
+(fail) public CLI > malformed packageManager declarations block before state writes [1.90ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 6 expect() calls
+Ran 2 tests across 1 file. [58.00ms]
+EXIT CODE: 1

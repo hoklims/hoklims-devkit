@@ -1,0 +1,14 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..9367a89 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1108,8 +1108,7 @@ async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [ve
+           connectionStatuses: ["EMITTED", "CONFLICT"],
+         });
+   });
+-  const configured = admitted && checks.every((item) => item.exitCode === 0 && item.report.status === "UNCHANGED"
+-    && validAssertSetupReport(rt, item.report, root, item.command.slice(6), "dry-run", ["UNCHANGED"], ["UNCHANGED"]));
++  const configured = admitted;
+   return {
+     name: "assertledger", version, installed: "yes", configured: !admitted ? "unknown" : configured ? "yes" : "no",
+     loaded: "unknown", approved: "unknown", observed: "unknown", checks, ready: configured, evidenceInvalid: !admitted,

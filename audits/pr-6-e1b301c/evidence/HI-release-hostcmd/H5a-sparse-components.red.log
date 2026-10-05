@@ -1,0 +1,24 @@
+$ rtk proxy bun test test/release-report.test.js
+bun test v1.4.2 (744846f84)
+
+test/release-report.test.js:
+110 |   test("rejects sparse component and expectation arrays", () => {
+111 |     const exact = components();
+112 |     const sparseComponents = [exact[0], , exact[2]];
+113 |     const sparseNames = [expectedNames[0], , expectedNames[2]];
+114 |     expect(validComponentReport(report(exact), projectRoot, expectedNames, configuredOptions)).toBe(true);
+115 |     expect(validComponentReport(report(sparseComponents), projectRoot, expectedNames, configuredOptions)).toBe(false);
+                                                                                                                ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/release-report.test.js:115:107)
+(fail) validComponentReport > rejects sparse component and expectation arrays [0.41ms]
+
+ 6 pass
+ 1 fail
+ 43 expect() calls
+Ran 7 tests across 1 file. [6.00ms]
+EXIT=1

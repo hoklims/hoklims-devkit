@@ -1,0 +1,32 @@
+$ rtk proxy bun test test/app.test.js
+ 159 pass
+ 0 fail
+ 1345 expect() calls
+Ran 159 tests across 1 file. [336.00ms]
+EXIT=0
+$ rtk proxy bun test /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/evidence/E-recovery/probe/recovery-probe.test.js -t 'probe U5'   (out-of-tree probe, not a repo test)
+bun test v1.4.2 (744846f84)
+
+../evidence/E-recovery/probe/recovery-probe.test.js:
+188 |   });
+189 |   const report = await execute(setupOptions(), rt);
+190 |   const guidance = [...report.nextActions, ...report.conflicts.map((c) => c.detail)].join("\n");
+191 |   console.log("U5OUT " + JSON.stringify({ codes: report.conflicts.map((c) => c.code), guidance }));
+192 |   expect(report.conflicts.map((c) => c.code)).toContain("STATE_CONFLICT");
+193 |   expect(guidance).toContain("inspect and validate the saved Devkit state");
+                         ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "inspect and validate the saved Devkit state"
+Received: "Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex\nManaged state file ownership changed. Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/evidence/E-recovery/probe/recovery-probe.test.js:193:20)
+(fail) probe U5: transaction write ownership loss after pending plan persisted [10.06ms]
+
+ 0 pass
+ 1 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [33.00ms]
+U5OUT {"codes":["STATE_CONFLICT"],"guidance":"Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex\nManaged state file ownership changed. Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex."}
+EXIT=1

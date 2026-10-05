@@ -1,0 +1,24 @@
+$ rtk proxy bun test test/release-upgrade.test.js
+bun test v1.4.2 (744846f84)
+
+test/release-upgrade.test.js:
+19 |   writeFileSync(managed, "foreign rewrite\n");
+20 |   expect(() => assertNoopUpgradeUnchanged(paths, before, report("0.3.5"), report("0.3.5"), report("0.3.5"), "noop"))
+21 |     .toThrow(/modified the host profile/u);
+22 | 
+23 |   expect(() => assertNoopUpgradeUnchanged(paths, before, report("0.3.5"), report("0.3.6"), report("0.3.5"), "noop applied"))
+24 |     .toThrow(/modified the host profile/u);
+          ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /modified the host profile/u
+Received message: "Applied upgrade component versions differ from the upgrade plan"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/release-upgrade.test.js:24:6)
+(fail) same-version upgrade rejects changed managed bytes [2.74ms]
+
+ 1 pass
+ 1 fail
+ 5 expect() calls
+Ran 2 tests across 1 file. [13.00ms]
+EXIT=1

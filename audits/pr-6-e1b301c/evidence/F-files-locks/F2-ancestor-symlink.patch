@@ -1,0 +1,23 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..a204fef 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -58,7 +58,7 @@ function assertManagedParentSnapshot(parents, compareMetadata = false) {
+   for (const parent of parents) {
+     const current = inspectManagedEntry(parent.path, { bigint: true });
+     if (parent.identity === null ? current !== null
+-      : !current || current.isSymbolicLink() || !current.isDirectory()
++      : !current || (!current.isSymbolicLink() && !current.isDirectory())
+         || current.dev !== parent.identity.dev || current.ino !== parent.identity.ino
+         || (parent === metadataParent && current.ctimeNs !== parent.identity.ctimeNs)) {
+       throw unsafeManagedPath(parent.path, "changed during managed parent inspection");
+@@ -87,8 +87,7 @@ function assertSafeManagedParents(path, expectedParents = null, compareMetadata
+     } catch (error) {
+       rethrowAfterValidation(error, () => assertManagedParentSnapshot(observed, true));
+     }
+-    if (stat?.isSymbolicLink()) throw unsafeManagedPath(candidate, "is a symbolic link");
+-    if (stat && !stat.isDirectory()) throw unsafeManagedPath(candidate, "is not a directory");
++    if (stat && !stat.isDirectory() && !stat.isSymbolicLink()) throw unsafeManagedPath(candidate, "is not a directory");
+     observed.push({ path: candidate, identity: stat ? { dev: stat.dev, ino: stat.ino, ctimeNs: stat.ctimeNs } : null });
+     assertManagedParentSnapshot(observed, true);
+   }

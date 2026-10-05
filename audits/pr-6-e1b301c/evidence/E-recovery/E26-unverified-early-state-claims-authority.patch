@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..40c0d15 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1209,7 +1209,7 @@ export async function execute(options, rt = createRuntime()) {
+       : options.host === "all" ? HOSTS : [options.host];
+     const recoveryHosts = earlyHosts.length ? earlyHosts : HOSTS;
+     let guidance;
+-    if (candidate.verified) {
++    if (true) {
+       guidance = failureGuidance(rt, options, candidate.root, recoveryHosts, candidate.state,
+         { repair, components: selectedComponents(options, candidate.state) });
+     } else {

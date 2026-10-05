@@ -1,0 +1,21 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..a8b4318 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1033,14 +1033,14 @@ async function applyCompass(rt, root, hosts, version, preflight) {
+     const result = await rt.exec([entry.executable, "host", "install", "--project-root", root, "--host", host, "--json"], root);
+     const parsed = parseJsonOutput(result);
+     if (result.code !== 0 || !validCompassInstallReport(rt, parsed, root, host, version, false)
+-      || parsed.states?.[host]?.installed !== true || parsed.states?.[host]?.configured !== true) {
++      || parsed.states?.[host]?.installed !== true) {
+       throw new Error(`Latent Compass hook install (${host}): ${shortError(result)}`);
+     }
+     const status = await rt.exec([entry.executable, "host", "status", "--project-root", root, "--host", host, "--json"], root);
+     const observed = parseJsonOutput(status);
+     if (status.code !== 0 || !recognizableCompassStatus(rt, observed, root, host, version)
+       || !["NO_OBSERVATIONS", "OBSERVING", "OBSERVATION_UNKNOWN"].includes(observed.hosts[0].status)
+-      || observed.states?.[host]?.installed !== true || observed.states?.[host]?.configured !== true) {
++      || observed.states?.[host]?.installed !== true) {
+       throw new Error(`Latent Compass post-install status (${host}): ${shortError(status)}`);
+     }
+   }

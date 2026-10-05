@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..f3562ac 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1340,7 +1340,7 @@ export async function execute(options, rt = createRuntime()) {
+         } else {
+           const optional = selected.filter((item) => item !== "semctx");
+           const retry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host all${optional.length ? ` --with ${optional.join(",")}` : ""}${options.refreshPending ? " --refresh-pending" : ""}`;
+-          const expandedHosts = HOSTS.filter((host) => hosts.includes(host) || previous.hosts.includes(host));
++          const expandedHosts = hosts;
+           const instruction = renderRetryInstruction(expandedHosts, retry, { components: selected, packageManager: recoveryPackageManager });
+           problem(report, "HOST_SCOPE_UPGRADE_CONFLICT", `${name} also serves ${previous.hosts.join(",")}; ${instruction} to change its shared version safely`);
+           if (!report.nextActions.includes(instruction)) report.nextActions.push(instruction);

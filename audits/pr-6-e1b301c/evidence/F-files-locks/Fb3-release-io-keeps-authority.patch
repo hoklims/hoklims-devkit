@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..45e1f9a 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1551,7 +1551,7 @@ export async function execute(options, rt = createRuntime()) {
+     try {
+       releaseLock?.();
+     } catch (error) {
+-      if (error?.code === "STATE_CONFLICT") invalidateLockedAuthority();
++      invalidateLockedAuthority();
+       stateBoundaryProblem(report, error, statePath, "lock release", {
+         recoveryAction: lockedStateUnverified ? lockedUnknownGuidance().action
+           : recoveryActionFor(recoveryState(), { useRequestedRefresh: refreshSavePending }),

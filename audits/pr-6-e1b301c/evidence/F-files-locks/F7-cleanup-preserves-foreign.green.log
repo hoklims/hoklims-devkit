@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/runtime.test.js -t 'preserves a replacement temporary file when the writer fails|preserves a state destination replaced|lock ownership when descriptor reads fail|preserves a replacement lock'
+bun test v1.4.2 (744846f84)
+
+ 4 pass
+ 34 filtered out
+ 0 fail
+ 34 expect() calls
+Ran 4 tests across 1 file. [52.00ms]
+EXIT=0

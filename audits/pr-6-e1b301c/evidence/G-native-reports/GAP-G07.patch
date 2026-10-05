@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..2b6417b 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -529,7 +529,7 @@ function validCompassInstallReport(rt, parsed, root, host, version, dryRun) {
+ 
+ function validSemctxSetupPlan(parsed, root) {
+   return parsed?.schemaVersion === 1 && parsed.kind === "setup_plan" && parsed.verdict === "SETUP_PLANNED"
+-    && parsed.repositoryRoot === root && Array.isArray(parsed.plannedChanges)
++    && Array.isArray(parsed.plannedChanges)
+     && parsed.plannedChanges.every((path) => typeof path === "string" && path.length > 0)
+     && ["create", "keep"].includes(parsed.config?.action) && Array.isArray(parsed.semantic?.files)
+     && parsed.index?.status === "not-run" && parsed.index.reason === "dry-run"

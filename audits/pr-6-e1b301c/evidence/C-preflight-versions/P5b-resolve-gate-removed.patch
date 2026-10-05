@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..5da635a 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1327,7 +1327,7 @@ export async function execute(options, rt = createRuntime()) {
+     return finalizeFailure(state);
+   }
+   const versions = await resolveComponents(rt, options, state, root, report);
+-  if (report.conflicts.length) {
++  if (false) {
+     return finalizeFailure(state);
+   }
+   if (options.command === "upgrade") {

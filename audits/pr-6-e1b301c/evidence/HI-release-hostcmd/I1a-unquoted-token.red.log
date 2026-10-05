@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t shell-quoted recovery paths round-trip
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3878 |     const quoted = quoteShellToken(root);
+3879 |     const command = process.platform === "win32"
+3880 |       ? ["powershell", "-NoProfile", "-Command", `[Console]::Out.Write(${quoted})`]
+3881 |       : ["bash", "-lc", `printf %s ${quoted}`];
+3882 |     const result = Bun.spawnSync({ cmd: command, stdout: "pipe", stderr: "pipe" });
+3883 |     expect(result.exitCode).toBe(0);
+                                   ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 2
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/app.test.js:3883:29)
+(fail) public CLI > shell-quoted recovery paths round-trip as one inert token [33.77ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [73.00ms]
+EXIT=1

@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..68f527c 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1071,7 +1071,7 @@ async function diagnoseSemctx(rt, root, hosts, version) {
+     : validStatus && hosts.every((host) => delivery.hosts[host].installed.version === null) ? "no" : "unknown";
+   return {
+     name: "semctx", version, installed,
+-    configured: workspaceStatus, loaded, approved: "unknown", observed: "unknown",
++    configured: workspaceStatus === "unknown" ? "no" : workspaceStatus, loaded, approved: "unknown", observed: "unknown",
+     checks, ready: validDelivery && workspaceStatus === "yes",
+   };
+ }

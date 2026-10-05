@@ -1,0 +1,27 @@
+$ rtk proxy bun test test/runtime.test.js -t 'propagates an owned lock unlink failure'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+1048 |   const lockPath = `${statePath}.lock`;
+1049 |   const rt = createRuntime({
+1050 |     removeOwnedFile: () => { throw Object.assign(new Error("lock unlink denied"), { code: "EACCES" }); },
+1051 |   });
+1052 |   const release = rt.acquireLock(statePath);
+1053 |   expect(release).toThrow(/lock unlink denied/u);
+                         ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /lock unlink denied/u
+
+Received function did not throw
+Received value: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:1053:19)
+(fail) runtime propagates an owned lock unlink failure [3.93ms]
+
+ 0 pass
+ 37 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [34.00ms]
+EXIT=1

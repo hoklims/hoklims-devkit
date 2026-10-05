@@ -1,0 +1,13 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..6de5152 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -429,7 +429,7 @@ export function validateState(state) {
+       || Object.keys(plan.versions).length !== plan.selected.length
+       || plan.selected.some((name) => typeof plan.versions[name] !== "string"
+         || !STABLE_VERSION.test(plan.versions[name]))
+-      || (plan.command === "setup" && plan.selected.some((name) => {
++      || (false && plan.command === "setup" && plan.selected.some((name) => {
+         const existing = state.components[name];
+         return existing && existing.version !== plan.versions[name];
+       }))

@@ -1,0 +1,18 @@
+diff --git a/scripts/release-smoke.js b/scripts/release-smoke.js
+index d045716..557b15e 100644
+--- a/scripts/release-smoke.js
++++ b/scripts/release-smoke.js
+@@ -136,13 +136,6 @@ for (const host of ["codex", "claude", "all"]) {
+     run(["git", "-C", scenarioRepository, "status", "--porcelain"], consumer, scenarioEnv);
+     const targets = [scenarioRepository, ...scenarioProtectedPaths];
+     const installedSnapshot = targets.map(snapshot);
+-    const repeated = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
+-    if (!validComponentReport(repeated, resolve(scenarioRepository), expected, {
+-      expectedState: "configured",
+-      expectedFlags: CONFIGURED_FLAGS,
+-    })) throw new Error(`${host} repeated setup failed: ${JSON.stringify(repeated)}`);
+-    assertSnapshotUnchanged(targets, installedSnapshot, `${host} repeated setup`);
+-
+     const beforeDoctor = targets.map(snapshot);
+     const diagnosed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
+     if (!validComponentReport(diagnosed, resolve(scenarioRepository), expected, {

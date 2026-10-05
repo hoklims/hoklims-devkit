@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'a locked foreign state never becomes recovery authority'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3573 |     let released = false;
+3574 |     rt.readState = () => ++reads === 1 ? null : structuredClone(foreignState);
+3575 |     rt.acquireLock = () => () => { released = true; };
+3576 |     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+3577 |     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+3578 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+                                                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "STATE_CONFLICT"
+Received: [ "STATE_CHANGED" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3578:55)
+(fail) public CLI > a locked foreign state never becomes recovery authority [7.38ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [51.00ms]
+EXIT=1

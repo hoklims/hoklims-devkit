@@ -1,0 +1,104 @@
+id_compass_status_op: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_compass_status_schema: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_compass_install_op: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_compass_install_schema: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_semctx_status_kind: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_semctx_status_schema: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_semctx_setupplan_kind: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_semctx_apply_setup_kind: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_semctx_health_kind: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_assert_client: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_assert_conn_client: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - runtime revalidates lock ownership when descriptor reads fail
+id_assert_mode: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+ver_semctx_install: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > applied Semctx host reports retain exact install identity
+ver_compass_install: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+ver_compass_status: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+ver_semctx_doctor_struct: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+ver_semctx_doctor_both: PATTERN COUNT 2
+ver_semctx_status_stable: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > a malformed Semctx installed version blocks before any write
+ver_compass_entry: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+root_optional: exit=1 [('211', 'pass'), ('2', 'fail')] FAILS=2
+    - public CLI > Semctx plugin status naming another repository blocks all writes
+    - public CLI > a Semctx host plan naming another repository blocks all writes
+root_semctx_setupplan: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+root_semctx_install_ws: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > applied Semctx host reports retain exact install identity
+root_compass_install: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > a Compass preview for another repository blocks every write
+root_compass_status: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > doctor rejects inconsistent or foreign observation-unknown Compass reports
+root_assert_artifacts: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > doctor keeps invalid AssertLedger artifact evidence unknown
+root_semctx_workspace: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > doctor rejects a Semctx diagnostic naming another repository
+root_semctx_apply_setup: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+host_semctx_install_outcome: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+host_semctx_install_status: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+host_semctx_install_requested: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+host_semctx_ok: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+host_compass_hosts: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+host_compass_status_host: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+host_compass_conflicts: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+host_semctx_status_requested: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+host_compass_apply_configured: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > a successful native write without host configuration remains partial
+host_assert_rollback: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+art_nonobject: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+art_count: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+art_state: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+art_unique: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+art_owner: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+art_compass_action: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+art_compass_count: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+art_compass_unique: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+ws_struct_collapse: exit=1 [('209', 'pass'), ('4', 'fail')] FAILS=4
+    - public CLI > doctor preserves unknown configuration when native diagnostics are unavailable
+    - public CLI > doctor refuses zero-exit Semctx diagnostics with missing readiness fields
+    - public CLI > doctor rejects malformed check entries while preserving the saved retry
+    - public CLI > setup preserves unknown Semctx workspace evidence as a typed conflict
+ws_root_collapse: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > doctor rejects a Semctx diagnostic naming another repository
+ws_preflight_unknown_ignored: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > setup preserves unknown Semctx workspace evidence as a typed conflict
+ws_preflight_unknown_as_yes: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+ws_preflight_no_as_yes: exit=1 [('206', 'pass'), ('7', 'fail')] FAILS=7
+    - public CLI > AssertLedger apply revalidates local metadata before install and write
+    - public CLI > Semctx incomplete recovery is retired when release I/O adds prerequisites
+    - public CLI > a failed same-version upgrade pins its version before native writes
+    - public CLI > implicit upgrade selection is shared by execution and recovery prerequisites
+    - public CLI > late npm bootstrap loss is retained for saved and unverified pnpm recovery
+    - public CLI > ordinary failure finalization replaces stale recovery after release I/O
+ws_doctor_index_status: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+ws_health_coverage: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+assert_diag_identity: exit=1 [('211', 'pass'), ('2', 'fail')] FAILS=2
+    - public CLI > doctor does not infer AssertLedger configuration from empty artifacts
+    - public CLI > doctor keeps invalid AssertLedger artifact evidence unknown
+assert_diag_exitmap: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+assert_diag_evidence_flag: exit=1 [('211', 'pass'), ('2', 'fail')] FAILS=2
+    - public CLI > doctor does not infer AssertLedger configuration from empty artifacts
+    - public CLI > doctor keeps invalid AssertLedger artifact evidence unknown
+assert_diag_ready: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+content_unverified: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > Semctx setup never replaces installed bytes without positive content attestation
+content_drift_upgrade_only: exit=1 [('211', 'pass'), ('2', 'fail')] FAILS=2
+    - public CLI > Semctx upgrade never replaces an installed version with altered bytes
+    - public CLI > a pinned same-version upgrade does not overwrite modified Semctx plugin bytes
+content_apply: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+content_diag: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > doctor keeps Semctx installation unknown without positive content attestation
+content_skip_host: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+mkt_preflight: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > a foreign Semctx marketplace blocks before workspace setup
+native_exitcode_semctx_setup: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+native_exitcode_compass_preview: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+native_exitcode_assert_preview: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+native_result_swallow: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > native stream failures retain the validated report and saved retry
+stream_rethrow: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > native stream failures retain the validated report and saved retry
+stream_swallow_empty: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+stream_success_code: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+status: ''

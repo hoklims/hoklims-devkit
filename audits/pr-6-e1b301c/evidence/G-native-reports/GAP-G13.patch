@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..361ef64 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -588,7 +588,7 @@ function validAssertSetupReport(rt, parsed, root, client, mode, statuses, artifa
+       && fileBelongsToRoot(rt, artifact.path, relativePath, root)).length === 1)
+     && parsed.artifacts.every((artifact) => ["init", "connection"].includes(artifact?.owner)
+       && typeof artifact.path === "string" && artifact.path.length > 0
+-      && artifactStates.includes(artifact.state))
++      )
+     && initStatuses.includes(parsed.init?.status)
+     && connectionStatuses.includes(parsed.connection?.status)
+     && parsed.connection?.client === client

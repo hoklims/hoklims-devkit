@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..ed41102 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -156,7 +156,7 @@ function stateRecoveryCommand(options, root, state, hosts, recoveryOptions = {})
+ 
+ function failureGuidance(rt, options, root, hosts, candidateState, recoveryOptions = {}) {
+   const effectiveOptions = { ...recoveryOptions };
+-  if (!candidateState?.inProgress && options.refreshPending && effectiveOptions.useRequestedRefresh === undefined) {
++  if (options.refreshPending && effectiveOptions.useRequestedRefresh === undefined) {
+     effectiveOptions.useRequestedRefresh = true;
+   }
+   const plan = stateRecoveryPlan(options, candidateState, hosts, effectiveOptions);

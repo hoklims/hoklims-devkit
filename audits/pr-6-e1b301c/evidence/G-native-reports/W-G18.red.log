@@ -1,0 +1,23 @@
+$ rtk proxy bun test test/app.test.js -t 'native stream failures retain the validated report and saved retry'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+213 |   test("native stream failures retain the validated report and saved retry", async () => {
+214 |     const state = {
+215 |       schemaVersion: 1, projectRoot: "/repo", components: {},
+216 |       inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+217 |     };
+218 |     const streamError = Object.assign(new Error("simulated stdout read failure"), { code: "EIO" });
+                                                ^
+error: simulated stdout read failure
+ code: "EIO"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:218:43)
+(fail) public CLI > native stream failures retain the validated report and saved retry [12.46ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+Ran 1 test across 1 file. [61.00ms]
+EXIT=1

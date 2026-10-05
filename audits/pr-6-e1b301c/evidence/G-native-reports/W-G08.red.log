@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/app.test.js -t 'a successful native write without host configuration remains partial'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+2691 |     const nativeExec = rt.exec;
+2692 |     rt.exec = async (argv, cwd, timeout) => argv[0] === executable && argv.includes("install")
+2693 |       ? { code: 0, stdout: JSON.stringify(compassInstallReport(argv)), stderr: "" }
+2694 |       : nativeExec(argv, cwd, timeout);
+2695 |     const report = await execute({ ...setupOptions(), with: ["latent-compass"] }, rt);
+2696 |     expect(report.ok).toBe(false);
+                             ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:2696:23)
+(fail) public CLI > a successful native write without host configuration remains partial [8.53ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [53.00ms]
+EXIT=1

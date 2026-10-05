@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/runtime.test.js -t 'distinguishes malformed lock records from contention'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+1065 |     const statePath = join(root, "repository.json");
+1066 |     const lockPath = `${statePath}.lock`;
+1067 |     writeFileSync(lockPath, content);
+1068 |     let error;
+1069 |     try { createRuntime().acquireLock(statePath); } catch (caught) { error = caught; }
+1070 |     expect(error?.code).toBe("STATE_CONFLICT");
+                               ^
+error: expect(received).toBe(expected)
+
+Expected: "STATE_CONFLICT"
+Received: "RUN_LOCKED"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:1070:25)
+(fail) runtime distinguishes malformed lock records from contention [6.84ms]
+
+ 0 pass
+ 37 filtered out
+ 1 fail
+ 7 expect() calls
+Ran 1 test across 1 file. [40.00ms]
+EXIT=1

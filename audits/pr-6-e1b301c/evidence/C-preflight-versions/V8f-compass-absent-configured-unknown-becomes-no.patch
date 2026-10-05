@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..ea7bbcc 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1119,7 +1119,7 @@ async function diagnoseAssert(rt, root, hosts, version, compatibleVersions = [ve
+ async function diagnoseCompass(rt, root, hosts, version) {
+   const entry = await persistentCompassEntry(rt, root);
+   if (entry?.version !== version) {
+-    return { name: "latent-compass", version, installed: "no", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
++    return { name: "latent-compass", version, installed: "no", configured: "no", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };
+   }
+   const checks = [];
+   for (const host of hosts) {

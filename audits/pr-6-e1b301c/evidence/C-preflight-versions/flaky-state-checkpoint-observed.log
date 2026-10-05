@@ -1,0 +1,29 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/ -t '.'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3010 |     expect(JSON.parse(readFileSync(positive.statePath, "utf8")).inProgress).toBeUndefined();
+3011 | 
+3012 |     if (process.platform !== "win32") {
+3013 |       for (const replacement of ["foreign", "same"]) {
+3014 |         const raced = await run({ replacement });
+3015 |         expect(raced.replaced).toBe(true);
+                                      ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:3015:32)
+(fail) public CLI > state checkpoints stay bound to the locked filesystem observation [14.19ms]
+
+ 212 pass
+ 1 fail
+ 1665 expect() calls
+Ran 213 tests across 5 files. [914.00ms]
+EXIT CODE: 1

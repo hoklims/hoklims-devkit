@@ -1,0 +1,52 @@
+$ rtk proxy bun test test/app.test.js
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+195 |     registry.fetchJson = async () => { throw new Error("registry offline"); };
+196 |     const options = parseArgs(["upgrade", root, "--host", "codex", "--with", "assertledger", "--refresh-pending"]);
+197 |     const failedRegistry = await execute(options, registry);
+198 |     const registryRetry = `hoklims-devkit upgrade ${quoteShellToken(root)} --host codex --with assertledger --refresh-pending`;
+199 |     expect(failedRegistry.ok).toBe(false);
+200 |     expect(failedRegistry.nextActions.join("\n")).toContain(registryRetry);
+                                                        ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "hoklims-devkit upgrade '/tmp/repo with '\"'\"'quote' --host codex --with assertledger --refresh-pending"
+Received: "Inspect the declared AssertLedger package manager and restore it on PATH if missing before running hoklims-devkit upgrade /tmp/repo with 'quote --host codex --with assertledger --refresh-pending"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/app.test.js:200:51)
+(fail) public CLI > fresh registry and preflight failures include the complete admitted retry [3.82ms]
+3179 |     const collapsedCommand = `hoklims-devkit setup ${quoteShellToken(root.replace("  ", " "))} --host codex`;
+3180 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+3181 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+3182 |     expect(report.nextActions).toHaveLength(1);
+3183 |     expect(report.nextActions[0]).toContain("inspect and validate the saved Devkit state");
+3184 |     expect(report.nextActions[0]).toContain(`Only if no saved plan exists, run ${expectedCommand}`);
+                                         ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Only if no saved plan exists, run hoklims-devkit setup '/repo  with '\"'\"'quote' --host codex"
+Received: "Resolve the locked state conflict, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, run hoklims-devkit setup /repo  with 'quote --host codex"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/app.test.js:3184:35)
+(fail) public CLI > late authority loss replaces every earlier recovery instruction [0.98ms]
+3250 |         },
+3251 |       });
+3252 |       const report = await execute(parseArgs(["setup", root, "--host", "codex"]), rt);
+3253 |       const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+3254 |       const command = `hoklims-devkit setup ${quoteShellToken(root)} --host codex`;
+3255 |       expect(guidance.toLowerCase()).toContain(`restore the codex cli on path before running ${command}`.toLowerCase());
+                                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "restore the codex cli on path before running hoklims-devkit setup '/repo  with '\"'\"'quote' --host codex"
+Received: "resolve the reported native conflict, then restore the codex cli on path before running hoklims-devkit setup /repo  with 'quote --host codex\nsemctx: semctx workspace setup: native setup failed. resolve the reported native conflict, then restore the codex cli on path before running hoklims-devkit setup /repo  with 'quote --host codex."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/app.test.js:3255:38)
+(fail) public CLI > late authority loss retains missing-host repair before its conditional retry [1.31ms]
+
+ 156 pass
+ 3 fail
+ 1316 expect() calls
+Ran 159 tests across 1 file. [324.00ms]
+EXIT=1

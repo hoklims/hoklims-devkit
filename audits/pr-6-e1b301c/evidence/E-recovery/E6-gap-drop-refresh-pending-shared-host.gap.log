@@ -1,0 +1,7 @@
+$ rtk proxy bun test test/app.test.js
+
+ 159 pass
+ 0 fail
+ 1345 expect() calls
+Ran 159 tests across 1 file. [307.00ms]
+EXIT=0

@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'shared-host upgrade advice preserves explicit component selectors'
+bun test v1.4.2 (744846f84)
+
+ 1 pass
+ 158 filtered out
+ 0 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [40.00ms]
+EXIT=0

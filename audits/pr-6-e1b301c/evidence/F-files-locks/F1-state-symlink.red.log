@@ -1,0 +1,39 @@
+$ rtk proxy bun test test/runtime.test.js -t 'dangling state symlink'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+57 | 
+58 | test("runtime rejects a dangling state symlink while reading", () => {
+59 |   const fixture = danglingStateFixture();
+60 |   if (!fixture) return;
+61 |   const rt = createRuntime();
+62 |   expect(() => rt.readState(fixture.statePath)).toThrow(/Unsafe managed state path/u);
+                                                     ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /Unsafe managed state path/u
+Received message: "ELOOP: too many symbolic links encountered, open '/tmp/hoklims-devkit-state-link-aI3zJZ/managed-state/repository.json'"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:62:49)
+(fail) runtime rejects a dangling state symlink while reading [3.22ms]
+368 | test("runtime preserves a dangling state symlink and its target while writing", () => {
+369 |   const fixture = danglingStateFixture();
+370 |   if (!fixture) return;
+371 |   const rt = createRuntime();
+372 |   const state = { schemaVersion: 1, projectRoot: "/repo", components: {} };
+373 |   expect(() => rt.writeState(fixture.statePath, state)).toThrow(/Unsafe managed state path/u);
+                                                              ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /Unsafe managed state path/u
+Received message: "ELOOP: too many symbolic links encountered, open '/tmp/hoklims-devkit-state-link-lYkqWW/managed-state/repository.json'"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:373:57)
+(fail) runtime preserves a dangling state symlink and its target while writing [1.79ms]
+
+ 0 pass
+ 36 filtered out
+ 2 fail
+ 2 expect() calls
+Ran 2 tests across 1 file. [29.00ms]
+EXIT=1

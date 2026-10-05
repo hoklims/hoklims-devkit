@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'recovery prerequisites follow the same admitted saved plan as the retry command'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3454 |     };
+3455 |     const rejectedAssert = fakeRuntime({ state: savedCompass, tools: ["node", "npm"] });
+3456 |     const rejected = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rejectedAssert);
+3457 |     const rejectedGuidance = [...rejected.nextActions, ...rejected.conflicts.map((item) => item.detail)].join("\n");
+3458 |     expect(rejected.conflicts.map((item) => item.code)).toContain("PENDING_PLAN_CONFLICT");
+3459 |     expect(rejectedGuidance).toContain("--with latent-compass");
+                                    ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "--with latent-compass"
+Received: "Resolve the reported native conflict, then inspect the declared AssertLedger package manager and restore it on PATH if missing before running hoklims-devkit setup /repo --host codex --with assertledger\nThe saved plan must be completed before changing selectors. Resolve the reported native conflict, then inspect the declared AssertLedger package manager and restore it on PATH if missing before running hoklims-devkit setup /repo --host codex --with assertledger."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3459:30)
+(fail) public CLI > recovery prerequisites follow the same admitted saved plan as the retry command [9.62ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [49.00ms]
+EXIT=1

@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..191d7c4 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -800,7 +800,7 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
+     const doctor = await rt.exec(["bunx", `semctx@${version}`, "doctor", ...args], root);
+     const health = await rt.exec(["bunx", `semctx@${version}`, "index-health", ...args], root);
+     const workspaceStatus = semctxWorkspaceStatus(rt, root, doctor, health, version);
+-    if (workspaceStatus === "unknown") {
++    if (false) {
+       problem(report, "SEMCTX_WORKSPACE_STATUS_INVALID", "Semctx doctor or index-health returned malformed workspace evidence; inspect the native reports before retrying");
+       return null;
+     }

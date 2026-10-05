@@ -1,0 +1,13 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..88ec353 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -46,7 +46,7 @@ function rethrowAfterValidation(error, validate) {
+   } catch (validationError) {
+     throw preferredBoundaryError(error, validationError);
+   }
+-  throw error;
++  throw Object.assign(new Error(String(error?.message ?? error)), { code: "STATE_CONFLICT" });
+ }
+ 
+ function unsafeProjectPath(path, detail) {

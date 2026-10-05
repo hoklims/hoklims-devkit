@@ -1,0 +1,98 @@
+$ bun /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/../evidence/HI-release-hostcmd/quote-roundtrip.mjs /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd
+OK   sh   value="/plain/path" quoted="/plain/path" exit=0 argc5=true
+OK   bash value="/plain/path" quoted="/plain/path" exit=0 argc5=true
+OK   dash value="/plain/path" quoted="/plain/path" exit=0 argc5=true
+OK   sh   value="/repo with space" quoted="'/repo with space'" exit=0 argc5=true
+OK   bash value="/repo with space" quoted="'/repo with space'" exit=0 argc5=true
+OK   dash value="/repo with space" quoted="'/repo with space'" exit=0 argc5=true
+OK   sh   value="/repo  two  spaces" quoted="'/repo  two  spaces'" exit=0 argc5=true
+OK   bash value="/repo  two  spaces" quoted="'/repo  two  spaces'" exit=0 argc5=true
+OK   dash value="/repo  two  spaces" quoted="'/repo  two  spaces'" exit=0 argc5=true
+OK   sh   value="/it's/here" quoted="'/it'\"'\"'s/here'" exit=0 argc5=true
+OK   bash value="/it's/here" quoted="'/it'\"'\"'s/here'" exit=0 argc5=true
+OK   dash value="/it's/here" quoted="'/it'\"'\"'s/here'" exit=0 argc5=true
+OK   sh   value="/a''b" quoted="'/a'\"'\"''\"'\"'b'" exit=0 argc5=true
+OK   bash value="/a''b" quoted="'/a'\"'\"''\"'\"'b'" exit=0 argc5=true
+OK   dash value="/a''b" quoted="'/a'\"'\"''\"'\"'b'" exit=0 argc5=true
+OK   sh   value="'" quoted="''\"'\"''" exit=0 argc5=true
+OK   bash value="'" quoted="''\"'\"''" exit=0 argc5=true
+OK   dash value="'" quoted="''\"'\"''" exit=0 argc5=true
+OK   sh   value="''" quoted="''\"'\"''\"'\"''" exit=0 argc5=true
+OK   bash value="''" quoted="''\"'\"''\"'\"''" exit=0 argc5=true
+OK   dash value="''" quoted="''\"'\"''\"'\"''" exit=0 argc5=true
+OK   sh   value="/x/$(touch /tmp/PWNED_HI)/y" quoted="'/x/$(touch /tmp/PWNED_HI)/y'" exit=0 argc5=true
+OK   bash value="/x/$(touch /tmp/PWNED_HI)/y" quoted="'/x/$(touch /tmp/PWNED_HI)/y'" exit=0 argc5=true
+OK   dash value="/x/$(touch /tmp/PWNED_HI)/y" quoted="'/x/$(touch /tmp/PWNED_HI)/y'" exit=0 argc5=true
+OK   sh   value="/x/`id`/y" quoted="'/x/`id`/y'" exit=0 argc5=true
+OK   bash value="/x/`id`/y" quoted="'/x/`id`/y'" exit=0 argc5=true
+OK   dash value="/x/`id`/y" quoted="'/x/`id`/y'" exit=0 argc5=true
+OK   sh   value="/x/$HOME/y" quoted="'/x/$HOME/y'" exit=0 argc5=true
+OK   bash value="/x/$HOME/y" quoted="'/x/$HOME/y'" exit=0 argc5=true
+OK   dash value="/x/$HOME/y" quoted="'/x/$HOME/y'" exit=0 argc5=true
+OK   sh   value="/x/${PATH}/y" quoted="'/x/${PATH}/y'" exit=0 argc5=true
+OK   bash value="/x/${PATH}/y" quoted="'/x/${PATH}/y'" exit=0 argc5=true
+OK   dash value="/x/${PATH}/y" quoted="'/x/${PATH}/y'" exit=0 argc5=true
+OK   sh   value="/a\\b\\\\c\\" quoted="'/a\\b\\\\c\\'" exit=0 argc5=true
+OK   bash value="/a\\b\\\\c\\" quoted="'/a\\b\\\\c\\'" exit=0 argc5=true
+OK   dash value="/a\\b\\\\c\\" quoted="'/a\\b\\\\c\\'" exit=0 argc5=true
+OK   sh   value="\\'" quoted="'\\'\"'\"''" exit=0 argc5=true
+OK   bash value="\\'" quoted="'\\'\"'\"''" exit=0 argc5=true
+OK   dash value="\\'" quoted="'\\'\"'\"''" exit=0 argc5=true
+OK   sh   value=" leading" quoted="' leading'" exit=0 argc5=true
+OK   bash value=" leading" quoted="' leading'" exit=0 argc5=true
+OK   dash value=" leading" quoted="' leading'" exit=0 argc5=true
+OK   sh   value="trailing " quoted="'trailing '" exit=0 argc5=true
+OK   bash value="trailing " quoted="'trailing '" exit=0 argc5=true
+OK   dash value="trailing " quoted="'trailing '" exit=0 argc5=true
+OK   sh   value="\ttab\t" quoted="'\ttab\t'" exit=0 argc5=true
+OK   bash value="\ttab\t" quoted="'\ttab\t'" exit=0 argc5=true
+OK   dash value="\ttab\t" quoted="'\ttab\t'" exit=0 argc5=true
+OK   sh   value="/new\nline" quoted="'/new\nline'" exit=0 argc5=true
+OK   bash value="/new\nline" quoted="'/new\nline'" exit=0 argc5=true
+OK   dash value="/new\nline" quoted="'/new\nline'" exit=0 argc5=true
+OK   sh   value="/glob/*?[a]" quoted="'/glob/*?[a]'" exit=0 argc5=true
+OK   bash value="/glob/*?[a]" quoted="'/glob/*?[a]'" exit=0 argc5=true
+OK   dash value="/glob/*?[a]" quoted="'/glob/*?[a]'" exit=0 argc5=true
+OK   sh   value="/semi;colon&amp|pipe>out<in" quoted="'/semi;colon&amp|pipe>out<in'" exit=0 argc5=true
+OK   bash value="/semi;colon&amp|pipe>out<in" quoted="'/semi;colon&amp|pipe>out<in'" exit=0 argc5=true
+OK   dash value="/semi;colon&amp|pipe>out<in" quoted="'/semi;colon&amp|pipe>out<in'" exit=0 argc5=true
+OK   sh   value="/hash#x" quoted="'/hash#x'" exit=0 argc5=true
+OK   bash value="/hash#x" quoted="'/hash#x'" exit=0 argc5=true
+OK   dash value="/hash#x" quoted="'/hash#x'" exit=0 argc5=true
+OK   sh   value="~/tilde" quoted="'~/tilde'" exit=0 argc5=true
+OK   bash value="~/tilde" quoted="'~/tilde'" exit=0 argc5=true
+OK   dash value="~/tilde" quoted="'~/tilde'" exit=0 argc5=true
+OK   sh   value="-dash" quoted="-dash" exit=0 argc5=true
+OK   bash value="-dash" quoted="-dash" exit=0 argc5=true
+OK   dash value="-dash" quoted="-dash" exit=0 argc5=true
+OK   sh   value="/bang!x" quoted="'/bang!x'" exit=0 argc5=true
+OK   bash value="/bang!x" quoted="'/bang!x'" exit=0 argc5=true
+OK   dash value="/bang!x" quoted="'/bang!x'" exit=0 argc5=true
+OK   sh   value="/quote\"dq" quoted="'/quote\"dq'" exit=0 argc5=true
+OK   bash value="/quote\"dq" quoted="'/quote\"dq'" exit=0 argc5=true
+OK   dash value="/quote\"dq" quoted="'/quote\"dq'" exit=0 argc5=true
+OK   sh   value="/unicodé/日本" quoted="'/unicodé/日本'" exit=0 argc5=true
+OK   bash value="/unicodé/日本" quoted="'/unicodé/日本'" exit=0 argc5=true
+OK   dash value="/unicodé/日本" quoted="'/unicodé/日本'" exit=0 argc5=true
+OK   sh   value="/curly’quote" quoted="'/curly’quote'" exit=0 argc5=true
+OK   bash value="/curly’quote" quoted="'/curly’quote'" exit=0 argc5=true
+OK   dash value="/curly’quote" quoted="'/curly’quote'" exit=0 argc5=true
+OK   sh   value="" quoted="''" exit=0 argc5=true
+OK   bash value="" quoted="''" exit=0 argc5=true
+OK   dash value="" quoted="''" exit=0 argc5=true
+OK   sh   value="/repo  with 'quote $() ` tick" quoted="'/repo  with '\"'\"'quote $() ` tick'" exit=0 argc5=true
+OK   bash value="/repo  with 'quote $() ` tick" quoted="'/repo  with '\"'\"'quote $() ` tick'" exit=0 argc5=true
+OK   dash value="/repo  with 'quote $() ` tick" quoted="'/repo  with '\"'\"'quote $() ` tick'" exit=0 argc5=true
+OK   sh   value="/tmp/a\\b repo  with 'quote $() ` tick" quoted="'/tmp/a\\b repo  with '\"'\"'quote $() ` tick'" exit=0 argc5=true
+OK   bash value="/tmp/a\\b repo  with 'quote $() ` tick" quoted="'/tmp/a\\b repo  with '\"'\"'quote $() ` tick'" exit=0 argc5=true
+OK   dash value="/tmp/a\\b repo  with 'quote $() ` tick" quoted="'/tmp/a\\b repo  with '\"'\"'quote $() ` tick'" exit=0 argc5=true
+side-effect file /tmp/PWNED_HI exists: false
+--- win32 (PowerShell) outputs, not executed:
+"C:\\repo with space" -> 'C:\repo with space'
+"C:\\it's" -> 'C:\it''s'
+"C:\\x\\$(calc)\\`t" -> 'C:\x\$(calc)\`t'
+"C:\\curly’quote" -> 'C:\curly’quote'
+" lead" -> ' lead'
+"C:\\plain" -> C:\plain
+FAILURES=0
+EXIT=0

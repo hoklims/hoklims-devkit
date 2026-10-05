@@ -1,0 +1,39 @@
+$ rtk proxy bun test test/runtime.test.js -t 'binds state and lock reads to the inspected regular file|classifies removal after inspection as ownership drift'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+ 95 |     try {
+ 96 |       if (kind === "state") rt.readState(statePath);
+ 97 |       else rt.acquireLock(statePath);
+ 98 |     } catch (caught) { error = caught; }
+ 99 |     expect(replaced).toBe(true);
+100 |     expect(error?.code).toBe("STATE_CONFLICT");
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: "STATE_CONFLICT"
+Received: "ELOOP"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:100:25)
+(fail) runtime binds state and lock reads to the inspected regular file [2.30ms]
+125 |       if (kind === "state") rt.readState(statePath);
+126 |       else if (kind === "lock") rt.acquireLock(statePath);
+127 |       else rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} });
+128 |     } catch (caught) { error = caught; }
+129 |     expect(removalExecuted).toBe(true);
+130 |     expect(error?.code).toBe("STATE_CONFLICT");
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: "STATE_CONFLICT"
+Received: "ENOENT"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:130:25)
+(fail) runtime classifies removal after inspection as ownership drift [0.68ms]
+
+ 0 pass
+ 36 filtered out
+ 2 fail
+ 4 expect() calls
+Ran 2 tests across 1 file. [26.00ms]
+EXIT=1

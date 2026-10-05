@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'late authority loss replaces every earlier recovery instruction'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3178 |     const expectedCommand = `hoklims-devkit setup ${quoteShellToken(root)} --host codex`;
+3179 |     const collapsedCommand = `hoklims-devkit setup ${quoteShellToken(root.replace("  ", " "))} --host codex`;
+3180 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+3181 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+3182 |     expect(report.nextActions).toHaveLength(1);
+3183 |     expect(report.nextActions[0]).toContain("inspect and validate the saved Devkit state");
+                                         ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "inspect and validate the saved Devkit state"
+Received: "Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup '/repo  with '\"'\"'quote' --host claude"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3183:35)
+(fail) public CLI > late authority loss replaces every earlier recovery instruction [14.39ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 4 expect() calls
+Ran 1 test across 1 file. [62.00ms]
+EXIT=1

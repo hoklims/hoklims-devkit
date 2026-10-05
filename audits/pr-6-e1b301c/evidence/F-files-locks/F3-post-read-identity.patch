@@ -1,0 +1,12 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..61cdecb 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -213,7 +213,6 @@ function readVerifiedFile(path, inspectFile, conflict, beforeOpen = () => {}, re
+     } catch (error) {
+       rethrowAfterValidation(error, assertReadIdentity);
+     }
+-    assertReadIdentity();
+     return encoding === null ? content : content.toString(encoding);
+   } finally {
+     if (descriptor !== undefined) closeSync(descriptor);

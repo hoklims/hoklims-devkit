@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'STATE_CHANGED recovery uses the latest locked reread plan|a rejected refresh preflight resumes the saved plan without refresh'
+bun test v1.4.2 (744846f84)
+
+ 2 pass
+ 157 filtered out
+ 0 fail
+ 9 expect() calls
+Ran 2 tests across 1 file. [63.00ms]
+EXIT=0

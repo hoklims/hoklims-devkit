@@ -1,0 +1,22 @@
+## mutation P3a-assert-second-host-conflict-ignored
+S1_assert_second_host_conflict {"ok":false,"codes":["APPLY_FAILED"],"versions":{"semctx":"0.3.4","assertledger":"1.2.0"},"stateWrites":2,"nonDryRunNative":["bunx semctx@0.3.4 install --host","bunx semctx@0.3.4 setup --root","node /repo/node_modules/assertledger/dist/cli.js setup /repo"]}
+## mutation P3b-compass-second-host-conflict-ignored
+S2_compass_second_host_conflict {"ok":false,"codes":["APPLY_FAILED"],"versions":{"semctx":"0.3.4","latent-compass":"0.3.0"},"stateWrites":2,"nonDryRunNative":["bunx semctx@0.3.4 install --host","bunx semctx@0.3.4 setup --root","uv tool install --python"]}
+## mutation P3c-semctx-second-host-drift-ignored
+S3_semctx_second_host_drift {"ok":false,"codes":["APPLY_FAILED"],"versions":{"semctx":"0.3.4"},"stateWrites":0,"nonDryRunNative":["bunx semctx@0.3.4 setup --root"]}
+## mutation P2b-gate-third-of-three
+S4_third_component_conflict {"ok":false,"codes":["COMPASS_HOOK_CONFLICT","APPLY_FAILED"],"versions":{"semctx":"0.3.4","assertledger":"1.2.0","latent-compass":"0.3.0"},"stateWrites":3,"nonDryRunNative":["bunx semctx@0.3.4 install --host","bunx semctx@0.3.4 setup --root","node /repo/node_modules/assertledger/dist/cli.js setup /repo","uv tool install --python"]}
+## mutation P2c-compass-conflict-dropped-after-assert
+S4_third_component_conflict {"ok":false,"codes":["APPLY_FAILED"],"versions":{"semctx":"0.3.4","assertledger":"1.2.0","latent-compass":"0.3.0"},"stateWrites":3,"nonDryRunNative":["bunx semctx@0.3.4 install --host","bunx semctx@0.3.4 setup --root","node /repo/node_modules/assertledger/dist/cli.js setup /repo","uv tool install --python"]}
+## mutation V4a-semctx-setup-overwrites-existing-install
+S5_setup_existing_semctx_other_version {"ok":true,"codes":[],"versions":{"semctx":"0.3.5"},"stateWrites":3,"nonDryRunNative":["bunx semctx@0.3.5 install --host","bunx semctx@0.3.5 setup --root"]}
+## mutation V2-setup-ignores-declared-assertledger
+S6_setup_existing_assert_other_version {"ok":false,"codes":["INSTALLED_VERSION_DRIFT"],"versions":{"semctx":"0.3.4","assertledger":"1.2.0"},"stateWrites":0,"nonDryRunNative":[]}
+## mutation V3-setup-ignores-installed-compass
+S7_setup_existing_compass_other_version {"ok":false,"codes":["EXISTING_VERSION"],"versions":{"semctx":"0.3.4","latent-compass":"0.3.0"},"stateWrites":0,"nonDryRunNative":[]}
+## mutation V1b-setup-still-queries-registry
+S8_setup_recorded_registry_offline {"ok":false,"codes":["RELEASE_SKEW_OR_UNAVAILABLE"],"versions":{},"stateWrites":0,"nonDryRunNative":[]}
+## mutation V7a-compass-apply-installed-implies-configured
+S9_compass_apply_installed_not_configured {"ok":true,"codes":[],"versions":{"semctx":"0.3.4","latent-compass":"0.3.0"},"stateWrites":3,"nonDryRunNative":["bunx semctx@0.3.4 install --host","bunx semctx@0.3.4 setup --root"],"compass":{"name":"latent-compass","version":"0.3.0","state":"configured","installed":"yes","configured":"yes","loaded":"unknown","approved":"unknown","observed":"unknown"}}
+## mutation V7b-compass-doctor-installed-implies-configured
+S10_compass_doctor_installed_not_configured {"ok":false,"compass":{"name":"latent-compass","version":"0.3.0","installed":"yes","configured":"yes","loaded":"unknown","approved":"unknown","observed":"yes","checks":[{"command":"host-status:codex","exitCode":0,"report":{"schema_version":1,"operation":"status","version":"0.3.0","project_root":"/repo","hosts":[{"host":"codex","status":"OBSERVING"}],"states":{"codex":{"installed":true,"configured":false,"observed":true}}}}]}}

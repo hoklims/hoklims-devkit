@@ -1,0 +1,4 @@
+pristine:
+{"code":"STATE_CONFLICT","preserved":"{\"token\":\"foreign\",\"pid\":42}"}
+mutated (F9b):
+{"code":"RUN_LOCKED","preserved":"{\"token\":\"foreign\",\"pid\":42}"}

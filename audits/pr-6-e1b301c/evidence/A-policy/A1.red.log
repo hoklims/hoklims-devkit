@@ -1,0 +1,110 @@
+$ bun run check
+$ bun test && bun build ./bin/hoklims-devkit.js --target=bun --outdir=dist
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+527 |       components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+528 |       inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+529 |     };
+530 |     const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+531 |     const report = await execute(setupOptions(), rt);
+532 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+                                                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "STATE_CONFLICT"
+Received: [ "STATE_IO_ERROR" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-A/test/app.test.js:532:55)
+(fail) public CLI > a pending setup cannot change an already recorded component version [1.14ms]
+1030 | 
+1031 |   test("malformed saved state blocks before running any native installer", async () => {
+1032 |     const rt = fakeRuntime({ state: { schemaVersion: 1, projectRoot: "/repo", components: [] } });
+1033 |     const report = await execute(setupOptions(), rt);
+1034 |     expect(report.ok).toBe(false);
+1035 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+                                                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "STATE_CONFLICT"
+Received: [ "STATE_IO_ERROR" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-A/test/app.test.js:1035:55)
+(fail) public CLI > malformed saved state blocks before running any native installer [0.59ms]
+1052 |     rt.readState = reader.readState;
+1053 |     writeFileSync(statePath, "null\n");
+1054 |     const malformedNull = await execute(setupOptions(), rt);
+1055 |     expect(verifiedReadExecuted).toBe(true);
+1056 |     expect(malformedNull.ok).toBe(false);
+1057 |     expect(malformedNull.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+                                                                    ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "STATE_CONFLICT"
+Received: [ "STATE_IO_ERROR" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-A/test/app.test.js:1057:62)
+(fail) public CLI > an existing JSON null state is malformed while a missing file remains absent [2.95ms]
+3573 |     let released = false;
+3574 |     rt.readState = () => ++reads === 1 ? null : structuredClone(foreignState);
+3575 |     rt.acquireLock = () => () => { released = true; };
+3576 |     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+3577 |     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+3578 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+                                                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "STATE_CONFLICT"
+Received: [ "STATE_IO_ERROR" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-A/test/app.test.js:3578:55)
+(fail) public CLI > a locked foreign state never becomes recovery authority [1.18ms]
+3593 |       let released = false;
+3594 |       rt.readState = () => ++reads === 1 ? structuredClone(initialState) : structuredClone(locked);
+3595 |       rt.acquireLock = () => () => { released = true; };
+3596 |       const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+3597 |       const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+3598 |       expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+                                                               ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "STATE_CONFLICT"
+Received: [ "STATE_IO_ERROR" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-A/test/app.test.js:3598:57)
+(fail) public CLI > an invalid locked reread invalidates refresh and requires state revalidation [1.31ms]
+3663 |         },
+3664 |       },
+3665 |     ]) {
+3666 |       const rt = fakeRuntime({ state, tools: ["claude"] });
+3667 |       const report = await execute(parseArgs(["setup", "/repo", "--host", "all"]), rt);
+3668 |       expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+                                                               ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "STATE_CONFLICT"
+Received: [ "STATE_IO_ERROR" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-A/test/app.test.js:3668:57)
+(fail) public CLI > noncanonical persisted plan order is a state conflict [0.89ms]
+3699 |       if (scenario.valid) {
+3700 |         expect(report.conflicts.map((item) => item.code)).not.toContain("STATE_CONFLICT");
+3701 |         expect(report.conflicts.map((item) => item.code)).not.toContain("PENDING_PLAN_CONFLICT");
+3702 |         expect(report.conflicts.map((item) => item.code)).not.toContain("HOST_SCOPE_UPGRADE_CONFLICT");
+3703 |       } else {
+3704 |         expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+                                                                 ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "STATE_CONFLICT"
+Received: [ "STATE_IO_ERROR" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-A/test/app.test.js:3704:59)
+(fail) public CLI > every accepted pending upgrade host scope has an admitted retry [2.12ms]
+
+ 206 pass
+ 7 fail
+ 1657 expect() calls
+Ran 213 tests across 5 files. [834.00ms]
+error: script "check" exited with code 1
+exit=1

@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..a25935c 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -131,7 +131,7 @@ function stateBoundaryProblem(report, error, statePath, operation, { allowRunLoc
+ 
+ export function quoteShellToken(value) {
+   const text = String(value);
+-  const safe = process.platform === "win32" ? /^[A-Za-z0-9_./:\\-]+$/u : /^[A-Za-z0-9_./:-]+$/u;
++  const safe = process.platform === "win32" ? /^[A-Za-z0-9_./:\\-]+$/u : /^[A-Za-z0-9_./: -]+$/u;
+   if (safe.test(text)) return text;
+   if (process.platform === "win32") return `'${text.replaceAll("'", "''")}'`;
+   return `'${text.replaceAll("'", `'"'"'`)}'`;

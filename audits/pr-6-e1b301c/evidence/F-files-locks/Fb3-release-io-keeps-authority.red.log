@@ -1,0 +1,44 @@
+$ rtk proxy bun test test/app.test.js -t 'release I/O'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3387 |     };
+3388 |     const report = await execute(parseArgs(["setup", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+3389 |     const command = "hoklims-devkit setup /repo --host codex --with assertledger";
+3390 |     expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+3391 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+3392 |     expect(report.nextActions).toEqual([`Restore Node, npm on PATH before running ${command}`]);
+                                      ^
+error: expect(received).toEqual(expected)
+
+  [
+-   "Restore Node, npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger",
++   "Resolve the locked state conflict, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, restore Node, npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger",
+  ]
+
+- Expected  - 1
++ Received  + 1
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/app.test.js:3392:32)
+(fail) public CLI > ordinary failure finalization replaces stale recovery after release I/O [13.09ms]
+4100 |       const recovery = [...report.nextActions, ...report.conflicts.map((item) => item.detail)]
+4101 |         .filter((item) => item.includes("hoklims-devkit")).join("\n");
+4102 |       expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_NOT_READY");
+4103 |       if (releaseFailure) {
+4104 |         expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+4105 |         expect(recovery).toContain(`Restore Node, npm on PATH before running ${command}`);
+                                ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "Restore Node, npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger"
+Received: "Resolve the locked state conflict, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, restore Node, npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger\nSemctx installed but its workspace analysis is incomplete. Resolve the locked state conflict, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, restore Node, npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger.\nDevkit state lock release failed at /state/repo.json: release EIO after incomplete setup. Check disk space and permissions, replace linked state paths with real local directories or files. Resolve the locked state conflict, then inspect and validate the saved Devkit state for the requested path. If a saved plan is present, follow it. Only if no saved plan exists, restore Node, npm on PATH before running hoklims-devkit setup /repo --host codex --with assertledger."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/app.test.js:4105:26)
+(fail) public CLI > Semctx incomplete recovery is retired when release I/O adds prerequisites [3.63ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 9 expect() calls
+Ran 2 tests across 1 file. [64.00ms]
+EXIT=1

@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..7f371c7 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -948,7 +948,7 @@ async function applySemctx(rt, root, hosts, version, preflight) {
+   if (!preflight.skipSetup) {
+     const setup = await rt.exec(["bunx", `semctx@${version}`, "setup", ...args], root);
+     const setupReport = parseJsonOutput(setup);
+-    if (setupReport?.schemaVersion !== 1 || setupReport.kind !== "setup" || setupReport.repositoryRoot !== root
++    if (setupReport?.schemaVersion !== 1 || setupReport.kind !== "setup" 
+       || !["SETUP_READY", "SETUP_NOT_READY"].includes(setupReport.verdict)
+       || (setupReport.verdict === "SETUP_READY") !== (setupReport.setupReady === true && setupReport.analysisReady === true && setupReport.check?.ok === true)
+       || (setup.code !== 0 && setup.code !== 1)) {

@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'doctor incomplete-plan recovery retains its declared pnpm prerequisite'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3635 |     };
+3636 |     const rt = fakeRuntime({ state, tools: ["node", "npm"], files });
+3637 |     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex", "--with", "assertledger"]), rt);
+3638 |     const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+3639 |     expect(report.conflicts.map((item) => item.code)).toContain("INCOMPLETE_OPERATION");
+3640 |     expect(guidance.toLowerCase()).toContain("restore pnpm");
+                                          ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "restore pnpm"
+Received: "resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger\nsemctx: installed=no, configured=no. resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger.\nassertledger: assertledger prerequisite disappeared from path: pnpm. resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger.\nto complete the recorded plan. resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex --with assertledger."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3640:36)
+(fail) public CLI > doctor incomplete-plan recovery retains its declared pnpm prerequisite [19.21ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [53.00ms]
+EXIT=1

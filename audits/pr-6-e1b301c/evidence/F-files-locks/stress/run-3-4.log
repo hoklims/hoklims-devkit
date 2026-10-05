@@ -1,0 +1,22 @@
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3003 |       const report = await execute(parseArgs(["setup", root, "--host", "codex"]), rt);
+3004 |       return { report, statePath, commits, replaced, distinctIdentity };
+3005 |     };
+3006 | 
+3007 |     const positive = await run();
+3008 |     expect(positive.report.ok).toBe(true);
+                                      ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/app.test.js:3008:32)
+(fail) public CLI > state checkpoints stay bound to the locked filesystem observation [12.24ms]
+
+ 158 pass
+ 1 fail
+ 1308 expect() calls
+Ran 159 tests across 1 file. [634.00ms]

@@ -1,0 +1,6 @@
+$ rtk proxy bun test test/app.test.js test/runtime.test.js
+# mutations: assert_diag_exitmap
+ 197 pass
+ 0 fail
+Ran 197 tests across 2 files. [697.00ms]
+EXIT=0

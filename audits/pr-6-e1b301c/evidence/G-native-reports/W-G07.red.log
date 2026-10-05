@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/app.test.js -t 'doctor rejects a Semctx diagnostic naming another repository'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+685 |       const result = await nativeExec(argv, cwd);
+686 |       if (!argv.includes("doctor")) return result;
+687 |       return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), repositoryRoot: "/other" }) };
+688 |     };
+689 |     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+690 |     expect(report.ok).toBe(false);
+                            ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:690:23)
+(fail) public CLI > doctor rejects a Semctx diagnostic naming another repository [5.48ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [50.00ms]
+EXIT=1

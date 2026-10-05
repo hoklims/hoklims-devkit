@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..08ab319 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1134,7 +1134,7 @@ async function diagnoseCompass(rt, root, hosts, version) {
+     const host = hosts[index];
+     const status = item.report?.hosts?.find((entry) => entry.host === host)?.status;
+     return item.exitCode === 0 && ["NO_OBSERVATIONS", "OBSERVING", "OBSERVATION_UNKNOWN"].includes(status)
+-      && item.report?.states?.[host]?.installed === true && item.report.states[host].configured === true;
++      && item.report?.states?.[host]?.installed === true;
+   });
+   const observations = healthy ? checks.map((item, index) => item.report.states[hosts[index]].observed) : [];
+   const observed = !healthy || observations.some((value) => typeof value !== "boolean")

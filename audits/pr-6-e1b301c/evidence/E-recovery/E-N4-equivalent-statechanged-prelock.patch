@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..d945a08 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1454,7 +1454,7 @@ export async function execute(options, rt = createRuntime()) {
+       persistedState = currentState ? structuredClone(currentState) : null;
+       persistedStateObserved = true;
+       if (JSON.stringify(currentState) !== JSON.stringify(state)) {
+-        const recoveryAction = recoveryActionFor(currentState);
++        const recoveryAction = recoveryActionFor(state);
+         if (!report.nextActions.includes(recoveryAction)) report.nextActions.push(recoveryAction);
+         problem(report, "STATE_CHANGED", `Installation state changed during preflight. ${recoveryAction} to recompute the plan.`, 4);
+         break applyOperation;

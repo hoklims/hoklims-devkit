@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..dd1cd5e 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -696,7 +696,7 @@ function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
+   const indexReady = healthCode === 0 && health?.schemaVersion === 1 && health.kind === "index_health"
+     && health.binding?.status === "valid" && health.freshness?.canRunHighRiskControl === true
+     && health.coverage?.status === "complete";
+-  return doctorReady && indexReady ? "yes" : "no";
++  return doctorReady ? "yes" : "no";
+ }
+ 
+ async function resolveComponents(rt, options, state, root, report) {

@@ -1,0 +1,73 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/ -t 'a pending setup cannot change an already recorded component version|state validation accepts only canonical component and host order'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/runtime.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+527 |       components: { semctx: { version: "0.3.4", hosts: ["codex"] } },
+528 |       inProgress: { command: "setup", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.5" } },
+529 |     };
+530 |     const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+531 |     const report = await execute(setupOptions(), rt);
+532 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+                                                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "STATE_CONFLICT"
+Received: [ "APPLY_FAILED" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:532:55)
+(fail) public CLI > a pending setup cannot change an already recorded component version [13.94ms]
+
+test/runtime.test.js:
+1174 |   narrowSetup.inProgress.versions = { semctx: "0.3.5" };
+1175 |   expect(validateState(narrowSetup)).toBe(narrowSetup);
+1176 | 
+1177 |   const setupVersionChange = structuredClone(narrowSetup);
+1178 |   setupVersionChange.inProgress.versions.semctx = "0.3.6";
+1179 |   expect(() => validateState(setupVersionChange)).toThrow(/Invalid in-progress installation plan/u);
+                                                         ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /Invalid in-progress installation plan/u
+
+Received function did not throw
+Received value: {
+  schemaVersion: 1,
+  projectRoot: "/repo",
+  components: {
+    semctx: {
+      version: "0.3.5",
+      hosts: [ "codex", "claude" ],
+    },
+    assertledger: {
+      version: "1.3.0",
+      hosts: [ "codex" ],
+    },
+    "latent-compass": {
+      version: "0.3.0",
+      hosts: [ "claude" ],
+    },
+  },
+  inProgress: {
+    command: "setup",
+    selected: [ "semctx" ],
+    hosts: [ "codex", "claude" ],
+    versions: {
+      semctx: "0.3.6",
+    },
+  },
+}
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/runtime.test.js:1179:51)
+(fail) state validation accepts only canonical component and host order [2.06ms]
+
+ 0 pass
+ 211 filtered out
+ 2 fail
+ 16 expect() calls
+Ran 2 tests across 5 files. [69.00ms]
+EXIT CODE: 1

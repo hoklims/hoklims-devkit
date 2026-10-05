@@ -1,0 +1,12 @@
+diff --git a/scripts/release-smoke.js b/scripts/release-smoke.js
+index d045716..6ab3491 100644
+--- a/scripts/release-smoke.js
++++ b/scripts/release-smoke.js
+@@ -165,7 +165,6 @@ for (const host of ["codex", "claude", "all"]) {
+     })) {
+       throw new Error(`${host} upgrade did not configure every component: ${JSON.stringify(appliedUpgrade)}`);
+     }
+-    assertNoopUpgradeUnchanged(targets, beforeUpgradePlan, installed, upgrade, appliedUpgrade, `${host} same-version upgrade`);
+     const afterUpgrade = targets.map(snapshot);
+     const diagnosedUpgrade = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "doctor", scenarioRepository, ...selectors], consumer, scenarioEnv));
+     if (!validComponentReport(diagnosedUpgrade, resolve(scenarioRepository), expected, {

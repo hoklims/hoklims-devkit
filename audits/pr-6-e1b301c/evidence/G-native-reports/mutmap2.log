@@ -1,0 +1,29 @@
+ws_no_to_yes: exit=1 [('205', 'pass'), ('8', 'fail')] FAILS=8
+    - public CLI > AssertLedger apply revalidates local metadata before install and write
+    - public CLI > Semctx incomplete recovery is retired when release I/O adds prerequisites
+    - public CLI > a failed same-version upgrade pins its version before native writes
+    - public CLI > doctor keeps unobserved session and approval unknown
+    - public CLI > implicit upgrade selection is shared by execution and recovery prerequisites
+    - public CLI > late npm bootstrap loss is retained for saved and unverified pnpm recovery
+ws_no_to_unknown: exit=1 [('196', 'pass'), ('17', 'fail')] FAILS=17
+    - public CLI > AssertLedger apply revalidates local metadata before install and write
+    - public CLI > AssertLedger cannot report configured when nested native outcomes conflict
+    - public CLI > AssertLedger multi-host previews revalidate every project and local boundary
+    - public CLI > AssertLedger write needs an unchanged native post-install preview
+    - public CLI > Compass post-install status needs a matching host snapshot
+    - public CLI > Semctx incomplete recovery is retired when release I/O adds prerequisites
+ws_index_ignored: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+ws_doctor_ignored: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+id_assert_client_both: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+art_block_removed: exit=1 [('209', 'pass'), ('4', 'fail')] FAILS=4
+    - public CLI > AssertLedger preview cannot plan artifacts for another repository or client
+    - public CLI > doctor does not infer AssertLedger configuration from empty artifacts
+    - public CLI > doctor keeps invalid AssertLedger artifact evidence unknown
+    - public CLI > malformed AssertLedger artifacts preserve the saved recovery plan
+compass_status_identity_optional: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+semctx_apply_version: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+assert_apply_verify_unchanged: exit=1 [('212', 'pass'), ('1', 'fail')] FAILS=1
+    - public CLI > AssertLedger write needs an unchanged native post-install preview
+semctx_apply_install_exit: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+compass_apply_status_exit: exit=0 [('213', 'pass'), ('0', 'fail')] FAILS=0
+status: ''

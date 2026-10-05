@@ -1,0 +1,20 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..214545e 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -850,7 +850,6 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
+   const previews = [];
+   for (const host of hosts) {
+     const client = host === "claude" ? "claude-code" : "codex";
+-    if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
+     let admission;
+     try {
+       admission = assertAssertAdmission(rt, root, manager, admittedVersions, admittedVersions, needsInstall);
+@@ -862,7 +861,6 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
+       ? localAssertCommand(admission.entry, ["setup", root, "--client", client, "--dry-run", "--json"])
+       : ["npm", "exec", "--yes", "--ignore-scripts", `--package=assertledger@${version}`, "--", "assertledger", "setup", root, "--client", client, "--dry-run", "--json"];
+     const result = await rt.exec(previewCommand, root);
+-    if (recordMissingAssertLedgerTools(report, rt, manager)) return null;
+     try {
+       assertAssertAdmission(rt, root, manager, admittedVersions, admittedVersions, needsInstall);
+     } catch (error) {

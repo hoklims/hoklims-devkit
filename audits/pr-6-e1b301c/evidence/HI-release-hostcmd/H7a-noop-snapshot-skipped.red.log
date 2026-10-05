@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/release-upgrade.test.js
+bun test v1.4.2 (744846f84)
+
+test/release-upgrade.test.js:
+16 |   writeFileSync(managed, "before\n");
+17 |   const paths = [managed];
+18 |   const before = paths.map(snapshot);
+19 |   writeFileSync(managed, "foreign rewrite\n");
+20 |   expect(() => assertNoopUpgradeUnchanged(paths, before, report("0.3.5"), report("0.3.5"), report("0.3.5"), "noop"))
+21 |     .toThrow(/modified the host profile/u);
+          ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /modified the host profile/u
+
+Received function did not throw
+Received value: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/release-upgrade.test.js:21:6)
+(fail) same-version upgrade rejects changed managed bytes [2.48ms]
+
+ 1 pass
+ 1 fail
+ 4 expect() calls
+Ran 2 tests across 1 file. [15.00ms]
+EXIT=1

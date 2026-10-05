@@ -1,0 +1,40 @@
+$ rtk proxy bun test test/app.test.js -t 'Semctx upgrade never replaces an installed version with altered bytes|a pinned same-version upgrade does not overwrite modified Semctx plugin bytes'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+2498 | 
+2499 |   test("Semctx upgrade never replaces an installed version with altered bytes", async () => {
+2500 |     const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+2501 |     const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5", semctxContentDrift: true });
+2502 |     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+2503 |     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_DRIFT");
+                                                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "SEMCTX_CONTENT_DRIFT"
+Received: [ "SEMCTX_CONTENT_UNVERIFIED" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:2503:55)
+(fail) public CLI > Semctx upgrade never replaces an installed version with altered bytes [8.92ms]
+2529 |       inProgress: { command: "upgrade", selected: ["semctx"], hosts: ["codex"], versions: { semctx: "0.3.4" } },
+2530 |     };
+2531 |     const rt = fakeRuntime({ state, semctxContentDrift: true });
+2532 |     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex"]), rt);
+2533 |     expect(report.ok).toBe(false);
+2534 |     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_DRIFT");
+                                                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "SEMCTX_CONTENT_DRIFT"
+Received: [ "SEMCTX_CONTENT_UNVERIFIED" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:2534:55)
+(fail) public CLI > a pinned same-version upgrade does not overwrite modified Semctx plugin bytes [0.82ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 3 expect() calls
+Ran 2 tests across 1 file. [58.00ms]
+EXIT=1

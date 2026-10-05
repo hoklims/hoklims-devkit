@@ -1,0 +1,14 @@
+diff --git a/scripts/release-report.js b/scripts/release-report.js
+index 3b1a22a..80b8d92 100644
+--- a/scripts/release-report.js
++++ b/scripts/release-report.js
+@@ -22,8 +22,7 @@ export function validComponentReport(report, projectRoot, expectedNames, options
+     if (Object.keys(expectedFlags).length !== flagNames.length
+       || flagNames.some((name) => !["yes", "no", "unknown"].includes(expectedFlags[name]))) return false;
+ 
+-    for (let index = 0; index < report.components.length; index += 1) {
+-      if (!Object.hasOwn(report.components, index)) return false;
++    for (const index in report.components) {
+       const component = report.components[index];
+       if (!component || typeof component !== "object" || Array.isArray(component)) return false;
+       if (component.name !== expectedNames[index]) return false;

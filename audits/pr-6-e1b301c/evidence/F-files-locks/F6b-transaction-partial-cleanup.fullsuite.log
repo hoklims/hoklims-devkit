@@ -1,0 +1,6 @@
+$ rtk proxy bun test
+(fail) runtime revalidates Windows destination bytes after publication fails [7.41ms]
+ 212 pass
+ 1 fail
+Ran 213 tests across 5 files. [953.00ms]
+EXIT=1

@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..7801721 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -871,7 +871,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
+     }
+     const parsed = nativeResult(result, `assertledger setup (${client})`, report);
+     if (!parsed) continue;
+-    if (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"])) {
++    if (host === hosts[0] && (result.code !== 0 || !validAssertSetupReport(rt, parsed, root, client, "dry-run", ["WOULD_CREATE", "UNCHANGED"], ["WOULD_CREATE", "UNCHANGED"]))) {
+       problem(report, "ASSERTLEDGER_CONFLICT", JSON.stringify(parsed).slice(0, 600));
+       continue;
+     }

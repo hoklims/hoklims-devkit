@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..1ef2778 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -325,7 +325,7 @@ function packageManager(rt, root) {
+   const locks = [
+     ["npm", ["package-lock.json", "npm-shrinkwrap.json"]],
+     ["pnpm", ["pnpm-lock.yaml"]],
+-    ["bun", ["bun.lock", "bun.lockb"]],
++    ["bun", ["bun.lock"]],
+   ];
+   const found = new Set();
+   for (const [name, paths] of locks) {

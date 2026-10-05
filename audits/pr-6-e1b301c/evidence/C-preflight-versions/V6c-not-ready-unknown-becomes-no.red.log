@@ -1,0 +1,42 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'Semctx negative verdict remains unconfigured despite true readiness flags'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+502 |         verdict: "SETUP_NOT_READY", setupReady: true, analysisReady: true, check: { ok: false },
+503 |       }), stderr: "" }
+504 |       : nativeExec(argv, cwd);
+505 |     const report = await execute(setupOptions(), rt);
+506 |     expect(report.ok).toBe(false);
+507 |     expect(report.components[0]).toMatchObject({ state: "needs-attention", configured: "unknown" });
+                                       ^
+error: expect(received).toMatchObject(expected)
+
+  {
+-   "configured": "unknown",
++   "approved": "unknown",
++   "configured": "no",
++   "installed": "yes",
++   "loaded": "unknown",
++   "name": "semctx",
++   "observed": "unknown",
+    "state": "needs-attention",
++   "version": "0.3.4",
+  }
+
+- Expected  - 1
++ Received  + 7
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:507:34)
+(fail) public CLI > Semctx negative verdict remains unconfigured despite true readiness flags [9.97ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [58.00ms]
+EXIT CODE: 1

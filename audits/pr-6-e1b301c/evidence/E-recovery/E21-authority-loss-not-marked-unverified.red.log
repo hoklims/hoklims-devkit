@@ -1,0 +1,39 @@
+$ rtk proxy bun test test/app.test.js -t 'late authority loss replaces every earlier recovery instruction|lock release ownership conflict makes recorded-plan recovery conditional'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3178 |     const expectedCommand = `hoklims-devkit setup ${quoteShellToken(root)} --host codex`;
+3179 |     const collapsedCommand = `hoklims-devkit setup ${quoteShellToken(root.replace("  ", " "))} --host codex`;
+3180 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CHANGED");
+3181 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+3182 |     expect(report.nextActions).toHaveLength(1);
+3183 |     expect(report.nextActions[0]).toContain("inspect and validate the saved Devkit state");
+                                         ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "inspect and validate the saved Devkit state"
+Received: "Resolve the reported conflict, then run hoklims-devkit setup '/repo  with '\"'\"'quote' --host codex"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3183:35)
+(fail) public CLI > late authority loss replaces every earlier recovery instruction [11.56ms]
+3213 |     };
+3214 |     const report = await execute(parseArgs(["setup", "/repo", "--host", "codex"]), rt);
+3215 |     const guidance = [...report.nextActions, ...report.conflicts.map((item) => item.detail)].join("\n");
+3216 |     expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+3217 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_CONFLICT");
+3218 |     expect(guidance).toContain("inspect and validate the saved Devkit state");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "inspect and validate the saved Devkit state"
+Received: "Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex\nsemctx: Semctx workspace setup: native setup failed. Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex.\nlock ownership changed during failed read. Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit setup /repo --host codex."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3218:22)
+(fail) public CLI > lock release ownership conflict makes recorded-plan recovery conditional [2.08ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 7 expect() calls
+Ran 2 tests across 1 file. [51.00ms]
+EXIT=1

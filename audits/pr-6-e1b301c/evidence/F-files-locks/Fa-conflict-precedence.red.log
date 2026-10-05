@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/runtime.test.js -t 'runtime'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+668 |     const release = rt.acquireLock(statePath);
+669 |     let error;
+670 |     try { release(); } catch (caught) { error = caught; }
+671 |     expect(seamExecuted).toBe(true);
+672 |     expect(foreignReadExecuted).toBe(false);
+673 |     expect(error?.code).toBe("STATE_CONFLICT");
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: "STATE_CONFLICT"
+Received: "EIO"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:673:25)
+(fail) runtime revalidates lock ownership when descriptor reads fail [2.34ms]
+
+ 36 pass
+ 1 filtered out
+ 1 fail
+ 272 expect() calls
+Ran 37 tests across 1 file. [466.00ms]
+EXIT=1

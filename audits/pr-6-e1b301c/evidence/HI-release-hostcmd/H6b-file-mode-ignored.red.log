@@ -1,0 +1,38 @@
+$ rtk proxy bun test test/profile-snapshot.test.js
+bun test v1.4.2 (744846f84)
+
+test/profile-snapshot.test.js:
+83 |   writeFileSync(executable, "#!/bin/sh\n");
+84 |   chmodSync(executable, 0o755);
+85 |   const paths = protectedProfilePaths(home);
+86 |   const before = paths.map(snapshot);
+87 |   chmodSync(executable, 0o644);
+88 |   expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
+                                                                     ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/profile-snapshot.test.js:88:65)
+(fail) release smoke detects an executable permission change [0.56ms]
+ 97 |   writeFileSync(executable, "#!/bin/sh\n");
+ 98 |   chmodSync(executable, 0o755);
+ 99 |   const paths = protectedProfilePaths(home);
+100 |   let before = paths.map(snapshot);
+101 |   chmodSync(executable, 0o4755);
+102 |   expect(() => assertSnapshotUnchanged(paths, before, "codex")).toThrow();
+                                                                      ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/profile-snapshot.test.js:102:65)
+(fail) release smoke detects special permission-bit changes [0.53ms]
+
+ 5 pass
+ 2 fail
+ 12 expect() calls
+Ran 7 tests across 1 file. [16.00ms]
+EXIT=1

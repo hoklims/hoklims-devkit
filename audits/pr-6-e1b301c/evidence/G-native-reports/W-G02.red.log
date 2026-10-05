@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/app.test.js -t 'applied Semctx host reports retain exact install identity'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+435 |         const native = JSON.parse(result.stdout);
+436 |         mutate(native);
+437 |         return { ...result, stdout: JSON.stringify(native) };
+438 |       };
+439 |       const report = await execute(setupOptions(), rt);
+440 |       expect(report.conflicts.map((item) => item.code)).toContain("APPLY_FAILED");
+                                                              ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "APPLY_FAILED"
+Received: []
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:440:57)
+(fail) public CLI > applied Semctx host reports retain exact install identity [7.14ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [54.00ms]
+EXIT=1

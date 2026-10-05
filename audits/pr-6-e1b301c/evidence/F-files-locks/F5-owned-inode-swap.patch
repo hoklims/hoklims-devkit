@@ -1,0 +1,14 @@
+diff --git a/src/runtime.js b/src/runtime.js
+index f8c87bb..ddb2014 100644
+--- a/src/runtime.js
++++ b/src/runtime.js
+@@ -335,8 +335,7 @@ function assertOwnedFile(owned) {
+   }
+   assertSafeManagedParents(owned.path, parents);
+   if (!stat) throw ownedFileConflict(owned.path, "the owned path was removed");
+-  if (stat.isSymbolicLink() || !stat.isFile()
+-    || stat.dev !== owned.identity.dev || stat.ino !== owned.identity.ino) {
++  if (stat.isSymbolicLink() || !stat.isFile()) {
+     throw ownedFileConflict(owned.path, "the pathname now identifies another file");
+   }
+   return stat;

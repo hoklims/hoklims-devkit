@@ -1,0 +1,24 @@
+$ rtk proxy bun test test/release-report.test.js
+bun test v1.4.2 (744846f84)
+
+test/release-report.test.js:
+70 |     const exact = components();
+71 |     expect(validComponentReport(report(exact), projectRoot, expectedNames, configuredOptions)).toBe(true);
+72 |     expect(validComponentReport(report([{ ...exact[0], installed: "no" }, ...exact.slice(1)]), projectRoot, expectedNames, configuredOptions)).toBe(false);
+73 |     expect(validComponentReport(report([{ ...exact[0], configured: "unknown" }, ...exact.slice(1)]), projectRoot, expectedNames, configuredOptions)).toBe(false);
+74 |     expect(validComponentReport(report(exact), projectRoot, expectedNames, { expectedState: "planned", expectedFlags: configuredFlags })).toBe(false);
+75 |     expect(validComponentReport(report(exact, { projectRoot: "/wrong" }), projectRoot, expectedNames, configuredOptions)).toBe(false);
+                                                                                                                               ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-HI-release-hostcmd/test/release-report.test.js:75:123)
+(fail) validComponentReport > rejects false readiness flags, wrong state, and wrong project root [0.43ms]
+
+ 6 pass
+ 1 fail
+ 38 expect() calls
+Ran 7 tests across 1 file. [6.00ms]
+EXIT=1

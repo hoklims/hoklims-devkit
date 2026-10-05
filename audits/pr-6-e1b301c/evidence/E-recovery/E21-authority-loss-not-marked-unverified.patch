@@ -1,0 +1,12 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..b26cee9 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1391,7 +1391,6 @@ export async function execute(options, rt = createRuntime()) {
+     staleRecoveryFragments.add(stateRecoveryCommand(options, root, previousState, requestedRecoveryHosts, previousOptions));
+     for (const segment of authoredRecoverySegments) staleRecoveryFragments.add(segment);
+     for (const action of report.nextActions) staleRecoveryFragments.add(action);
+-    lockedStateUnverified = true;
+     persistedStateObserved = false;
+     persistedState = null;
+     refreshSavePending = false;

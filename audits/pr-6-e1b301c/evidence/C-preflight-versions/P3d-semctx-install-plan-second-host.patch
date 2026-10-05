@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..1da92a0 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -558,7 +558,7 @@ function validSemctxInstallReport(rt, parsed, root, hosts, version, selection, d
+     && parsed?.ok === true && parsed.version === version && parsed.dryRun === dryRun
+     && parsed.selection === selection
+     && HOSTS.every((host) => parsed.hosts?.[host]?.requested === hosts.includes(host))
+-    && hosts.every((host) => parsed.hosts[host].detected === true && statuses.includes(parsed.hosts[host].status));
++    && hosts.slice(0, 1).every((host) => parsed.hosts[host].detected === true && statuses.includes(parsed.hosts[host].status));
+ }
+ 
+ function fileBelongsToRoot(rt, path, relativePath, root) {

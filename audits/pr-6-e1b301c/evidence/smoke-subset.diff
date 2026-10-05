@@ -1,0 +1,24 @@
+4,6c4,6
+< import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
+< import { validComponentReport } from "./release-report.js";
+< import { assertNoopUpgradeUnchanged } from "./release-upgrade.js";
+---
+> import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/devkit-audit/scripts/profile-snapshot.js";
+> import { validComponentReport } from "/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/devkit-audit/scripts/release-report.js";
+> import { assertNoopUpgradeUnchanged } from "/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/devkit-audit/scripts/release-upgrade.js";
+86c86
+<   for (const withTools of [[], ["--with", "assertledger,latent-compass"]]) {
+---
+>   for (const withTools of [[], ["--with", "assertledger"]]) {
+89c89
+<     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
+---
+>     const expected = withTools.length ? ["semctx", "assertledger"] : ["semctx"];
+103c103
+<   for (const withTools of [[], ["--with", "assertledger,latent-compass"]]) {
+---
+>   for (const withTools of [[], ["--with", "assertledger"]]) {
+128c128
+<     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
+---
+>     const expected = withTools.length ? ["semctx", "assertledger"] : ["semctx"];

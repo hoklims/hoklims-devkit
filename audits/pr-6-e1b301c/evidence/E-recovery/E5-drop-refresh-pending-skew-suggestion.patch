@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..36fb2c1 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1369,7 +1369,7 @@ export async function execute(options, rt = createRuntime()) {
+       const optional = selected.filter((name) => name !== "semctx");
+       const refreshHosts = HOSTS.filter((host) => hosts.includes(host)
+         || selected.some((name) => state.components[name]?.hosts?.includes(host)));
+-      const refreshCommand = `hoklims-devkit upgrade ${quoteShellToken(root)} --host ${refreshHosts.length === 2 ? "all" : refreshHosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""} --refresh-pending`;
++      const refreshCommand = `hoklims-devkit upgrade ${quoteShellToken(root)} --host ${refreshHosts.length === 2 ? "all" : refreshHosts[0]}${optional.length ? ` --with ${optional.join(",")}` : ""}`;
+       const refreshInstruction = renderRetryInstruction(refreshHosts, refreshCommand, { components: selected, packageManager: recoveryPackageManager });
+       report.nextActions.push(`Review the new stable releases, then ${refreshInstruction[0].toLowerCase()}${refreshInstruction.slice(1)}`);
+     }

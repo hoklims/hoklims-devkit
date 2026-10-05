@@ -1,0 +1,83 @@
+$ cd /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions && rtk proxy bun test test/app.test.js -t 'doctor preserves unknown configuration when native diagnostics are unavailable'
+HEAD=e1b301c88cf4e592d076b7ddf302db23f11e67ba
+--- diff stat:
+ src/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+697 |     const nativeExec = rt.exec;
+698 |     rt.exec = async (argv, cwd) => argv.includes("doctor") || argv.includes("index-health")
+699 |       ? { code: 5, stdout: "", stderr: "simulated diagnostic outage" } : nativeExec(argv, cwd);
+700 |     const report = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+701 |     expect(report.ok).toBe(false);
+702 |     expect(report.components[0]).toMatchObject({ installed: "yes", configured: "unknown" });
+                                       ^
+error: expect(received).toMatchObject(expected)
+
+  {
+-   "configured": "unknown",
++   "approved": "unknown",
++   "checks": [
++     {
++       "command": "plugin-status",
++       "exitCode": 0,
++       "report": {
++         "hosts": {
++           "claude": {
++             "installed": {
++               "contentMatchesSnapshot": true,
++               "version": "0.3.4",
++             },
++             "marketplace": {
++               "matchesSemctx": true,
++             },
++             "requested": true,
++           },
++           "codex": {
++             "installed": {
++               "contentMatchesSnapshot": true,
++               "version": "0.3.4",
++             },
++             "marketplace": {
++               "matchesSemctx": true,
++             },
++             "requested": true,
++           },
++         },
++         "kind": "plugin_delivery_status",
++         "schemaVersion": 2,
++       },
++     },
++     {
++       "command": "doctor",
++       "exitCode": 5,
++       "report": null,
++     },
++     {
++       "command": "index-health",
++       "exitCode": 5,
++       "report": null,
++     },
++   ],
++   "configured": "no",
+    "installed": "yes",
++   "loaded": "unknown",
++   "name": "semctx",
++   "observed": "unknown",
++   "version": "0.3.4",
+  }
+
+- Expected  - 1
++ Received  + 48
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-C-preflight-versions/test/app.test.js:702:34)
+(fail) public CLI > doctor preserves unknown configuration when native diagnostics are unavailable [8.76ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [56.00ms]
+EXIT CODE: 1

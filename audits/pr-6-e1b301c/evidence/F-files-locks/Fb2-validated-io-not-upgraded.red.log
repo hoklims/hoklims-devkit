@@ -1,0 +1,188 @@
+$ rtk proxy bun test test/runtime.test.js -t 'lock ownership when descriptor reads fail|removal after inspection|parent creation|exclusive owned-file open failure|root-down inspection'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+136 |   const statePath = join(root, "repository.json");
+137 |   writeFileSync(statePath, JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }));
+138 |   const denied = Object.assign(new Error("read denied"), { code: "EACCES" });
+139 |   let ioError;
+140 |   try { createRuntime({ openReadDescriptor: () => { throw denied; } }).readState(statePath); } catch (caught) { ioError = caught; }
+141 |   expect(ioError).toBe(denied);
+                        ^
+error: expect(received).toBe(expected)
+
+Expected: 133 |   }
+134 | 
+135 |   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-state-open-io-")));
+136 |   const statePath = join(root, "repository.json");
+137 |   writeFileSync(statePath, JSON.stringify({ schemaVersion: 1, projectRoot: "/repo", components: {} }));
+138 |   const denied = Object.assign(new Error("read denied"), { code: "EACCES" });
+                                         ^
+error: read denied
+ code: "EACCES"
+
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:138:36
+
+Received: 44 |   try {
+45 |     validate();
+46 |   } catch (validationError) {
+47 |     throw preferredBoundaryError(error, validationError);
+48 |   }
+49 |   throw Object.assign(new Error(String(error?.message ?? error)), { code: "STATE_CONFLICT" });
+                               ^
+error: read denied
+ code: "STATE_CONFLICT"
+
+      at rethrowAfterValidation (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:49:27)
+      at readVerifiedFile (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:196:7)
+      at readState (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:622:21)
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:140:72
+
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:141:19)
+(fail) runtime classifies removal after inspection as ownership drift [6.89ms]
+456 |   });
+457 |   expect(run("directory-race")).toEqual({
+458 |     mode: "directory-race", code: "STATE_CONFLICT", replaced: true, value: null, foreignBytes: null,
+459 |   });
+460 |   expect(run("absent")).toEqual({ mode: "absent", code: null, replaced: false, value: null, foreignBytes: null });
+461 |   expect(run("eio")).toEqual({ mode: "eio", code: "EIO", replaced: false, value: null, foreignBytes: null });
+                           ^
+error: expect(received).toEqual(expected)
+
+@@ -1,3 +1,3 @@
+  {
+-   "code": "EIO",
++   "code": "STATE_CONFLICT",
+    "foreignBytes": null,
+
+- Expected  - 1
++ Received  + 1
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:461:22)
+(fail) runtime classifies a parent replaced during root-down inspection as a conflict [247.10ms]
+489 |   try {
+490 |     denied.writeState(join(root, "genuine-io", "repository.json"), {
+491 |       schemaVersion: 1, projectRoot: "/repo", components: {},
+492 |     });
+493 |   } catch (caught) { deniedError = caught; }
+494 |   expect(deniedError).toBe(io);
+                            ^
+error: expect(received).toBe(expected)
+
+Expected: 481 |   expect(replacementExecuted).toBe(true);
+482 |   expect(error?.code).toBe("STATE_CONFLICT");
+483 |   expect(readFileSync(foreignAncestor, "utf8")).toBe(foreign);
+484 |   expect(existsSync(statePath)).toBe(false);
+485 | 
+486 |   const io = Object.assign(new Error("parent creation denied"), { code: "EACCES" });
+                                     ^
+error: parent creation denied
+ code: "EACCES"
+
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:486:32
+
+Received: 44 |   try {
+45 |     validate();
+46 |   } catch (validationError) {
+47 |     throw preferredBoundaryError(error, validationError);
+48 |   }
+49 |   throw Object.assign(new Error(String(error?.message ?? error)), { code: "STATE_CONFLICT" });
+                               ^
+error: parent creation denied
+ code: "STATE_CONFLICT"
+
+      at rethrowAfterValidation (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:49:27)
+      at prepareManagedParent (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:290:5)
+      at writeState (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:630:7)
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:490:12
+
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:494:23)
+(fail) runtime classifies a regular ancestor raced during parent creation as a conflict [2.64ms]
+532 |   let ioError;
+533 |   try {
+534 |     createRuntime({ createOwnedFile: () => { throw denied; } })
+535 |       .writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} });
+536 |   } catch (caught) { ioError = caught; }
+537 |   expect(ioError).toBe(denied);
+                        ^
+error: expect(received).toBe(expected)
+
+Expected: 526 |     expect(readdirSync(root).sort()).toEqual(["outside.txt", "profile"]);
+527 |   }
+528 | 
+529 |   const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-exclusive-open-io-")));
+530 |   const statePath = join(root, "repository.json");
+531 |   const denied = Object.assign(new Error("exclusive open denied"), { code: "EACCES" });
+                                         ^
+error: exclusive open denied
+ code: "EACCES"
+
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:531:36
+
+Received: 44 |   try {
+45 |     validate();
+46 |   } catch (validationError) {
+47 |     throw preferredBoundaryError(error, validationError);
+48 |   }
+49 |   throw Object.assign(new Error(String(error?.message ?? error)), { code: "STATE_CONFLICT" });
+                               ^
+error: exclusive open denied
+ code: "STATE_CONFLICT"
+
+      at rethrowAfterValidation (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:49:27)
+      at openOwnedManagedFile (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:301:5)
+      at writeState (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:635:17)
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:535:8
+
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:537:19)
+(fail) runtime rechecks parents after every exclusive owned-file open failure [3.94ms]
+633 |     if (replace) {
+634 |       expect(error?.code).toBe("STATE_CONFLICT");
+635 |       expect(readFileSync(lockPath, "utf8")).toBe("FOREIGN-LOCK\n");
+636 |       expect(existsSync(originalPath)).toBe(true);
+637 |     } else {
+638 |       expect(error).toBe(readError);
+                          ^
+error: expect(received).toBe(expected)
+
+Expected: 612 |   for (const replace of [false, true]) {
+613 |     const root = realpathSync(mkdtempSync(join(tmpdir(), `hoklims-devkit-lock-read-error-${replace}-`)));
+614 |     const statePath = join(root, "repository.json");
+615 |     const lockPath = `${statePath}.lock`;
+616 |     const originalPath = `${lockPath}.original`;
+617 |     const readError = Object.assign(new Error("simulated lock read EIO"), { code: "EIO" });
+                                              ^
+error: simulated lock read EIO
+ code: "EIO"
+
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:617:41
+
+Received: 44 |   try {
+45 |     validate();
+46 |   } catch (validationError) {
+47 |     throw preferredBoundaryError(error, validationError);
+48 |   }
+49 |   throw Object.assign(new Error(String(error?.message ?? error)), { code: "STATE_CONFLICT" });
+                               ^
+error: simulated lock read EIO
+ code: "STATE_CONFLICT"
+
+      at rethrowAfterValidation (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:49:27)
+      at readVerifiedFile (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:214:7)
+      at readLockRecord (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:375:25)
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/src/runtime.js:701:27
+      at /tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:631:11
+
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:638:21)
+(fail) runtime revalidates lock ownership when descriptor reads fail [4.25ms]
+
+ 0 pass
+ 33 filtered out
+ 5 fail
+ 39 expect() calls
+Ran 5 tests across 1 file. [302.00ms]
+EXIT=1

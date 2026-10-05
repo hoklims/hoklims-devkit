@@ -1,0 +1,39 @@
+$ rtk proxy bun test test/app.test.js -t 'lock contention preserves an admitted refresh request|state I/O recovery repeats the recorded upgrade selectors'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3800 |     rt.writeState = () => { throw Object.assign(new Error("state disk unavailable"), { code: "EIO" }); };
+3801 |     const options = parseArgs(["upgrade", "/repo", "--host", "codex", "--with", "assertledger", "--refresh-pending"]);
+3802 |     const report = await execute(options, rt);
+3803 |     const detail = report.conflicts.map((item) => item.detail).join("\n");
+3804 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+3805 |     expect(detail).toContain("hoklims-devkit upgrade /repo --host codex --with assertledger --refresh-pending");
+                          ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "hoklims-devkit upgrade /repo --host codex --with assertledger --refresh-pending"
+Received: "Devkit state read or write failed at /state/repo.json: state disk unavailable. Check disk space and permissions, replace linked state paths with real local directories or files. Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit upgrade /repo --host codex --with assertledger."
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3805:20)
+(fail) public CLI > state I/O recovery repeats the recorded upgrade selectors [17.28ms]
+3998 |     const rt = fakeRuntime({ state, version: "0.3.5", stable: "0.3.5" });
+3999 |     rt.acquireLock = () => { throw Object.assign(new Error("Another operation is running"), { code: "RUN_LOCKED" }); };
+4000 |     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+4001 |     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+4002 |     expect(report.conflicts.map((item) => item.code)).toContain("RUN_LOCKED");
+4003 |     expect(guidance).toContain("hoklims-devkit upgrade /repo --host codex --refresh-pending");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "hoklims-devkit upgrade /repo --host codex --refresh-pending"
+Received: "State lock unavailable at /state/repo.json; another Devkit operation may be running. Wait for active operations to finish. If none is active, inspect the lock and state paths; remove a lock only after confirming it is stale and belongs to this Devkit state. Resolve the reported native conflict, then complete the recorded plan with hoklims-devkit upgrade /repo --host codex.\nResolve the reported native conflict, then complete the recorded plan with hoklims-devkit upgrade /repo --host codex"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:4003:22)
+(fail) public CLI > lock contention preserves an admitted refresh request [1.31ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 4 expect() calls
+Ran 2 tests across 1 file. [41.00ms]
+EXIT=1

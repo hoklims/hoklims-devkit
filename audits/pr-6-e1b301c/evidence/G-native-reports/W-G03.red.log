@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/app.test.js -t 'a malformed Semctx installed version blocks before any write'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+367 |       status.hosts.codex.installed.version = "bad";
+368 |       return { ...result, stdout: JSON.stringify(status) };
+369 |     };
+370 |     const report = await execute(setupOptions(), rt);
+371 |     expect(report.ok).toBe(false);
+372 |     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_STATUS_INVALID");
+                                                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "SEMCTX_STATUS_INVALID"
+Received: [ "APPLY_FAILED" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:372:55)
+(fail) public CLI > a malformed Semctx installed version blocks before any write [13.65ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [65.00ms]
+EXIT=1

@@ -1,0 +1,40 @@
+$ rtk proxy bun test test/app.test.js -t 'naming another repository blocks all writes'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+411 |       const result = await nativeExec(argv, cwd);
+412 |       if (!argv.includes("install") || !argv.includes("--dry-run")) return result;
+413 |       return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), repositoryRoot: "/other" }) };
+414 |     };
+415 |     const report = await execute(setupOptions(), rt);
+416 |     expect(report.ok).toBe(false);
+                            ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:416:23)
+(fail) public CLI > a Semctx host plan naming another repository blocks all writes [8.63ms]
+459 |       const result = await nativeExec(argv, cwd);
+460 |       if (!argv.includes("plugin-status")) return result;
+461 |       return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), repositoryRoot: "/other" }) };
+462 |     };
+463 |     const report = await execute(setupOptions(), rt);
+464 |     expect(report.ok).toBe(false);
+                            ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:464:23)
+(fail) public CLI > Semctx plugin status naming another repository blocks all writes [1.27ms]
+
+ 0 pass
+ 157 filtered out
+ 2 fail
+ 2 expect() calls
+Ran 2 tests across 1 file. [53.00ms]
+EXIT=1

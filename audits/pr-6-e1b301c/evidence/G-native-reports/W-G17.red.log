@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/app.test.js -t 'native stream failures retain the validated report and saved retry'
+# mutation:  1 file changed, 1 insertion(+), 2 deletions(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+228 |     const exec = rt.exec;
+229 |     rt.exec = (argv, cwd, timeout) => argv.includes("plugin-status")
+230 |       ? native.exec(argv, cwd, timeout) : exec(argv, cwd, timeout);
+231 |     const report = await execute(setupOptions(), rt);
+232 |     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+233 |     expect(report.conflicts.map((item) => item.code)).toContain("NATIVE_REPORT_INVALID");
+                                                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "NATIVE_REPORT_INVALID"
+Received: [ "SEMCTX_STATUS_INVALID" ]
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:233:55)
+(fail) public CLI > native stream failures retain the validated report and saved retry [9.98ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [58.00ms]
+EXIT=1

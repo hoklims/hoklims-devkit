@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..7b7b971 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -1531,7 +1531,7 @@ export async function execute(options, rt = createRuntime()) {
+     }
+   } catch (error) {
+     if ((lockedRereadStarted && !persistedStateObserved)
+-      || (stateTransaction && error?.code === "STATE_CONFLICT")) {
++      ) {
+       invalidateLockedAuthority();
+     }
+     stateBoundaryProblem(report, error, statePath, "read or write", {

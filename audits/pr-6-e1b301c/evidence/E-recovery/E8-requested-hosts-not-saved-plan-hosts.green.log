@@ -1,0 +1,9 @@
+$ rtk proxy bun test test/app.test.js -t 'early Bun and Git failures recover the validated saved plan|STATE_CHANGED recovery restores a missing host from the latest locked plan'
+bun test v1.4.2 (744846f84)
+
+ 2 pass
+ 157 filtered out
+ 0 fail
+ 21 expect() calls
+Ran 2 tests across 1 file. [28.00ms]
+EXIT=0

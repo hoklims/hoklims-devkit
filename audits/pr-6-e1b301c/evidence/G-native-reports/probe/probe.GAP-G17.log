@@ -1,0 +1,96 @@
+bun test v1.4.2 (744846f84)
+
+../evidence/G-native-reports/probe/probe.test.js:
+
+ 1 pass
+ 0 fail
+Ran 1 test across 1 file. [64.00ms]
+{
+ "G07_setupplan_root_other": {
+  "ok": false,
+  "codes": [
+   "SEMCTX_WORKSPACE_CONFLICT"
+  ],
+  "comp": [
+   "semctx:planned/unknown"
+  ],
+  "writes": 0
+ },
+ "G08_apply_setup_root_other": {
+  "ok": false,
+  "codes": [
+   "APPLY_FAILED"
+  ],
+  "comp": [
+   "semctx:partial/unknown"
+  ],
+  "writes": 1
+ },
+ "G09_host_status_failed": {
+  "ok": false,
+  "codes": [
+   "SEMCTX_HOST_CONFLICT"
+  ],
+  "comp": [
+   "semctx:planned/unknown"
+  ],
+  "writes": 0
+ },
+ "G12_setup_exit4": {
+  "ok": false,
+  "codes": [
+   "SEMCTX_WORKSPACE_CONFLICT"
+  ],
+  "comp": [
+   "semctx:planned/unknown"
+  ],
+  "writes": 0
+ },
+ "G14_doctor_index_partial": {
+  "ok": false,
+  "codes": [
+   "DOCTOR_NOT_READY"
+  ],
+  "comp": [
+   "semctx:/no"
+  ],
+  "writes": 0
+ },
+ "G16_post_install_content_null": {
+  "ok": false,
+  "codes": [
+   "APPLY_FAILED"
+  ],
+  "comp": [
+   "semctx:partial/unknown"
+  ],
+  "writes": 1
+ },
+ "G03_assert_other_client": {
+  "ok": false,
+  "codes": [
+   "ASSERTLEDGER_CONFLICT"
+  ],
+  "comp": [
+   "semctx:planned/unknown",
+   "assertledger:planned/unknown"
+  ],
+  "writes": 0
+ },
+ "G04_compass_other_version": {
+  "ok": false,
+  "codes": [
+   "COMPASS_HOOK_CONFLICT"
+  ],
+  "comp": [
+   "semctx:planned/unknown",
+   "latent-compass:planned/unknown"
+  ],
+  "writes": 0
+ },
+ "G17_runtime_exec_result": {
+  "code": 0,
+  "stdout": "",
+  "stderr": ""
+ }
+}

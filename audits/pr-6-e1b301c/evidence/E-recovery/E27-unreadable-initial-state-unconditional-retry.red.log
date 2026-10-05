@@ -1,0 +1,25 @@
+$ rtk proxy bun test test/app.test.js -t 'an unreadable initial state remains unobserved during refresh recovery'
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+3767 |     const rt = fakeRuntime({ version: "0.3.5", stable: "0.3.5" });
+3768 |     rt.readState = () => { throw Object.assign(new Error("state access denied"), { code: "EACCES" }); };
+3769 |     const report = await execute(parseArgs(["upgrade", "/repo", "--host", "codex", "--refresh-pending"]), rt);
+3770 |     const guidance = [report.conflicts.map((item) => item.detail).join("\n"), report.nextActions.join("\n")].join("\n");
+3771 |     expect(report.conflicts.map((item) => item.code)).toContain("STATE_IO_ERROR");
+3772 |     expect(guidance).toContain("inspect and validate the saved Devkit state");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "inspect and validate the saved Devkit state"
+Received: "Devkit state initial read failed at /state/repo.json: state access denied. Check disk space and permissions, replace linked state paths with real local directories or files. Run hoklims-devkit upgrade /repo --host codex.\nRun hoklims-devkit upgrade /repo --host codex"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-E-recovery/test/app.test.js:3772:22)
+(fail) public CLI > an unreadable initial state remains unobserved during refresh recovery [8.60ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [52.00ms]
+EXIT=1

@@ -1,0 +1,59 @@
+$ rtk proxy bun test test/runtime.test.js -t 'replacement temporary file|replacement lock after its writer returns|revalidates staged ownership'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+870 |     });
+871 |     const transaction = rt.openStateTransaction(statePath);
+872 |     let error;
+873 |     try { transaction.write(next); } catch (caught) { error = caught; }
+874 |     expect(swapped).toBe(true);
+875 |     expect(error?.code).toBe("STATE_CONFLICT");
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: "STATE_CONFLICT"
+Received: undefined
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:875:25)
+(fail) runtime revalidates staged ownership after the final destination read [4.87ms]
+934 |       throw Object.assign(new Error("disk write failed"), { code: "ENOSPC" });
+935 |     },
+936 |   });
+937 |   let error;
+938 |   try { rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} }); } catch (caught) { error = caught; }
+939 |   expect(error?.message).toMatch(/ownership changed/u);
+                               ^
+error: expect(received).toMatch(expected)
+
+Expected substring or pattern: /ownership changed/u
+Received: "disk write failed"
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:939:26)
+(fail) runtime preserves a replacement temporary file when the writer fails [1.60ms]
+954 |       writeFileSync(tempPath, "foreign replacement\n");
+955 |     },
+956 |   });
+957 |   let error;
+958 |   try { rt.writeState(statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} }); } catch (caught) { error = caught; }
+959 |   expect(error?.message).toMatch(/ownership changed/u);
+                               ^
+error: Received value must be a string: undefined
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:959:26)
+(fail) runtime never commits a replacement temporary file after a successful callback [0.90ms]
+1010 |       writeFileSync(lockPath, "foreign lock\n");
+1011 |     },
+1012 |   });
+1013 |   let error;
+1014 |   try { rt.acquireLock(statePath); } catch (caught) { error = caught; }
+1015 |   expect(error?.message).toMatch(/ownership changed/u);
+                                ^
+error: Received value must be a string: undefined
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:1015:26)
+(fail) runtime preserves a replacement lock after its writer returns [1.75ms]
+
+ 0 pass
+ 34 filtered out
+ 4 fail
+ 5 expect() calls
+Ran 4 tests across 1 file. [30.00ms]
+EXIT=1

@@ -1,0 +1,43 @@
+$ rtk proxy bun test test/runtime.test.js -t 'linked state directory|dangling state-directory links and linked profile roots'
+bun test v1.4.2 (744846f84)
+
+test/runtime.test.js:
+381 |     if (!fixture) continue;
+382 |     const rt = createRuntime();
+383 |     const action = operation === "read" ? () => rt.readState(fixture.statePath)
+384 |       : operation === "write" ? () => rt.writeState(fixture.statePath, { schemaVersion: 1, projectRoot: "/repo", components: {} })
+385 |         : () => rt.acquireLock(fixture.statePath);
+386 |     expect(action).toThrow(/Unsafe managed state path/u);
+                         ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /Unsafe managed state path/u
+
+Received function did not throw
+Received value: null
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:386:20)
+(fail) runtime refuses a linked state directory before every managed-state operation [2.23ms]
+394 | test("runtime refuses dangling state-directory links and linked profile roots", () => {
+395 |   for (const settings of [{ dangling: true }, { profileAlias: true }]) {
+396 |     const fixture = linkedDirectoryFixture(settings);
+397 |     if (!fixture) continue;
+398 |     const rt = createRuntime();
+399 |     expect(() => rt.readState(fixture.statePath)).toThrow(/Unsafe managed state path/u);
+                                                        ^
+error: expect(received).toThrow(expected)
+
+Expected pattern: /Unsafe managed state path/u
+
+Received function did not throw
+Received value: null
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-F-files-locks/test/runtime.test.js:399:51)
+(fail) runtime refuses dangling state-directory links and linked profile roots [0.94ms]
+
+ 0 pass
+ 36 filtered out
+ 2 fail
+ 2 expect() calls
+Ran 2 tests across 1 file. [21.00ms]
+EXIT=1

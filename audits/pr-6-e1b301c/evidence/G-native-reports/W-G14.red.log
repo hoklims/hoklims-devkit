@@ -1,0 +1,26 @@
+$ rtk proxy bun test test/app.test.js -t 'Semctx setup never replaces installed bytes without positive content attestation'
+# mutation:  1 file changed, 1 insertion(+), 1 deletion(-)
+bun test v1.4.2 (744846f84)
+
+test/app.test.js:
+2515 |       const status = JSON.parse(result.stdout);
+2516 |       status.hosts.codex.installed.contentMatchesSnapshot = null;
+2517 |       return { ...result, stdout: JSON.stringify(status) };
+2518 |     };
+2519 |     const report = await execute(setupOptions(), rt);
+2520 |     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_CONTENT_UNVERIFIED");
+                                                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "SEMCTX_CONTENT_UNVERIFIED"
+Received: []
+
+      at <anonymous> (/tmp/claude-1000/-home-laegel--claude-session/e90c724e-4ef0-48ad-8599-172e694fc5f1/scratchpad/w-G-native-reports/test/app.test.js:2520:55)
+(fail) public CLI > Semctx setup never replaces installed bytes without positive content attestation [6.98ms]
+
+ 0 pass
+ 158 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [52.00ms]
+EXIT=1

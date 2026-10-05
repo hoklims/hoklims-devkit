@@ -1,0 +1,13 @@
+diff --git a/src/app.js b/src/app.js
+index fc64d70..6b6cbc3 100644
+--- a/src/app.js
++++ b/src/app.js
+@@ -95,7 +95,7 @@ function retryGuidance(rt, hosts, command, { components = [], packageManager } =
+   const prerequisites = [];
+   if (missing.length === 1 && missing[0].endsWith(" CLI")) prerequisites.push(`Restore the ${missing[0]} on PATH`);
+   else if (missing.length) prerequisites.push(`Restore ${missing.join(", ")} on PATH`);
+-  if (components.includes("assertledger") && !packageManager) {
++  if (false) {
+     prerequisites.push("Inspect the declared AssertLedger package manager and restore it on PATH if missing");
+   }
+   return {

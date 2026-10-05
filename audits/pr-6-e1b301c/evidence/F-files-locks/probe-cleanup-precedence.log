@@ -1,0 +1,6 @@
+{"api":"writeState","unlinkFails":false,"code":"STATE_CONFLICT","msg":"Managed state file ownership changed at /tmp/probe-cleanup-precedence-A2Y0qK/repository.js","foreignPreserved":true,"entries":["repository.json"]}
+{"api":"writeState","unlinkFails":true,"code":"EBUSY","msg":"unlink EBUSY","foreignPreserved":true,"entries":["repository.json","repository.json.candidate.tmp"]}
+{"api":"transaction","unlinkFails":false,"code":"STATE_CONFLICT","msg":"Managed state file ownership changed at /tmp/probe-cleanup-precedence-pD27Fe/repository.js","foreignPreserved":true,"entries":["repository.json"]}
+{"api":"transaction","unlinkFails":true,"code":"EBUSY","msg":"unlink EBUSY","foreignPreserved":true,"entries":["repository.json","repository.json.candidate.tmp"]}
+{"seeded":false,"writeCode":"EBUSY","closeCode":"STATE_CONFLICT"}
+{"seeded":true,"writeCode":"EBUSY","closeCode":"STATE_CONFLICT"}
