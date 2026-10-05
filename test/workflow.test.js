@@ -21,6 +21,7 @@ beforeAll(() => {
   const init = Bun.spawnSync(["git", "init", root], { stdout: "pipe", stderr: "pipe" });
   if (init.exitCode !== 0) throw new Error(init.stderr.toString());
   root = realpathSync(root);
+  root = realpathSync(git("rev-parse", "--show-toplevel"));
   writeFileSync(join(root, "value.js"), "export const value = 1;\n");
   git("add", ".");
   git("-c", "user.name=Workflow Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "before");
@@ -60,6 +61,7 @@ async function plan(input = request, extra = []) {
 
 test("a real CLI invocation prepares a read-only plan bound to the committed diff", async () => {
   const result = await plan();
+  expect(result.report.conflicts).toEqual([]);
   expect(result.code).toBe(0);
   expect(result.report.kind).toBe("workflow_plan");
   expect(result.report.verdict).toBe("PLANNED");
