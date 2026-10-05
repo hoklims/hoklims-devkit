@@ -41,8 +41,12 @@ of `git diff --no-ext-diff --no-textconv --binary --full-index BASE HEAD`.
 Every revision must resolve to that exact commit. Planning rechecks HEAD and
 worktree/index state before returning; drift refuses the plan. Assume-unchanged
 and skip-worktree entries are refused because they can hide source changes.
-Git reads disable
-replacement objects, filesystem-monitor hooks and optional index writes.
+Git reads disable replacement objects, filesystem-monitor hooks, optional index
+writes, lazy fetching and configured clean/smudge/process filters. This profile
+excludes submodules and repositories requiring content-conversion filters.
+Git configuration must remain stable while a plan is captured; the command is
+not a sandbox against another process changing repository configuration during
+that capture. Providers and executions still require their native preflight.
 
 For a regression, `before` must equal `scope.base`; the fixed revision is
 `scope.head`. `neutral` must be a distinct existing commit, with an explicit

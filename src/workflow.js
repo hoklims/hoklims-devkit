@@ -97,7 +97,22 @@ export async function prepareWorkflow(options, rt, root, report) {
     return blocked("WORKFLOW_ROOT_MISMATCH", "The request repository root cannot be resolved");
   }
   report.unprovenObligationIds = [...request.proofObligationIds].sort();
-  const git = (...args) => rt.exec(["git", "--no-optional-locks", "--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-C", root, ...args], root, 120_000, args[0] === "diff");
+  const filterOverrides = [];
+  const gitOptions = ["git", "--no-optional-locks", "--no-replace-objects", "--no-lazy-fetch", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"];
+  const git = (...args) => rt.exec([...gitOptions, ...filterOverrides, "-C", root, ...args], root, 120_000, args[0] === "diff");
+  const readFilterNames = () => rt.exec([...gitOptions, "-C", root, "config", "--null", "--name-only", "--get-regexp", "^filter\\..*\\.(clean|smudge|process|required)$"], root);
+  const filters = await readFilterNames();
+  if (![0, 1].includes(filters.code)) return blocked("WORKFLOW_SOURCE_UNAVAILABLE", "Cannot inspect Git conversion configuration", 3);
+  const drivers = new Set();
+  for (const key of filters.stdout.split("\0").filter(Boolean)) {
+    const match = /^filter\.(.+)\.(?:clean|smudge|process|required)$/u.exec(key);
+    if (!match || /[\u0000-\u001f\u007f]/u.test(key)) return blocked("WORKFLOW_GIT_CONFIGURATION_UNSUPPORTED", "Unsupported Git filter configuration");
+    drivers.add(match[1]);
+  }
+  for (const driver of drivers) {
+    for (const operation of ["clean", "smudge", "process"]) filterOverrides.push("-c", `filter.${driver}.${operation}=`);
+    filterOverrides.push("-c", `filter.${driver}.required=false`);
+  }
   const head = await git("rev-parse", "--verify", "HEAD");
   if (head.code !== 0) return blocked("WORKFLOW_SOURCE_UNAVAILABLE", "Cannot resolve the current Git HEAD", 3);
   if (head.stdout.trim() !== request.scope.head) return blocked("WORKFLOW_HEAD_MISMATCH", "The requested head differs from the current Git HEAD");
@@ -105,6 +120,11 @@ export async function prepareWorkflow(options, rt, root, report) {
   if (indexFlags.code !== 0) return blocked("WORKFLOW_SOURCE_UNAVAILABLE", "Cannot inspect Git index flags", 3);
   if (indexFlags.stdout.split("\0").some(entry => entry && (entry[0] === "S" || /[a-z]/u.test(entry[0])))) {
     return blocked("WORKFLOW_HIDDEN_INDEX", "Assume-unchanged or skip-worktree entries can conceal source changes; clear the flags before capturing a request");
+  }
+  const entries = await git("ls-files", "--stage", "-z");
+  if (entries.code !== 0) return blocked("WORKFLOW_SOURCE_UNAVAILABLE", "Cannot inspect Git file modes", 3);
+  if (entries.stdout.split("\0").some(entry => entry.startsWith("160000 "))) {
+    return blocked("WORKFLOW_SUBMODULE_UNSUPPORTED", "The committed-source profile does not include submodules");
   }
   const status = await git("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none");
   if (status.code !== 0) return blocked("WORKFLOW_SOURCE_UNAVAILABLE", "Cannot inspect the working tree", 3);
@@ -121,8 +141,10 @@ export async function prepareWorkflow(options, rt, root, report) {
   const finalHead = await git("rev-parse", "--verify", "HEAD");
   const finalStatus = await git("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none");
   const finalIndexFlags = await git("ls-files", "-v", "-z");
+  const finalFilters = await readFilterNames();
   if (finalHead.code !== 0 || finalStatus.code !== 0 || finalIndexFlags.code !== 0
-    || finalHead.stdout !== head.stdout || finalStatus.stdout !== status.stdout || finalIndexFlags.stdout !== indexFlags.stdout) {
+    || finalHead.stdout !== head.stdout || finalStatus.stdout !== status.stdout || finalIndexFlags.stdout !== indexFlags.stdout
+    || finalFilters.code !== filters.code || finalFilters.stdout !== filters.stdout) {
     return blocked("WORKFLOW_SOURCE_CHANGED", "Git source changed during planning; capture a new request");
   }
   Object.assign(report, { requestDigest: hash(JSON.stringify(canonical(request))), source: request.source, scope: request.scope });

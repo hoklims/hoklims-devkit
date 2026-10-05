@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { execute, parseArgs } from "../src/app.js";
@@ -146,6 +146,28 @@ test("hidden index flags cannot conceal uncommitted code", async () => {
     }
   }
   expect((await plan()).code).toBe(0);
+}, 15000);
+
+test("Git clean filters cannot execute code while planning", async () => {
+  const marker = join(fixture, "filter-executed");
+  const script = join(fixture, "filter.mjs");
+  const attributes = join(root, ".git", "info", "attributes");
+  writeFileSync(script, `import {readFileSync,writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(marker)},'executed');process.stdout.write(readFileSync(0));`);
+  const quote = path => `"${path.replaceAll("\\", "/")}"`;
+  git("config", "filter.witness.clean", `${quote(Bun.which("node"))} ${quote(script)}`);
+  writeFileSync(attributes, "value.js filter=witness\n");
+  utimesSync(join(root, "value.js"), new Date(0), new Date(0));
+  try {
+    const result = await plan();
+    expect(existsSync(marker)).toBe(false);
+    expect(result.report.verdict).toBe("PLANNED");
+    expect(result.report.execution).toBe("not-run");
+    expect(result.report.unprovenObligationIds).toEqual(request.proofObligationIds);
+  } finally {
+    git("config", "--remove-section", "filter.witness");
+    rmSync(attributes, { force: true });
+    writeFileSync(join(root, "value.js"), "export const value = 3;\n");
+  }
 }, 15000);
 
 function regression(framework = "node:test") {
