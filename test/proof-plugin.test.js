@@ -199,6 +199,35 @@ test("a compatible registered repository is reusable only with its bound native 
   expect(readFileSync(join(cache, "ownership.json"), "utf8")).toBe(before);
 });
 
+test("an available native version must match its inspected physical source manifest", async () => {
+  const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
+  const available = nativeItem(root, { version: "9.9.9", installed: false });
+  const calls = [];
+  const rt = { codexHome: () => home, realpath: realpathSync,
+    exec: async argv => { calls.push(argv); return { code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace")
+      ? { marketplaces: [{ name: "hoklims-devkit", root }] } : { installed: [], available: [available] }) }; } };
+  const before = readFileSync(join(root, ".agents", "plugins", "hoklims-proof", "plugin.json"), "utf8");
+  await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow();
+  expect(calls.some(argv => argv.includes("add"))).toBe(false);
+  expect(readFileSync(join(root, ".agents", "plugins", "hoklims-proof", "plugin.json"), "utf8")).toBe(before);
+});
+
+test("an available prior version remains valid while its owned source is awaiting an explicit upgrade", async () => {
+  const root = repo(), home = repo();
+  mkdirSync(join(root, ".agents", "plugins"), { recursive: true });
+  writeFileSync(join(root, ".agents", "plugins", "marketplace.json"), JSON.stringify({ name: "hoklims-devkit", plugins: [{ name: "hoklims-proof",
+    source: { source: "local", path: "./.agents/plugins/hoklims-proof" }, policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" }, category: "Productivity" }] }));
+  const initial = pluginPlan(root);
+  writeSnapshot(join(root, ".agents", "plugins", "hoklims-proof"), initial, "0.0.9");
+  const plan = pluginPlan(root, { upgradePlugin: true });
+  const available = nativeItem(root, { version: "0.0.9", installed: false });
+  const rt = { codexHome: () => home, realpath: realpathSync,
+    exec: async argv => ({ code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace")
+      ? { marketplaces: [{ name: "hoklims-devkit", root }] } : { installed: [], available: [available] }) }) };
+  await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).resolves.toMatchObject({ installed: false, registerMarketplace: false });
+});
+
 test("matching native bytes cannot conceal an extra unowned cache file", async () => {
   const root = repo(), home = repo();
   const plan = pluginPlan(root);
@@ -287,6 +316,15 @@ test("a complete supported prior native cache can be replaced explicitly", async
   await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).resolves.toMatchObject({ installed: true });
 });
 
+test("the supported local cache alias can hold the installed prior owned snapshot", async () => {
+  const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "local");
+  writeSnapshot(cache, plan, "0.0.9");
+  const { rt } = nativeRuntime(home, nativeItem(root, { version: "0.0.9" }), root);
+  await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).resolves.toMatchObject({ installed: true });
+});
+
 test("an explicit upgrade refuses a foreign current-version destination beside the intact old cache", async () => {
   const root = repo(), home = repo(), plan = pluginPlan(root);
   applyPlugin(plan);
@@ -299,6 +337,17 @@ test("an explicit upgrade refuses a foreign current-version destination beside t
   const before = readFileSync(join(currentCache, "foreign"), "utf8");
   await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).rejects.toThrow("cache identity");
   expect(readFileSync(join(currentCache, "foreign"), "utf8")).toBe(before);
+});
+
+test("an old installed cache cannot be represented only by an old snapshot in the current-version directory", async () => {
+  const root = repo(), home = repo(), plan = pluginPlan(root);
+  applyPlugin(plan);
+  const wrongLocation = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  writeSnapshot(wrongLocation, plan, "0.0.9");
+  const { rt } = nativeRuntime(home, nativeItem(root, { version: "0.0.9" }), root);
+  const before = readFileSync(join(wrongLocation, "ownership.json"), "utf8");
+  await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).rejects.toThrow("cache identity");
+  expect(readFileSync(join(wrongLocation, "ownership.json"), "utf8")).toBe(before);
 });
 
 test("a native declared version must match the prior ownership version", async () => {

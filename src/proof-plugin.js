@@ -260,20 +260,30 @@ export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = fa
         || nativeRealpath(rt, item.marketplaceSource.source) !== nativeSource.marketplaceRoot)) throw new Error("mismatch");
     } catch { throw new Error("Native plugin inventory source differs from its registered marketplace"); }
   }
+  if (selectedAvailable.length) {
+    let sourceManifest;
+    try { sourceManifest = JSON.parse(read(nativeSource.pluginRoot, "plugin.json")?.toString("utf8") ?? ""); }
+    catch { throw new Error("Native available plugin source manifest is invalid"); }
+    if (!sourceManifest || typeof sourceManifest !== "object" || Array.isArray(sourceManifest) || sourceManifest.name !== NAME
+      || typeof sourceManifest.version !== "string" || !/^\d+\.\d+\.\d+$/u.test(sourceManifest.version)
+      || selectedAvailable.some(item => item.version !== sourceManifest.version)) throw new Error("Native available plugin version differs from its physical source manifest");
+  }
   const installed = selectedInstalled[0];
   if (installed?.enabled === false) throw new Error("The native plugin is explicitly disabled; resolve its configuration before onboarding");
   {
     const cachedVersion = installed?.version ?? packageJson.version;
     if (typeof cachedVersion !== "string" || !/^(?:\d+\.\d+\.\d+|local)$/u.test(cachedVersion)) throw new Error("Native plugin version is unsupported");
     if (installed && cachedVersion !== packageJson.version && !upgradePlugin) throw new Error("Existing native plugin version differs; review --upgrade-plugin explicitly");
-    const candidates = [...new Set([cachedVersion, packageJson.version, "local"])].map(version => safePath(rt.realpath(rt.codexHome()), `plugins/cache/${marketplaceName}/${NAME}/${version}`));
-    const present = candidates.filter(path => existsSync(path));
+    const candidates = [...new Set([cachedVersion, packageJson.version, "local"])].map(version => ({ version,
+      path: safePath(rt.realpath(rt.codexHome()), `plugins/cache/${marketplaceName}/${NAME}/${version}`) }));
+    const present = candidates.filter(candidate => existsSync(candidate.path));
     if (present.length > 1 || (installed && present.length !== 1)) throw new Error("Native plugin cache identity cannot be established");
+    if (installed && present.length === 1 && present[0].version !== cachedVersion && present[0].version !== "local") throw new Error("Native plugin cache identity cannot be established");
     if (present.length) {
       // Every accepted cache is a complete, byte-bound Devkit snapshot with the native version it declares.
-      ownedSnapshot(present[0], plan.changes.filter(change => change.name.startsWith(`${PREFIX}/`) && change.name !== OWNER).map(change => change.name),
+      ownedSnapshot(present[0].path, plan.changes.filter(change => change.name.startsWith(`${PREFIX}/`) && change.name !== OWNER).map(change => change.name),
         { cached: true, nativeVersion: cachedVersion });
-      if (!snapshotMatches(present[0], plan, true) && !upgradePlugin) throw new Error("Native cached plugin content differs; no implicit replacement is allowed");
+      if (!snapshotMatches(present[0].path, plan, true) && !upgradePlugin) throw new Error("Native cached plugin content differs; no implicit replacement is allowed");
     }
   }
   return { marketplaceRoot, registerMarketplace: markets.length === 0, selector: plan.selector, installed: Boolean(installed),
