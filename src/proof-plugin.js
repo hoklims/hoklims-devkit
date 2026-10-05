@@ -41,6 +41,62 @@ function collect(root, directory, destination, files) {
   }
 }
 
+function ownedSnapshot(root, expectedNames, { cached = false, nativeVersion = null } = {}) {
+  const directory = cached ? root : safePath(root, PREFIX);
+  const ownerName = cached ? "ownership.json" : OWNER;
+  const ownerBytes = read(root, ownerName);
+  if (!ownerBytes || !existsSync(directory) || !lstatSync(directory).isDirectory()) throw new Error("Plugin snapshot has no ownership record");
+  let owner;
+  try { owner = JSON.parse(ownerBytes.toString("utf8")); }
+  catch { throw new Error("Plugin snapshot has an invalid ownership record"); }
+  const ownerKeys = ["schemaVersion", "owner", "plugin", "version", "runtimes", "files"];
+  if (!owner || typeof owner !== "object" || Array.isArray(owner)
+    || Object.keys(owner).length !== ownerKeys.length || ownerKeys.some(key => !Object.hasOwn(owner, key))
+    || owner.schemaVersion !== 1 || owner.owner !== "hoklims-devkit" || owner.plugin !== NAME
+    || typeof owner.version !== "string" || !/^\d+\.\d+\.\d+$/u.test(owner.version)
+    || !owner.files || Array.isArray(owner.files) || typeof owner.files !== "object") throw new Error("Unsupported plugin ownership record");
+  if (nativeVersion !== null && nativeVersion !== "local" && owner.version !== nativeVersion) throw new Error("Native cached plugin version differs from its ownership record");
+
+  const expected = [...expectedNames].sort();
+  const owned = Object.keys(owner.files).sort();
+  if (owned.length !== expected.length || owned.some((name, index) => name !== expected[index])) throw new Error("Plugin ownership inventory is incomplete or requires an explicit migration");
+  for (const name of owned) {
+    const expectedHash = owner.files[name];
+    if (!name.startsWith(`${PREFIX}/`) || name === OWNER || typeof expectedHash !== "string" || !/^[a-f0-9]{64}$/u.test(expectedHash)) throw new Error("Invalid plugin ownership binding");
+    const relativeName = name.slice(PREFIX.length + 1);
+    const bytes = read(root, cached ? relativeName : name);
+    if (!bytes || digest(bytes) !== expectedHash) throw new Error(`Owned plugin file was changed: ${name}`);
+  }
+
+  const inventory = {};
+  collect(directory, directory, cached ? "snapshot" : PREFIX, inventory);
+  const actual = Object.keys(inventory).map(name => cached ? `${PREFIX}/${name.slice("snapshot/".length)}` : name).sort();
+  const complete = [...expected, OWNER].sort();
+  if (actual.length !== complete.length || actual.some((name, index) => name !== complete[index])) throw new Error("Plugin snapshot contains missing or unowned files");
+
+  const parseOwnedJson = name => {
+    const bytes = read(root, cached ? name.slice(PREFIX.length + 1) : name);
+    try { return JSON.parse(bytes.toString("utf8")); }
+    catch { throw new Error(`Owned plugin metadata is invalid: ${name}`); }
+  };
+  const portable = parseOwnedJson(`${PREFIX}/plugin.json`);
+  const compatibility = parseOwnedJson(`${PREFIX}/.codex-plugin/plugin.json`);
+  const runtimePackage = parseOwnedJson(`${PREFIX}/runtime/package.json`);
+  if (portable.name !== NAME || portable.version !== owner.version
+    || compatibility.name !== NAME || compatibility.version !== owner.version
+    || runtimePackage.name !== "hoklims-devkit" || runtimePackage.version !== owner.version) throw new Error("Owned plugin metadata version differs from its ownership record");
+
+  const runtimeSource = read(root, cached ? "runtime/src/proof-plugin.js" : `${PREFIX}/runtime/src/proof-plugin.js`).toString("utf8");
+  const declarationMarker = ["export const", "PROOF_PINS"].join(" ");
+  const declarations = runtimeSource.split(declarationMarker).length - 1;
+  const pinPattern = new RegExp(["export const", "PROOF_PINS = Object\\.freeze\\(\\{\\s*semctx: \"(\\d+\\.\\d+\\.\\d+)\",\\s*assertledger: \"(\\d+\\.\\d+\\.\\d+)\"\\s*\\}\\);"].join(" "), "u");
+  const match = runtimeSource.match(pinPattern);
+  const runtimeKeys = owner.runtimes && typeof owner.runtimes === "object" && !Array.isArray(owner.runtimes) ? Object.keys(owner.runtimes).sort() : [];
+  if (declarations !== 1 || !match || runtimeKeys.length !== 2 || runtimeKeys[0] !== "assertledger" || runtimeKeys[1] !== "semctx"
+    || owner.runtimes.semctx !== match[1] || owner.runtimes.assertledger !== match[2]) throw new Error("Owned plugin runtime pins differ from its closed declaration");
+  return owner;
+}
+
 export function pluginPlan(root, { upgradePlugin = false } = {}) {
   const files = {};
   const template = join(packageRoot, "plugins", NAME);
@@ -61,15 +117,7 @@ export function pluginPlan(root, { upgradePlugin = false } = {}) {
   const ownerBytes = read(root, OWNER);
   let owner = null;
   if (ownerBytes) {
-    owner = JSON.parse(ownerBytes.toString("utf8"));
-    if (owner.schemaVersion !== 1 || owner.owner !== "hoklims-devkit" || owner.plugin !== NAME
-      || typeof owner.version !== "string" || !owner.files || Array.isArray(owner.files) || typeof owner.files !== "object") throw new Error("Unsupported plugin ownership record");
-    for (const [name, expected] of Object.entries(owner.files)) {
-      if (!name.startsWith(`${PREFIX}/`) || name === OWNER || typeof expected !== "string" || !/^[a-f0-9]{64}$/u.test(expected)) throw new Error("Invalid plugin ownership binding");
-      const bytes = read(root, name);
-      if (!bytes || digest(bytes) !== expected) throw new Error(`Owned plugin file was changed: ${name}`);
-      if (!Object.hasOwn(files, name)) throw new Error(`Old plugin file needs an explicit migration: ${name}`);
-    }
+    owner = ownedSnapshot(root, Object.keys(files));
   }
   for (const [name, bytes] of Object.entries(files)) {
     const previous = read(root, name);
@@ -192,14 +240,8 @@ export async function preflightNativePlugin(rt, root, plan, { upgradePlugin = fa
     if (present.length && !snapshotMatches(present[0], plan, true)) {
       if (!upgradePlugin) throw new Error("Native cached plugin content differs; no implicit replacement is allowed");
       // Upgrade may replace only a complete, byte-bound prior Devkit snapshot.
-      const owner = JSON.parse(readFileSync(join(present[0], "ownership.json"), "utf8"));
-      if (owner.owner !== "hoklims-devkit" || owner.plugin !== NAME || owner.schemaVersion !== 1 || !owner.files) throw new Error("Native cached plugin has no valid ownership record");
-      for (const [name, expected] of Object.entries(owner.files)) {
-        if (!name.startsWith(`${PREFIX}/`) || !plan.changes.some(change => change.name === name) || !/^[a-f0-9]{64}$/u.test(expected)
-          || digest(read(present[0], name.slice(PREFIX.length + 1)) ?? Buffer.alloc(0)) !== expected) throw new Error("Native cached plugin was modified; preserve the foreign edit");
-      }
-      const presentFiles = {}; collect(present[0], present[0], PREFIX, presentFiles);
-      if (Object.keys(owner.files).length === 0 || Object.keys(presentFiles).some(name => name !== OWNER && !Object.hasOwn(owner.files, name))) throw new Error("Native cached plugin contains unowned files");
+      ownedSnapshot(present[0], plan.changes.filter(change => change.name.startsWith(`${PREFIX}/`) && change.name !== OWNER).map(change => change.name),
+        { cached: true, nativeVersion: cachedVersion });
     }
   }
   return { marketplaceRoot, registerMarketplace: markets.length === 0, selector: plan.selector, installed: Boolean(installed),
