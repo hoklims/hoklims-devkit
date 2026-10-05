@@ -524,7 +524,7 @@ async function preflightAssert(rt, root, hosts, version, previous, command, repo
     const client = host === "claude" ? "claude-code" : "codex";
     const previewCommand = !needsInstall
       ? localAssertCommand(localEntry, ["setup", root, "--client", client, "--dry-run", "--json"])
-      : ["npm", "exec", "--yes", "--ignore-scripts", `--package=assertledger@${version}`, "--", "assertledger", "setup", root, "--client", client, "--dry-run", "--json"];
+      : ["bunx", `assertledger@${version}`, "setup", root, "--client", client, "--dry-run", "--json"];
     const result = await rt.exec(previewCommand, root);
     const parsed = nativeResult(result, `assertledger setup (${client})`, report);
     if (!parsed) continue;
