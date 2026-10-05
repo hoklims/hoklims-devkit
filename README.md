@@ -39,6 +39,12 @@ If a component is recorded for both hosts, change its version with `upgrade --ho
 
 ## Daily use
 
+The read-only `workflow` command prepares a bounded next-check plan from a
+machine-authored, source-bound request. `PLANNED` leaves every obligation
+unproven; it does not run providers or accept evidence. See the
+[request contract and limits](docs/workflow.md). The common Codex plugin and
+native evidence admission remain separate delivery steps.
+
 - Use Semctx to inspect change impact and authored obligations, for example `semctx verify diff --base origin/main`.
 - Use AssertLedger for a named regression claim. Its repository setup does **not** invent faults, worlds, candidates, or proof. Its read-only MCP connection does not permit candidate execution; the unsandboxed path still requires `--allow-unsafe-execution` from the operator.
 - Use Latent Compass to record uncertainty around a consequential decision. Its local shadow observations are advisory and have no execution authority.

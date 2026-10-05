@@ -1,5 +1,11 @@
 # Hoklims Devkit
 
+La commande `workflow` prépare en lecture seule les prochaines vérifications à
+partir d'une demande liée au changement exact. `PLANNED` laisse toutes les
+obligations non prouvées ; aucun provider ni test candidat n'est exécuté.
+Le [contrat de demande et ses limites](docs/workflow.md) décrit cette première
+tranche. Le plugin Codex commun et le rattachement des preuves restent à livrer.
+
 Hoklims Devkit prépare un dépôt Git pour [Semctx](https://github.com/hoklims/semctx), avec [AssertLedger](https://github.com/hoklims/assertledger) et [Latent Compass](https://github.com/hoklims/latent-compass) en option. Il appelle les installateurs propres à chaque projet et conserve leurs données séparées.
 
 **Disponibilité :** vérifier `npm view hoklims-devkit@0.1.0 version` avant d'utiliser les commandes publiques ci-dessous. Une version est prête seulement après vérification de sa release et de son installation depuis npm. Pendant le développement, utiliser `bun bin/hoklims-devkit.js` depuis ce dépôt.
