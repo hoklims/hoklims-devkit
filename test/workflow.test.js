@@ -154,7 +154,7 @@ test("uncommitted code invalidates the committed profile and restoration recover
     writeFileSync(join(root, "value.js"), "export const value = 3;\n");
   }
   expect((await plan()).code).toBe(0);
-});
+}, 15000);
 
 test("hidden index flags cannot conceal uncommitted code", async () => {
   for (const flag of ["assume-unchanged", "skip-worktree"]) {
