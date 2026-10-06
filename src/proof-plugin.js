@@ -4,7 +4,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import packageJson from "../package.json" with { type: "json" };
 
-export const PROOF_PINS = Object.freeze({ semctx: "0.4.1", assertledger: "1.4.0" });
+export const PROOF_PINS = Object.freeze({ semctx: "0.4.2", assertledger: "1.4.0" });
 const NAME = "hoklims-proof";
 const PREFIX = `.agents/plugins/${NAME}`;
 const OWNER = `${PREFIX}/ownership.json`;

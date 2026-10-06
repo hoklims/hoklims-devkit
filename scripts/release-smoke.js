@@ -2,11 +2,14 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
+import { proofProfileSmoke } from "./proof-profile-smoke.js";
 
 const consumer = process.argv[2];
 if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "bin", "hoklims-devkit.js"))) {
   throw new Error("Pass a fresh consumer prefix containing the installed hoklims-devkit package");
 }
+
+await proofProfileSmoke(consumer);
 
 // macOS exposes temporary directories through /var, a symlink to /private/var.
 // Pass the canonical fixture home to installers that reject linked ancestors.

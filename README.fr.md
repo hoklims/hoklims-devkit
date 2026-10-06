@@ -27,7 +27,7 @@ bun bin/hoklims-devkit.js onboard . --dry-run --json
 ```
 
 Retirer `--dry-run` pour appliquer. Après publication, l'entrée publique sera
-`bunx hoklims-devkit@latest onboard .`. Ce profil fixe Semctx 0.4.1 et
+`bunx hoklims-devkit@latest onboard .`. Ce profil fixe Semctx 0.4.2 et
 AssertLedger 1.4.0, réutilise leurs installateurs et installe `hoklims-proof`
 par les commandes natives de marketplace Codex. Cette installation inscrit
 explicitement le plugin dans le profil utilisateur Codex ; le fichier de

@@ -2,6 +2,12 @@
 
 The launcher must be released **after** its native integrations. At the first public release, verify that npm `semctx` has a safe `setup --dry-run` (0.3.4 or later) and that its `stable` Codex and Claude plugin manifests declare the same version. AssertLedger must have published its `setup` CLI (1.3.0 or later). Latent Compass must have published its persistent-host CLI wheel on PyPI (0.3.0 or later). These are release identities, not source-branch claims.
 
+The common Codex `onboard` profile additionally requires public Semctx 0.4.2
+and AssertLedger 1.4.0. Verify these exact npm identities before the first
+launcher publication. The offline packaged-profile smoke checks bundled content
+and read-only request capture; it does not establish provider publication or
+successful native onboarding. Keep that release prerequisite open until checked.
+
 ## One-time npm bootstrap
 
 npm requires a package to exist before its first trusted publisher can be registered. The `v0.1.0` tag therefore builds one tarball, tests those exact bytes on Windows, Linux and macOS, and skips the OIDC `publish` job. From a clean checkout of that exact annotated tag:

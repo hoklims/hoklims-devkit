@@ -12,6 +12,10 @@ afterAll(() => { for (const root of fixtures) if (dirname(root) === realpathSync
 const prefix = ".agents/plugins/hoklims-proof/";
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 
+test("the common profile pins Semctx 0.4.2 and AssertLedger 1.4.0", () => {
+  expect(PROOF_PINS).toEqual({ semctx: "0.4.2", assertledger: "1.4.0" });
+});
+
 function writeSnapshot(destination, plan, version = "0.1.0", only = null) {
   const owned = {};
   for (const change of plan.changes.filter(item => item.name.startsWith(prefix) && !item.name.endsWith("/ownership.json"))) {
