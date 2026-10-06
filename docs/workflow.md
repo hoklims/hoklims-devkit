@@ -46,6 +46,18 @@ package outside the checkout. The release smoke also invokes this check. It
 requires the common pins, complete plugin templates, an idempotent owned snapshot,
 and read-only request capture from both the packaged CLI and embedded runtime.
 Fixtures and host paths are isolated, including `CODEX_HOME` from child startup.
+Each capture preloads the installed package's command guard and records a journal
+outside the consumed sources. For the current runtime's `Bun.spawn`,
+`Bun.spawnSync` and global `fetch` APIs, it allows only exact fixture Git reads
+and the Bun version readiness check, and blocks other requests before execution.
+The parent rejects every recorded forbidden request even if the CLI catches it.
+The installed package and owned embedded snapshot are checked after capture;
+owned-snapshot idempotence is checked again afterward. Tests use harmless
+temporary-file mutations and a nonexistent forbidden executable.
+This is a bounded command oracle for those APIs, not a general sandbox: other
+process/network APIs, native code, deliberate guard/journal tampering and
+concurrent transient writes are outside its guarantee. Git configuration is
+isolated to the fixture. Journals report requests, not provider execution proof.
 It runs no native Codex command, provider installation, evidence replay or test
 candidate. This check does not establish npm publication, provider availability,
 native registration, trusted session loading or verified obligations.
