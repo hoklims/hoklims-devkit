@@ -12,9 +12,11 @@ successful native onboarding. Keep that release prerequisite open until checked.
 
 The annotated `v0.1.0` tag remains immutable after release run `37457779632`
 failed before producing a tested tarball. No npm `hoklims-devkit@0.1.0` package
-was published. First publication is now `0.1.1`. The package embeds an identified
+was published. The annotated `v0.1.1` tag also remains immutable: release run
+`37465894823` built its tarball but failed native verification. Neither failed
+version was published to npm. First publication is now `0.1.2`. The package embeds an identified
 common plugin and runtime whose metadata is coupled to the launcher version;
-both plugin manifests therefore declare `0.1.1` as well.
+both plugin manifests therefore declare `0.1.2` as well.
 
 The checkout action can replace its local annotated tag ref with the commit
 ref during its SHA fallback. Each release preflight fetches the explicit tag
@@ -22,16 +24,29 @@ ref again from `origin` before checking annotation, peeled commit, main ancestry
 and package version. This repairs only the runner-local ref; it does not
 rewrite the remote tag or waive any identity guard.
 
-npm requires a package to exist before its first trusted publisher can be registered. The `v0.1.1` tag therefore builds one tarball, tests those exact bytes on Windows, Linux and macOS, and skips the OIDC `publish` job. From a clean checkout of that exact annotated tag:
+npm requires a package to exist before its first trusted publisher can be registered. The `v0.1.2` tag therefore builds one tarball, tests those exact bytes on Windows, Linux and macOS, and skips the OIDC `publish` job. From a clean checkout of that exact annotated tag:
 
 1. Check that the tag workflow's `build` and all three `verify` jobs pass against the actual public native versions and both host CLIs. Record that workflow run ID and download the single tested tarball with `gh run download <RUN_ID> --repo hoklims/hoklims-devkit --name tested-npm-tarball --dir tested-package`.
-2. Authenticate the `hoklims` npm account with `npm login --auth-type=web` and its ordinary second factor. Publish **that exact tarball** once with `npm publish ./tested-package/hoklims-devkit-0.1.1.tgz --access public`. Never put an npm token in this repository.
-3. Verify `npm view hoklims-devkit@0.1.1 version dist.integrity`, then dispatch `.github/workflows/bootstrap-verify.yml` from `main` with `verified_run_id=<RUN_ID>`. It checks that the run was the successful release-tag workflow on the exact tag SHA and that the public tarball integrity equals the tested tarball. It then installs the public package into a fresh consumer, runs the full Codex and Claude smoke, and creates the GitHub Release only after it passes. Retain its exact-SHA run URL as the first-publication evidence.
+2. Authenticate the `hoklims` npm account with `npm login --auth-type=web` and its ordinary second factor. Publish **that exact tarball** once with `npm publish ./tested-package/hoklims-devkit-0.1.2.tgz --access public`. Never put an npm token in this repository.
+3. Verify `npm view hoklims-devkit@0.1.2 version dist.integrity`, then dispatch `.github/workflows/bootstrap-verify.yml` from `main` with `verified_run_id=<RUN_ID>`. It checks that the run was the successful release-tag workflow on the exact tag SHA and that the public tarball integrity equals the tested tarball. It then installs the public package into a fresh consumer, runs the full Codex and Claude smoke, and creates the GitHub Release only after it passes. Retain its exact-SHA run URL as the first-publication evidence.
 4. In npm package settings, register `hoklims/hoklims-devkit`, workflow `release.yml`, with direct `npm publish` permission as its trusted publisher. Restrict traditional token publishing only after that publisher works.
 
-Tag the next version (`v0.1.2` or later) from the verified main commit. The tag workflow tests Windows, Linux, and macOS, publishes through GitHub OIDC, installs the public package again on a fresh Linux runner, then creates its GitHub Release. A publication is incomplete if the public install smoke fails, even when `npm publish` succeeded.
+Tag the next version (`v0.1.3` or later) from the verified main commit. The tag workflow tests Windows, Linux, and macOS, publishes through GitHub OIDC, installs the public package again on a fresh Linux runner, then creates its GitHub Release. A publication is incomplete if the public install smoke fails, even when `npm publish` succeeded.
 
 PyPI supports a pending trusted publisher for a new project. Latent Compass uses project `latent-compass`, owner `hoklims`, repository `latent-compass`, workflow `release.yml`, and environment `pypi`; its first PyPI upload can use OIDC without a bootstrap API token.
+
+Transient Latent Compass previews use `uv tool run --isolated
+--no-python-downloads`: they use an existing compatible Python and disposable
+cache without initializing the persistent tool store. Production inventory
+first asks the read-only `uv tool dir` for its absolute store path. An absent
+store yields an empty inventory without calling `uv tool list`. An existing
+store without a safely observed regular `.lock`, or with linked/non-directory
+parents, is refused before listing; initialize it explicitly or inspect
+`UV_TOOL_DIR` before retrying. Initialized stores retain native output validation.
+Injected custom/test runtimes without this capability are trusted caller-owned
+seams; `createRuntime()` always provides the guarded production path. These
+filesystem observations do not establish atomic protection against concurrent
+peer substitution or a universally confined external executable.
 
 ## Recovery
 

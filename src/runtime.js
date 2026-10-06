@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 const COMPONENT_NAMES = new Set(["semctx", "assertledger", "latent-compass"]);
 const HOST_NAMES = new Set(["codex", "claude"]);
@@ -53,8 +53,34 @@ export function validateState(state) {
   return state;
 }
 
+async function readOnlyUvInventory(exec, cwd) {
+  const blocked = detail => ({ code: 3, stdout: "", stderr: `Read-only uv inventory refused: ${detail}; inspect UV_TOOL_DIR or initialize the tool store explicitly before retrying` });
+  const directory = await exec(["uv", "tool", "dir"], cwd);
+  const store = directory.stdout.trim();
+  if (directory.code !== 0 || directory.stderr.trim() || !isAbsolute(store)
+    || /[\r\n\0]/u.test(store) || store.split(/[\\/]/u).some(part => [".", ".."].includes(part))) return blocked("tool directory is unknown or not an absolute literal path");
+  const components = [];
+  for (let path = store; ; path = dirname(path)) {
+    components.unshift(path);
+    if (dirname(path) === path) break;
+  }
+  try {
+    for (const path of components) {
+      let entry;
+      try { entry = lstatSync(path); } catch (error) {
+        if (error?.code === "ENOENT") return { code: 0, stdout: "", stderr: "No tools installed\n" };
+        throw error;
+      }
+      if (!entry.isDirectory() || entry.isSymbolicLink()) return blocked("tool directory has an unsafe parent or leaf");
+    }
+    const lock = lstatSync(join(store, ".lock"));
+    if (!lock.isFile() || lock.isSymbolicLink()) return blocked("tool store has no regular existing .lock");
+  } catch { return blocked("tool store has no safely observed regular .lock"); }
+  return exec(["uv", "tool", "list"], cwd);
+}
+
 export function createRuntime() {
-  return {
+  const runtime = {
     which: (name) => Bun.which(name),
     exec: async (argv, cwd, timeoutMs = 120_000, captureBytes = false, input = null) => {
       let child;
@@ -139,6 +165,8 @@ export function createRuntime() {
     resolve,
     join,
   };
+  runtime.uvToolInventory = cwd => readOnlyUvInventory(runtime.exec, cwd);
+  return runtime;
 }
 
 export function parseJsonOutput(result) {

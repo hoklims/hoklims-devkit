@@ -106,7 +106,7 @@ jobs:
 
   publish:
     needs: [build, verify]
-    if: github.ref_name != 'v0.1.1'
+    if: github.ref_name != 'v0.1.2'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
