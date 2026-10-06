@@ -31,6 +31,7 @@ jobs:
         name: Build one release tarball from the annotated main tag
         shell: bash
         run: |
+          git fetch --no-tags origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = "tag"
           test "$(git rev-list -n 1 "refs/tags/${GITHUB_REF_NAME}")" = "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD origin/main
@@ -89,7 +90,9 @@ jobs:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
           EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
         run: |
+          git fetch --no-tags origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = "tag"
+          test "$(git rev-list -n 1 "refs/tags/${GITHUB_REF_NAME}")" = "$GITHUB_SHA"
           git merge-base --is-ancestor HEAD origin/main
           test "${GITHUB_REF_NAME}" = "v$RELEASE_VERSION"
           test "$(node -p 'require("./package.json").version')" = "$RELEASE_VERSION"
@@ -103,7 +106,7 @@ jobs:
 
   publish:
     needs: [build, verify]
-    if: github.ref_name != 'v0.1.0'
+    if: github.ref_name != 'v0.1.1'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

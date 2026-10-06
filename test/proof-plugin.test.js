@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, toNamespacedPath } from "node:path";
 import { applyPlugin, installNativePlugin, pluginPlan, preflightNativePlugin, PROOF_PINS } from "../src/proof-plugin.js";
 
+// Current snapshots, native identities and current cache paths follow this package.
+// Explicit 0.0.9/0.0.8 values below remain historical upgrade/conflict cases.
+const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url))).version;
 const fixtures = [];
 function repo() { const root = realpathSync(mkdtempSync(join(tmpdir(), "devkit-plugin-"))); fixtures.push(root); return root; }
 afterAll(() => { for (const root of fixtures) if (dirname(root) === realpathSync(tmpdir())) rmSync(root, { recursive: true, force: true }); });
@@ -16,13 +19,13 @@ test("the common profile pins Semctx 0.4.2 and AssertLedger 1.4.0", () => {
   expect(PROOF_PINS).toEqual({ semctx: "0.4.2", assertledger: "1.4.0" });
 });
 
-function writeSnapshot(destination, plan, version = "0.1.0", only = null) {
+function writeSnapshot(destination, plan, version = currentVersion, only = null) {
   const owned = {};
   for (const change of plan.changes.filter(item => item.name.startsWith(prefix) && !item.name.endsWith("/ownership.json"))) {
     if (only && !only.includes(change.name)) continue;
     const relative = change.name.slice(prefix.length);
     let bytes = change.bytes;
-    if (version !== "0.1.0" && ["plugin.json", ".codex-plugin/plugin.json", "runtime/package.json"].includes(relative)) {
+    if (version !== currentVersion && ["plugin.json", ".codex-plugin/plugin.json", "runtime/package.json"].includes(relative)) {
       const parsed = JSON.parse(bytes.toString("utf8"));
       parsed.version = version;
       bytes = Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`);
@@ -39,7 +42,7 @@ function writeSnapshot(destination, plan, version = "0.1.0", only = null) {
 }
 
 function nativeItem(root, overrides = {}) {
-  return { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.1.0", installed: true, enabled: true,
+  return { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: currentVersion, installed: true, enabled: true,
     source: { source: "local", path: join(root, ".agents", "plugins", "hoklims-proof") }, marketplaceSource: { sourceType: "local", source: toNamespacedPath(root) }, ...overrides };
 }
 
@@ -56,7 +59,7 @@ function installRuntime(home, root, cache, readback) {
     exec: async argv => {
       calls.push(argv);
       if (argv.includes("marketplace")) return { code: 0, stderr: "", stdout: JSON.stringify({ marketplaces: [{ name: "hoklims-devkit", root }] }) };
-      if (argv.includes("add")) return { code: 0, stderr: "", stdout: JSON.stringify({ pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.1.0", installedPath: cache, authPolicy: "ON_INSTALL" }) };
+      if (argv.includes("add")) return { code: 0, stderr: "", stdout: JSON.stringify({ pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: currentVersion, installedPath: cache, authPolicy: "ON_INSTALL" }) };
       return { code: 0, stderr: "", stdout: JSON.stringify({ installed: [readback], available: [] }) };
     } } };
 }
@@ -66,7 +69,7 @@ for (const bucket of ["installed", "available"]) {
     const root = repo(), home = repo();
     applyPlugin(pluginPlan(root));
     const plan = pluginPlan(root);
-    const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+    const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", currentVersion);
     writeSnapshot(cache, plan);
     const item = nativeItem(root, { enabled: false, installed: bucket === "installed" });
     delete item.pluginId; delete item.name;
@@ -186,7 +189,7 @@ test("a foreign native marketplace and an unregistered foreign cache stop onboar
     exec: async argv => ({ code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace") ? { marketplaces: [{ name: "hoklims-devkit", root: other }] } : { installed: [], available: [] }) }) };
   await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow("foreign or incompatible native marketplace");
   rt.exec = async argv => ({ code: 0, stderr: "", stdout: JSON.stringify(argv.includes("marketplace") ? { marketplaces: [] } : { installed: [], available: [] }) });
-  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", currentVersion);
   mkdirSync(cache, { recursive: true }); writeFileSync(join(cache, "foreign"), "preserved");
   await expect(preflightNativePlugin(rt, root, plan)).rejects.toThrow("no ownership record");
   await expect(preflightNativePlugin(rt, root, plan, { upgradePlugin: true })).rejects.toThrow();
@@ -201,9 +204,9 @@ test("matching plugin bytes cannot conceal a registered marketplace catalog with
   mkdirSync(foreignPath, { recursive: true });
   writeFileSync(join(foreignPath, "payload"), "preserved foreign payload");
   writeFileSync(catalogPath, `${JSON.stringify({ name: "hoklims-devkit", plugins: [{ name: "hoklims-proof", source: { source: "local", path: "./foreign-payload" } }] }, null, 2)}\n`);
-  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", currentVersion);
   writeSnapshot(cache, plan);
-  const item = { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: "0.1.0", installed: true, enabled: true,
+  const item = { pluginId: "hoklims-proof@hoklims-devkit", name: "hoklims-proof", marketplaceName: "hoklims-devkit", version: currentVersion, installed: true, enabled: true,
     source: { source: "local", path: foreignPath }, marketplaceSource: { sourceType: "local", source: other } };
   const calls = [];
   const rt = { codexHome: () => home, realpath: realpathSync,
@@ -221,7 +224,7 @@ test("a compatible registered repository is reusable only with its bound native 
   const provider = { name: "other", source: { source: "local", path: "./other" } };
   writeFileSync(join(other, ".agents", "plugins", "marketplace.json"), JSON.stringify({ name: "hoklims-devkit", plugins: [provider] }));
   applyPlugin(pluginPlan(other));
-  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", currentVersion);
   writeSnapshot(cache, plan);
   const item = nativeItem(other);
   const valid = nativeRuntime(home, item, other);
@@ -285,7 +288,7 @@ test("an explicitly disabled available plugin cannot be enabled by onboarding", 
 test("matching native bytes cannot conceal an extra unowned cache file", async () => {
   const root = repo(), home = repo();
   const plan = pluginPlan(root);
-  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", currentVersion);
   for (const change of plan.changes.filter(item => item.name.startsWith(".agents/plugins/hoklims-proof/"))) {
     const path = join(cache, change.name.slice(".agents/plugins/hoklims-proof/".length));
     mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, change.bytes);
@@ -383,7 +386,7 @@ test("an explicit upgrade refuses a foreign current-version destination beside t
   const root = repo(), home = repo(), plan = pluginPlan(root);
   applyPlugin(plan);
   const oldCache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.0.9");
-  const currentCache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  const currentCache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", currentVersion);
   writeSnapshot(oldCache, plan, "0.0.9");
   mkdirSync(currentCache, { recursive: true });
   writeFileSync(join(currentCache, "foreign"), "preserved destination");
@@ -396,7 +399,7 @@ test("an explicit upgrade refuses a foreign current-version destination beside t
 test("an old installed cache cannot be represented only by an old snapshot in the current-version directory", async () => {
   const root = repo(), home = repo(), plan = pluginPlan(root);
   applyPlugin(plan);
-  const wrongLocation = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  const wrongLocation = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", currentVersion);
   writeSnapshot(wrongLocation, plan, "0.0.9");
   const { rt } = nativeRuntime(home, nativeItem(root, { version: "0.0.9" }), root);
   const before = readFileSync(join(wrongLocation, "ownership.json"), "utf8");
@@ -429,7 +432,7 @@ test("current snapshot bytes in an older native cache directory cannot bypass ow
 async function expectMissingNativeIdentityRejected(field) {
   const root = repo(), home = repo(), plan = pluginPlan(root);
   applyPlugin(plan);
-  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", currentVersion);
   writeSnapshot(cache, plan);
   const complete = nativeItem(root);
   const valid = nativeRuntime(home, complete, root);
@@ -457,7 +460,7 @@ test("missing native installed identity cannot become configured", async () => {
 async function expectMalformedPostInstallReadbackRejected(mutate) {
   const root = repo(), home = repo(), plan = pluginPlan(root);
   applyPlugin(plan);
-  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", currentVersion);
   writeSnapshot(cache, plan);
   const native = { marketplaceRoot: root, registerMarketplace: false, selector: plan.selector, installed: false };
   const validRuntime = installRuntime(home, root, cache, nativeItem(root));
@@ -492,7 +495,7 @@ test("post-install readback with the same name and a foreign plugin ID cannot be
 test("post-install readback cannot switch the retained marketplace root", async () => {
   const root = repo(), other = repo(), home = repo(), plan = pluginPlan(root);
   applyPlugin(plan);
-  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", "0.1.0");
+  const cache = join(home, "plugins", "cache", "hoklims-devkit", "hoklims-proof", currentVersion);
   writeSnapshot(cache, plan);
   const runtime = installRuntime(home, root, cache, nativeItem(root));
   const native = { marketplaceRoot: other, registerMarketplace: false, selector: plan.selector, installed: false };
