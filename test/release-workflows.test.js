@@ -70,6 +70,9 @@ for (const mode of ["annotated", "lightweight", "wrong-commit", "non-main"]) {
     expect(git(consumer, "cat-file", "-t", "refs/tags/v0.1.1")).toBe("commit");
     git(consumer, "checkout", "--detach", expected);
     for (const [entry, run] of [["build", buildRun], ["verify", verifyRun], ["bootstrap", bootstrapRun]]) {
+      // Each CI job has its own checkout; no earlier preflight may repair this one.
+      git(consumer, "fetch", "--no-tags", "origin", `+${expected}:refs/tags/v0.1.1`);
+      expect(git(consumer, "cat-file", "-t", "refs/tags/v0.1.1")).toBe("commit");
       const preflight = entry === "bootstrap" ? run.split("run_json=")[0] : run.split("bun run check")[0];
       const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
       const result = Bun.spawnSync([bash, "--noprofile", "--norc", "-e", "-c", preflight], {
