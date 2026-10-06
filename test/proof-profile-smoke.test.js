@@ -22,6 +22,23 @@ test("the installed package and embedded runtime retain the common read-only pro
   expect(result.captureJournals.map(item => item.label)).toEqual(["packaged", "embedded"]);
   expect(result.captureJournals.every(item => item.events.some(event => event.kind === "ready"))).toBe(true);
 }, 15000);
+
+test("Windows capture uses the CLI canonical Git root with differently cased TEMP", async () => {
+  if (process.platform !== "win32") return;
+  const { root } = consumer();
+  const originalTemp = process.env.TEMP, originalTmp = process.env.TMP;
+  const variant = tmpdir().toLowerCase();
+  try {
+    process.env.TEMP = variant; process.env.TMP = variant;
+    const result = await proofProfileSmoke(root);
+    fixtures.push(dirname(result.report.projectRoot));
+    expect(result.captureJournals.map(item => item.label)).toEqual(["packaged", "embedded"]);
+    expect(result.captureJournals.every(item => item.events.filter(event => event.kind === "call").every(event => event.allowed))).toBe(true);
+  } finally {
+    if (originalTemp === undefined) delete process.env.TEMP; else process.env.TEMP = originalTemp;
+    if (originalTmp === undefined) delete process.env.TMP; else process.env.TMP = originalTmp;
+  }
+}, 15000);
 test("the packaging smoke refuses an omitted skill reference", async () => {
   const { root, packaged } = consumer();
   unlinkSync(join(packaged, "plugins", "hoklims-proof", "skills", "proof-workflow", "references", "evidence.md"));
@@ -57,6 +74,18 @@ test("capture guard rejects a swallowed fetch attempt before network access", as
   const { root, packaged } = consumer();
   mutateWorkflow(packaged, '  try { await fetch("https://devkit-smoke.invalid/forbidden"); } catch {}');
   await expect(proofProfileSmoke(root)).rejects.toThrow("Capture guard recorded a forbidden operation");
+}, 15000);
+
+test("capture failure identifies the exact fixture call and policy root without environment values", async () => {
+  const { root, packaged } = consumer();
+  mutateWorkflow(packaged, '  try { Bun.spawnSync({ cmd: ["__devkit_forbidden_probe__"], cwd: root, env: { TEST_PRIVATE_SENTINEL: "never-emit-this-value" } }); } catch {}');
+  let failure;
+  try { await proofProfileSmoke(root); } catch (error) { failure = error; }
+  expect(failure?.message).toContain('"argv":["__devkit_forbidden_probe__"]');
+  expect(failure?.message).toContain('"policyRepository":');
+  expect(failure?.message).toContain('"requestedCwd":');
+  expect(failure?.message).toContain('"environmentKeys":["TEST_PRIVATE_SENTINEL"]');
+  expect(failure?.message).not.toContain("never-emit-this-value");
 }, 15000);
 
 for (const embedded of [false, true]) {

@@ -16,7 +16,8 @@ export async function proofProfileSmoke(consumer) {
   assert.equal(onboard.host, "codex");
   assert.deepEqual(onboard.with, ["assertledger"]);
   const root = realpathSync(mkdtempSync(join(tmpdir(), "devkit-proof-profile-")));
-  const repository = join(root, "repository"), home = join(root, "home");
+  let repository = join(root, "repository");
+  const home = join(root, "home");
   mkdirSync(repository);
   mkdirSync(join(home, ".codex"), { recursive: true });
   writeFileSync(join(home, ".codex", "config.toml"), 'smoke_sentinel = "preserved"\n');
@@ -35,6 +36,9 @@ export async function proofProfileSmoke(consumer) {
   run(["git", "init", "-b", "main"]);
   run(["git", "add", "."]);
   run(["git", "-c", "user.name=Proof Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-m", "fixture"]);
+  // Use the same Git-root/realpath producer as the CLI. Windows Git can return
+  // canonical casing different from TEMP, even for the identical directory.
+  repository = realpathSync(run(["git", "rev-parse", "--show-toplevel"]).trim());
   const head = run(["git", "rev-parse", "HEAD"]).trim();
   const packagedBefore = snapshot(packaged);
   const before = snapshot(repository), paths = protectedProfilePaths(home), profileBefore = paths.map(snapshot);
@@ -71,7 +75,8 @@ export async function proofProfileSmoke(consumer) {
     assert.deepEqual(ready.apis, ["Bun.spawn", "Bun.spawnSync", "fetch"]);
     assert.equal(ready.repository, repository);
     const calls = events.filter(event => event.kind === "call");
-    assert(calls.every(event => event.allowed === true), "Capture guard recorded a forbidden operation");
+    const forbidden = calls.filter(event => event.allowed !== true);
+    assert(forbidden.length === 0, `Capture guard recorded a forbidden operation (${label}): ${JSON.stringify(forbidden)}`);
     assert(calls.some(event => event.argv?.[0] === "bun" && event.argv[1] === "--version"), "Capture readiness command was not observed");
     assert(calls.some(event => event.argv?.[0] === "git" && event.argv.includes("diff")), "Capture Git diff was not observed");
     assert.equal(result.exitCode, 0, `Guarded ${label} capture failed\n${result.stdout}\n${result.stderr}`);

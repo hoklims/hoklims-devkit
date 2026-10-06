@@ -27,7 +27,9 @@ for (const api of ["spawn", "spawnSync"]) {
         || same(argv, ["git", "-C", policy.repository, "rev-parse", "--show-toplevel"])
         || (same(argv.slice(0, gitPrefix.length), gitPrefix) && gitReads.some(read => same(argv.slice(gitPrefix.length), read)))
       );
-    record({ kind: "call", api: `Bun.${api}`, argv: Array.isArray(argv) ? argv : null, cwd, allowed });
+    record({ kind: "call", api: `Bun.${api}`, argv: Array.isArray(argv) ? argv : null, cwd, allowed,
+      ...(allowed ? {} : { requestedCwd: typeof options.cwd === "string" ? options.cwd : null,
+        policyRepository: policy.repository, environmentKeys: options.env ? Object.keys(options.env).sort() : [] }) });
     if (!allowed) throw new Error("Capture guard blocked a forbidden operation before execution");
     return original(...args);
   } });
