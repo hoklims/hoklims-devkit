@@ -20,7 +20,7 @@ The launcher never installs Bun, Node, or uv for you. It reports a missing prere
 For the common Codex workflow, use `bun bin/hoklims-devkit.js onboard . --dry-run --json`
 from this checkout, then remove `--dry-run` to apply. After registry publication,
 the same entrypoint is `bunx hoklims-devkit@latest onboard .`.
-It pins Semctx 0.4.1 and AssertLedger 1.4.0, reuses their native installers,
+It pins Semctx 0.4.2 and AssertLedger 1.4.0, reuses their native installers,
 and installs the versioned `hoklims-proof` plugin through Codex's native local
 marketplace commands. Those commands explicitly update user-level Codex plugin
 registration; the repository's AssertLedger configuration stays byte-identical.

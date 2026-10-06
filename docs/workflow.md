@@ -9,7 +9,7 @@ The common Codex plugin supplies the `proof-workflow` skill. Codex can capture t
 request without a developer-authored file using `--base REF --obligation ID`, with
 optional repeated `--test PATH` and `--intent change|regression|migration`.
 Git resolves the selected base and current HEAD and captures the raw diff digest.
-Semctx 0.4.1 is a declared source version; completeness, provider authentication
+Semctx 0.4.2 is a declared source version; completeness, provider authentication
 and native Semctx-handoff generation remain unproven. The existing v1 request
 format and original file-based entrypoint remain available.
 
@@ -39,6 +39,29 @@ committed sources. Dirty work is reported without discarding or committing it.
 The common plugin, native evidence binding, package publication and observed
 fresh-session use are separate delivery steps.
 
+## Packaged profile smoke
+
+`bun scripts/proof-profile-smoke.js CONSUMER_PREFIX` checks the installed
+package outside the checkout. The release smoke also invokes this check. It
+requires the common pins, complete plugin templates, an idempotent owned snapshot,
+and read-only request capture from both the packaged CLI and embedded runtime.
+Fixtures and host paths are isolated, including `CODEX_HOME` from child startup.
+Each capture preloads the installed package's command guard and records a journal
+outside the consumed sources. For the current runtime's `Bun.spawn`,
+`Bun.spawnSync` and global `fetch` APIs, it allows only exact fixture Git reads
+and the Bun version readiness check, and blocks other requests before execution.
+The parent rejects every recorded forbidden request even if the CLI catches it.
+The installed package and owned embedded snapshot are checked after capture;
+owned-snapshot idempotence is checked again afterward. Tests use harmless
+temporary-file mutations and a nonexistent forbidden executable.
+This is a bounded command oracle for those APIs, not a general sandbox: other
+process/network APIs, native code, deliberate guard/journal tampering and
+concurrent transient writes are outside its guarantee. Git configuration is
+isolated to the fixture. Journals report requests, not provider execution proof.
+It runs no native Codex command, provider installation, evidence replay or test
+candidate. This check does not establish npm publication, provider availability,
+native registration, trusted session loading or verified obligations.
+
 ## Request v1
 
 The strict JSON object contains:
@@ -47,7 +70,7 @@ The strict JSON object contains:
 | --- | --- |
 | `schemaVersion` / `kind` | `1` / `proof-routing-request`; unknown fields and versions are rejected |
 | `repositoryRoot` | Canonical absolute Git root matching the selected repository |
-| `source` | `{ "provider": "semctx", "version": "0.4.1" }`; declared producer identity, not authenticated runtime evidence |
+| `source` | `{ "provider": "semctx", "version": "0.4.2" }`; declared producer identity, not authenticated runtime evidence |
 | `scope` | Exact `base`, current `head`, and lowercase SHA-256 `diffSha256` |
 | `intent` | `change`, `regression`, or `migration` |
 | `proofObligationIds` | One to 100 unique declared obligation identifiers; completeness is not established |

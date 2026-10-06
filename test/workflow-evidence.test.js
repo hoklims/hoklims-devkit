@@ -10,6 +10,8 @@ import { canonical, hash } from "../src/workflow.js";
 // the pinned provider. Neither is candidate execution or observation attestation.
 const evidence = JSON.parse(readFileSync(new URL("./fixtures/workflow-export.json", import.meta.url), "utf8"));
 const root = "/syntheticrepo";
+// Keep the historical request bound to the frozen native export. New captures use
+// the current common pin; existing file-based v1 requests remain compatible.
 const request = { schemaVersion: 1, kind: "proof-routing-request", repositoryRoot: root, source: { provider: "semctx", version: "0.4.1" },
   scope: { base: "b".repeat(40), head: "a".repeat(40), diffSha256: "d".repeat(64) }, intent: "regression", proofObligationIds: ["compat", "detect"],
   regression: { claim: "synthetic named regression", framework: "node:test", before: "b".repeat(40), neutral: "c".repeat(40), neutralReason: "synthetic neutral", test: "tests/candidate.test.js", baseTests: ["tests/base.test.js"] } };

@@ -40,7 +40,7 @@ beforeAll(() => {
     schemaVersion: 1,
     kind: "proof-routing-request",
     repositoryRoot: root,
-    source: { provider: "semctx", version: "0.4.1" },
+    source: { provider: "semctx", version: "0.4.2" },
     scope: { base: before, head, diffSha256: createHash("sha256").update(diff.stdout).digest("hex") },
     intent: "change",
     proofObligationIds: ["evidence.value-behaviour"],

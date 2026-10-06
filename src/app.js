@@ -837,7 +837,7 @@ export async function execute(options, rt = createRuntime()) {
   if (report.conflicts.length) return report;
   let nativePlugin;
   if (options.proofWorkflow) {
-    if (Object.entries(PROOF_PINS).some(([name, version]) => versions[name] !== version)) return problem(report, "WORKFLOW_VERSION_CONFLICT", "The common workflow requires Semctx 0.4.1 and AssertLedger 1.4.0; it preserves existing versions instead of upgrading implicitly");
+    if (Object.entries(PROOF_PINS).some(([name, version]) => versions[name] !== version)) return problem(report, "WORKFLOW_VERSION_CONFLICT", `The common workflow requires Semctx ${PROOF_PINS.semctx} and AssertLedger ${PROOF_PINS.assertledger}; it preserves existing versions instead of upgrading implicitly`);
     try {
       const plan = pluginPlan(root, options);
       nativePlugin = await preflightNativePlugin(rt, root, plan, options);

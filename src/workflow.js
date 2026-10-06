@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { associateEvidence } from "./workflow-evidence.js";
+import { PROOF_PINS } from "./proof-plugin.js";
 
 const MAX_REQUEST_BYTES = 256 * 1024;
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
@@ -112,7 +113,7 @@ async function captureRequest(options, reader, root) {
   const diff = await git("diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", base, head);
   if (diff.code !== 0 || !(diff.stdoutBytes instanceof Uint8Array)) throw new Error("Cannot capture raw committed diff bytes");
   const request = { schemaVersion: 1, kind: "proof-routing-request", repositoryRoot: root,
-    source: { provider: "semctx", version: "0.4.1" }, scope: { base, head, diffSha256: hash(diff.stdoutBytes) },
+    source: { provider: "semctx", version: PROOF_PINS.semctx }, scope: { base, head, diffSha256: hash(diff.stdoutBytes) },
     intent: options.intent ?? "change", proofObligationIds: options.obligation,
     ...(options.test ? { tests: options.test } : {}) };
   if (request.intent === "regression") {

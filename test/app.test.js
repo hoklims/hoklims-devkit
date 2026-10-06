@@ -132,6 +132,14 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
 
 const setupOptions = () => parseArgs(["setup", "/repo", "--host", "codex"]);
 
+test("onboard reports the required common versions without upgrading an existing pin", async () => {
+  const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.4.1", hosts: ["codex"] } } };
+  const rt = fakeRuntime({ state, tools: ["node", "npm"] });
+  const report = await execute(parseArgs(["onboard", "/repo", "--dry-run"]), rt);
+  expect(report.conflicts).toContainEqual({ code: "WORKFLOW_VERSION_CONFLICT", detail: "The common workflow requires Semctx 0.4.2 and AssertLedger 1.4.0; it preserves existing versions instead of upgrading implicitly" });
+  expect(rt.writes).toEqual([]);
+});
+
 describe("public CLI", () => {
   test("parses the default profile and rejects unrecognized components", () => {
     expect(setupOptions().with).toEqual([]);
