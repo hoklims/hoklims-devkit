@@ -9,6 +9,8 @@ export function semctxReadiness(doctorResult, healthResult, version, root, realp
     status: health?.coverage?.status === "partial" || selected.some(item => item.negativeEvidenceEligible === false) ? "blocked" : "unknown",
     coverage: health?.coverage ?? null,
     nativeReasons: health?.reasonSummary ?? null,
+    binding: health?.binding ?? null,
+    freshness: health?.freshness ?? null,
     negativeEvidenceEligible: selected.length ? selected.every(item => item.negativeEvidenceEligible === true) : null,
     candidates: health?.candidates ?? null,
     evaluations: health?.evaluations ?? null,
@@ -31,6 +33,26 @@ export function semctxReadiness(doctorResult, healthResult, version, root, realp
     || !Array.isArray(health.reasonSummary) || health.reasonSummary.some(reason => typeof reason !== "string")
     || !Array.isArray(health.candidates) || !Array.isArray(health.capabilities)
     || !Array.isArray(health.evaluations?.decisions)) return result("unknown");
+  const requiredGates = ["discoveryAndScope", "bindingAndIntegrity", "currentFreshness", "capabilityMatch", "negativeCompleteness", "taskRelativeAuthority"];
+  if (selected.length && (!health.capabilities.length || !health.evaluations.decisions.length)
+    || selected.some(candidate => ["candidateIdentity", "path", "language"].some(key => typeof candidate[key] !== "string" || !candidate[key]))
+    || health.capabilities.some(capability => typeof capability?.language !== "string" || !capability.language
+      || typeof capability.factKind !== "string" || !capability.factKind
+      || typeof capability.completenessClaim !== "string" || !capability.completenessClaim
+      || typeof capability.negativeEvidenceEligible !== "boolean")
+    || health.evaluations.decisions.some(decision => typeof decision?.admissible !== "boolean"
+      || !requiredGates.every(gate => ["passed", "failed"].includes(decision.gates?.[gate])))) return result("unknown");
+  for (const decision of health.evaluations.decisions) {
+    const candidate = selected.find(item => item.candidateIdentity === decision.candidateIdentity);
+    const capability = health.capabilities.find(item => item.language === decision.scope?.language && item.factKind === decision.factKind);
+    if (!candidate || !capability || decision.scope?.language !== candidate.language
+      || !Array.isArray(decision.scope.selectedPaths) || !decision.scope.selectedPaths.includes(candidate.path)
+      || (health.workspace?.repositoryId !== undefined && decision.scope.repositoryIdentity !== health.workspace.repositoryId)
+      || (decision.gates.negativeCompleteness === "passed"
+        ? candidate.negativeEvidenceEligible !== true || capability.negativeEvidenceEligible !== true || decision.admissible !== true
+        : decision.admissible !== false)) return result("unknown");
+  }
+  if (selected.some(candidate => !health.evaluations.decisions.some(decision => decision.candidateIdentity === candidate.candidateIdentity))) return result("unknown");
   if (doctor.cliCompatibility !== undefined) {
     const cli = doctor.cliCompatibility;
     if (cli?.found !== true || cli.compatible !== true || cli.version !== version || cli.requiredVersion !== version
@@ -66,6 +88,7 @@ export function semctxReadiness(doctorResult, healthResult, version, root, realp
     && selected.every(item => item.analysisOutcome === "analyzed" && item.negativeEvidenceEligible === true)
     && Array.isArray(decisions) && decisions.length > 0
     && selected.every(candidate => health.capabilities.some(capability => capability.language === candidate.language
+      && capability.negativeEvidenceEligible === true
       && typeof capability.completenessClaim === "string" && capability.completenessClaim.length > 0)
       && decisions.some(decision => typeof candidate.candidateIdentity === "string" && typeof candidate.path === "string"
         && decision.candidateIdentity === candidate.candidateIdentity

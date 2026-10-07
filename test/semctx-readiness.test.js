@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { semctxReadiness } from "../src/semctx-readiness.js";
 
+const gates = negativeCompleteness => Object.fromEntries(["discoveryAndScope", "bindingAndIntegrity", "currentFreshness", "capabilityMatch", "negativeCompleteness", "taskRelativeAuthority"].map(name => [name, name === "negativeCompleteness" ? negativeCompleteness : "passed"]));
+
 function reports() {
   return [{ code: 1, report: { version: "0.4.2", healthy: false, checks: ["cli", "workspace", "config", "index", "runtime"].map(name => ({ name, ok: name !== "index", ...(name === "index" ? { status: "degraded" } : {}) })) } },
-    { code: 2, report: { schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: "FRESH", canRunHighRiskControl: true }, coverage: { status: "partial", candidates: 1, selected: 1, excluded: 0, analyzed: 1, unsupported: 0, failed: 0, disabled: 0 }, reasonSummary: ["NEGATIVE_COMPLETENESS_MISSING"], capabilities: [], candidates: [{ selectionDecision: "selected", analysisOutcome: "analyzed", negativeEvidenceEligible: false }], evaluations: { decisions: [{ admissible: false, gates: { negativeCompleteness: "failed" } }] } } }];
+    { code: 2, report: { schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: "FRESH", canRunHighRiskControl: true }, coverage: { status: "partial", candidates: 1, selected: 1, excluded: 0, analyzed: 1, unsupported: 0, failed: 0, disabled: 0 }, reasonSummary: ["NEGATIVE_COMPLETENESS_MISSING"], capabilities: [{ language: "typescript", factKind: "module", completenessClaim: "producer-declared", negativeEvidenceEligible: false }], candidates: [{ candidateIdentity: "ts:index.ts", path: "index.ts", language: "typescript", selectionDecision: "selected", analysisOutcome: "analyzed", negativeEvidenceEligible: false }], evaluations: { decisions: [{ candidateIdentity: "ts:index.ts", factKind: "module", scope: { language: "typescript", selectedPaths: ["index.ts"] }, admissible: false, gates: gates("failed") }] } } }];
 }
 test("positive partial installation preserves native evidence and blocks negative qualification", () => {
   const [d, h] = reports(); const result = semctxReadiness(d, h, "0.4.2", "/repo");
@@ -47,9 +49,26 @@ test("only matching nonempty qualified native scope can be certified", () => {
   Object.assign(d.report.checks.find(c => c.name === "index"), { ok: true, status: "healthy" });
   h.code = 0; h.report.coverage.status = "complete"; h.report.reasonSummary = [];
   Object.assign(h.report.candidates[0], { candidateIdentity: "ts:index.ts", path: "index.ts", language: "typescript", negativeEvidenceEligible: true });
-  h.report.capabilities = [{ language: "typescript", completenessClaim: "producer-declared" }];
-  h.report.evaluations.decisions = [{ candidateIdentity: "ts:index.ts", scope: { language: "typescript", selectedPaths: ["index.ts"] }, admissible: true, gates: { negativeCompleteness: "passed" } }];
+  h.report.capabilities = [{ language: "typescript", factKind: "module", completenessClaim: "producer-declared", negativeEvidenceEligible: true }];
+  h.report.evaluations.decisions = [{ candidateIdentity: "ts:index.ts", factKind: "module", scope: { language: "typescript", selectedPaths: ["index.ts"] }, admissible: true, gates: gates("passed") }];
   expect(semctxReadiness(d, h, "0.4.2", "/repo").semanticQualification.status).toBe("certified");
   h.report.capabilities = [];
   expect(semctxReadiness(d, h, "0.4.2", "/repo").semanticQualification.status).not.toBe("certified");
+});
+
+for (const fault of ["missing-gate", "missing-capability-eligibility", "contradictory-capability-eligibility"]) test(`qualification metadata refuses ${fault}`, () => {
+  const [d, h] = reports();
+  d.code = 0; d.report.healthy = true;
+  Object.assign(d.report.checks.find(c => c.name === "index"), { ok: true, status: "healthy" });
+  h.code = 0; h.report.coverage.status = "complete"; h.report.reasonSummary = [];
+  h.report.candidates[0].negativeEvidenceEligible = true;
+  h.report.capabilities[0].negativeEvidenceEligible = true;
+  h.report.evaluations.decisions[0].admissible = true;
+  h.report.evaluations.decisions[0].gates = gates("passed");
+  if (fault === "missing-gate") delete h.report.evaluations.decisions[0].gates.bindingAndIntegrity;
+  if (fault === "missing-capability-eligibility") delete h.report.capabilities[0].negativeEvidenceEligible;
+  if (fault === "contradictory-capability-eligibility") h.report.capabilities[0].negativeEvidenceEligible = false;
+  const result = semctxReadiness(d, h, "0.4.2", "/repo");
+  expect(result.configuration).not.toBe("yes");
+  expect(result.semanticQualification.status).not.toBe("certified");
 });
