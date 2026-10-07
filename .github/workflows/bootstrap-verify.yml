@@ -101,8 +101,29 @@ jobs:
           printf 'DIAGNOSTIC_ONLY_NO_ADMISSION\nSOURCE_SHA=%s\nSOURCE_TREE=%s\nTARBALL_SHA256=%s\n' "$CANDIDATE_SHA" "$(git rev-parse 'HEAD^{tree}')" "$EXPECTED_SHA256" > diagnostic-output/source-metadata.txt
           consumer="$(mktemp -d)"
           npm install --prefix "$consumer" --ignore-scripts "$PWD/$tarball"
+          node <<'NODE'
+          const fs = require("node:fs"), crypto = require("node:crypto");
+          const source = fs.readFileSync("scripts/release-smoke.js", "utf8");
+          const needle = '    const installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));';
+          if (!source.includes(needle)) throw new Error("exact diagnostic source binding missing");
+          const replacement = [
+            '    let installed;',
+            '    try { installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv)); }',
+            '    catch (originalError) {',
+            '      for (const command of ["doctor", "index-health"]) {',
+            '        const result = Bun.spawnSync({cmd:["bunx","semctx@0.4.2",command,"--root",scenarioRepository,"--json"],cwd:consumer,env:scenarioEnv,stdout:"pipe",stderr:"pipe"});',
+            '        process.stderr.write("NATIVE_READINESS_DIAGNOSTIC " + JSON.stringify({scenario,command,exitCode:result.exitCode,stdout:result.stdout.toString(),stderr:result.stderr.toString()}) + "\n");',
+            '      }',
+            '      throw originalError;',
+            '    }',
+          ].join("\n");
+          const patched = source.replace(needle, replacement);
+          fs.writeFileSync("scripts/release-smoke-readiness-diagnostic.js", patched);
+          fs.writeFileSync("diagnostic-output/instrumentation.json", JSON.stringify({diagnosticOnly:true,originalSmokeSha256:crypto.createHash("sha256").update(source).digest("hex"),instrumentedSmokeSha256:crypto.createHash("sha256").update(patched).digest("hex"),originalFailureRethrown:true}));
+          NODE
+          node --check scripts/release-smoke-readiness-diagnostic.js
           set +e
-          bun scripts/release-smoke.js "$consumer" > diagnostic-output/stdout.log 2> diagnostic-output/stderr.log
+          bun scripts/release-smoke-readiness-diagnostic.js "$consumer" > diagnostic-output/stdout.log 2> diagnostic-output/stderr.log
           result=$?
           set -e
           printf '%s\n' "$result" > diagnostic-output/exit-code.txt
