@@ -193,6 +193,13 @@ function uvToolVersion(output, stderr = "") {
   return version;
 }
 
+function uvInventory(rt, root) {
+  // Legacy injected runtimes are trusted custom/test seams. Production always
+  // provides createRuntime().uvToolInventory and uses its filesystem guard.
+  return typeof rt.uvToolInventory === "function"
+    ? rt.uvToolInventory(root) : rt.exec(["uv", "tool", "list"], root);
+}
+
 function validCompassInstallReport(rt, parsed, root, host, version, dryRun) {
   const hostDir = `.${host}`;
   const expected = [
@@ -399,7 +406,7 @@ async function resolveComponents(rt, options, state, root, report) {
       } else if (name === "assertledger" && options.command === "setup" && existingAssertVersion(rt, root)) {
         versions[name] = existingAssertVersion(rt, root);
       } else if (name === "latent-compass" && options.command === "setup" && rt.which("uv")) {
-        const listed = await rt.exec(["uv", "tool", "list"], root);
+        const listed = await uvInventory(rt, root);
         if (listed.code !== 0) throw new Error(`uv tool list: ${shortError(listed)}`);
         versions[name] = uvToolVersion(listed.stdout, listed.stderr) ?? await resolveVersion(rt, name);
       } else {
@@ -547,7 +554,7 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
     problem(report, "UV_REQUIRED", "Latent Compass needs uv on PATH", 3);
     return null;
   }
-  const listed = await rt.exec(["uv", "tool", "list"], root);
+  const listed = await uvInventory(rt, root);
   if (listed.code !== 0) {
     problem(report, "UV_TOOL_INVENTORY_FAILED", `uv tool list: ${shortError(listed)}`, 3);
     return null;
@@ -576,7 +583,7 @@ async function preflightCompass(rt, root, hosts, version, previous, command, rep
   for (const host of hosts) {
     const commandLine = !needsInstall
       ? [entry.executable, "host", "install", "--project-root", root, "--host", host, "--dry-run", "--json"]
-      : ["uv", "tool", "run", "--from", `latent-compass==${version}`, "latent-compass", "host", "install", "--project-root", root, "--host", host, "--dry-run", "--json"];
+      : ["uv", "tool", "run", "--isolated", "--no-python-downloads", "--from", `latent-compass==${version}`, "latent-compass", "host", "install", "--project-root", root, "--host", host, "--dry-run", "--json"];
     const result = await rt.exec(commandLine, root);
     const parsed = nativeResult(result, `latent-compass host install (${host})`, report);
     if (!parsed) continue;
@@ -743,6 +750,9 @@ async function diagnoseAssert(rt, root, hosts, version) {
 }
 
 async function diagnoseCompass(rt, root, hosts, version) {
+  const inventory = await uvInventory(rt, root);
+  if (inventory.code !== 0) throw new Error(`uv tool inventory: ${shortError(inventory)}`);
+  uvToolVersion(inventory.stdout, inventory.stderr);
   const entry = await persistentCompassEntry(rt, root);
   if (entry?.version !== version) {
     return { name: "latent-compass", version, installed: "no", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown", checks: [], ready: false };

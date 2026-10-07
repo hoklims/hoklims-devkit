@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "hoklims-proof",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A proportionate Codex proof workflow using independent Semctx and AssertLedger providers."
 }

@@ -132,6 +132,29 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
 
 const setupOptions = () => parseArgs(["setup", "/repo", "--host", "codex"]);
 
+for (const command of ["setup", "upgrade", "doctor"]) test(`the ${command} entrypoint respects safe uv inventory refusal`, async () => {
+  const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] }, "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
+  const rt = fakeRuntime({ tools: ["uv"], state });
+  let inventories = 0;
+  rt.uvToolInventory = async () => { inventories++; return { code: 3, stdout: "", stderr: "Read-only uv inventory refused: inspect UV_TOOL_DIR" }; };
+  const report = await execute({ ...setupOptions(), command, with: ["latent-compass"], dryRun: true }, rt);
+  expect(inventories).toBeGreaterThan(0);
+  expect(report.ok).toBe(false);
+  expect(JSON.stringify(report)).toContain("Read-only uv inventory refused");
+  expect(rt.writes).toHaveLength(0);
+});
+
+test("transient Compass previews isolate tool storage and refuse Python downloads", async () => {
+  const rt = fakeRuntime({ tools: ["uv"], uvInstalled: false });
+  const report = await execute({ ...setupOptions(), with: ["latent-compass"], dryRun: true }, rt);
+  expect(report.ok).toBe(true);
+  const previews = rt.calls.filter(argv => argv[0] === "uv" && argv.includes("run"));
+  expect(previews).toHaveLength(1);
+  expect(previews[0].slice(0, 7)).toEqual(["uv", "tool", "run", "--isolated", "--no-python-downloads", "--from", "latent-compass==0.3.0"]);
+  expect(rt.calls.some(argv => argv[0] === "uv" && argv.includes("install") && !argv.includes("--dry-run"))).toBe(false);
+  expect(rt.writes).toHaveLength(0);
+});
+
 test("onboard reports the required common versions without upgrading an existing pin", async () => {
   const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.4.1", hosts: ["codex"] } } };
   const rt = fakeRuntime({ state, tools: ["node", "npm"] });

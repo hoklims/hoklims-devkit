@@ -1,6 +1,6 @@
 {
   "name": "hoklims-devkit",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Install and diagnose the Hoklims developer tools for Codex and Claude Code",
   "keywords": ["codex", "claude-code", "semctx", "assertledger", "latent-compass", "developer-tools"],
   "author": "Hoklims",

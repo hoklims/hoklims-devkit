@@ -75,6 +75,7 @@ run(["git", "init", "-b", "main", repository]);
 run(["git", "-C", repository, "add", "."]);
 run(["git", "-C", repository, "-c", "user.name=Devkit Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-m", "fixture"]);
 run(["git", "-C", repository, "status", "--porcelain"]);
+const canonicalRepository = realpathSync(run(["git", "-C", repository, "rev-parse", "--show-toplevel"]).trim());
 const repositoryBefore = snapshot(repository);
 
 const protectedPaths = protectedProfilePaths(home);
@@ -85,7 +86,7 @@ for (const host of ["codex", "claude", "all"]) {
     const output = run(["bunx", "--no-install", "hoklims-devkit", "setup", repository, "--host", host, ...withTools, "--dry-run", "--json"]);
     const report = JSON.parse(output);
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
-    if (report.ok !== true || report.projectRoot !== resolve(repository)
+    if (report.ok !== true || report.projectRoot !== canonicalRepository
       || JSON.stringify(report.components.map((item) => item.name)) !== JSON.stringify(expected)
       || report.components.some((item) => item.state !== "planned")) {
       throw new Error(`Unexpected ${host} preflight: ${output}`);
