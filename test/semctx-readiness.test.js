@@ -56,7 +56,7 @@ test("only matching nonempty qualified native scope can be certified", () => {
   expect(semctxReadiness(d, h, "0.4.2", "/repo").semanticQualification.status).not.toBe("certified");
 });
 
-for (const fault of ["missing-gate", "missing-capability-eligibility", "contradictory-capability-eligibility"]) test(`qualification metadata refuses ${fault}`, () => {
+for (const fault of ["missing-gate", "missing-capability-eligibility", "contradictory-capability-eligibility", "contradictory-negative-gate"]) test(`qualification metadata refuses ${fault}`, () => {
   const [d, h] = reports();
   d.code = 0; d.report.healthy = true;
   Object.assign(d.report.checks.find(c => c.name === "index"), { ok: true, status: "healthy" });
@@ -68,6 +68,10 @@ for (const fault of ["missing-gate", "missing-capability-eligibility", "contradi
   if (fault === "missing-gate") delete h.report.evaluations.decisions[0].gates.bindingAndIntegrity;
   if (fault === "missing-capability-eligibility") delete h.report.capabilities[0].negativeEvidenceEligible;
   if (fault === "contradictory-capability-eligibility") h.report.capabilities[0].negativeEvidenceEligible = false;
+  if (fault === "contradictory-negative-gate") {
+    h.report.evaluations.decisions[0].admissible = false;
+    h.report.evaluations.decisions[0].gates.negativeCompleteness = "failed";
+  }
   const result = semctxReadiness(d, h, "0.4.2", "/repo");
   expect(result.configuration).not.toBe("yes");
   expect(result.semanticQualification.status).not.toBe("certified");

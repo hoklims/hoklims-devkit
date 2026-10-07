@@ -50,7 +50,7 @@ export function semctxReadiness(doctorResult, healthResult, version, root, realp
       || (health.workspace?.repositoryId !== undefined && decision.scope.repositoryIdentity !== health.workspace.repositoryId)
       || (decision.gates.negativeCompleteness === "passed"
         ? candidate.negativeEvidenceEligible !== true || capability.negativeEvidenceEligible !== true || decision.admissible !== true
-        : decision.admissible !== false)) return result("unknown");
+        : decision.admissible !== false || (candidate.negativeEvidenceEligible === true && capability.negativeEvidenceEligible === true))) return result("unknown");
   }
   if (selected.some(candidate => !health.evaluations.decisions.some(decision => decision.candidateIdentity === candidate.candidateIdentity))) return result("unknown");
   if (doctor.cliCompatibility !== undefined) {
