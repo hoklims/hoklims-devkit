@@ -27,13 +27,16 @@ for (const defect of ["dirty", "binding", "can-control", "transport", "unsupport
   if (defect === "compatibility") d.report.cliCompatibility = { compatible: false, version: null, found: true, reason: "CLI_PROBE_FAILED" };
   expect(semctxReadiness(d, h, "0.4.2", "/repo").configuration).not.toBe("yes");
 });
-test("COMPLETE alone or empty native evidence never certifies negative conclusions", () => {
+test("empty capabilities and evaluations never certify an otherwise coherent COMPLETE scope", () => {
   const [d, h] = reports(); d.code = 0; d.report.healthy = true;
   Object.assign(d.report.checks.find(c => c.name === "index"), { ok: true, status: "healthy" });
   h.code = 0; h.report.coverage.status = "complete"; h.report.reasonSummary = [];
+  h.report.candidates[0].negativeEvidenceEligible = true;
+  h.report.capabilities = []; h.report.evaluations.decisions = [];
+  expect(h.report.candidates).toHaveLength(h.report.coverage.selected);
+  expect(h.report.coverage.candidates).toBe(h.report.candidates.length);
   expect(semctxReadiness(d, h, "0.4.2", "/repo").semanticQualification.status).not.toBe("certified");
-  h.report.candidates = []; h.report.evaluations.decisions = [];
-  expect(semctxReadiness(d, h, "0.4.2", "/repo").semanticQualification.status).not.toBe("certified");
+  expect(semctxReadiness(d, h, "0.4.2", "/repo").configuration).not.toBe("yes");
 });
 
 for (const defect of ["missing-count", "duplicate-check", "missing-capacities", "missing-decisions", "unknown-evaluation-version"]) test(`essential native metadata ${defect} is not ready`, () => {
