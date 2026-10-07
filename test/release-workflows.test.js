@@ -11,6 +11,27 @@ const bootstrapRun = bootstrap.jobs.verify.steps.find(step => step.env?.VERIFY_R
 const fixtures = [];
 afterAll(() => { for (const root of fixtures) if (dirname(root) === realpathSync(tmpdir())) rmSync(root, { recursive: true, force: true }); });
 
+test("every workflow job running the check suite provisions pinned uv first", () => {
+  const checkedJobs = [];
+  for (const filename of ["ci.yml", "release.yml", "bootstrap-verify.yml"]) {
+    const workflow = Bun.YAML.parse(readFileSync(new URL(`../.github/workflows/${filename}`, import.meta.url), "utf8"));
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      const checks = job.steps.map((step, index) => ({ step, index }))
+        .filter(({ step }) => typeof step.run === "string" && /\bbun\s+run\s+check\b/u.test(step.run));
+      if (!checks.length) continue;
+      checkedJobs.push(`${filename}:${name}`);
+      const provision = job.steps.map((step, index) => ({ step, index }))
+        .filter(({ step }) => step.uses?.startsWith("astral-sh/setup-uv@"));
+      expect(provision).toHaveLength(1);
+      expect(provision[0].step.uses).toBe("astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e");
+      expect(provision[0].step.with.version).toBe("0.12.5");
+      expect(provision[0].step.with["enable-cache"]).toBe(false);
+      for (const check of checks) expect(provision[0].index).toBeLessThan(check.index);
+    }
+  }
+  expect(checkedJobs).toEqual(["ci.yml:package", "release.yml:build", "release.yml:verify", "bootstrap-verify.yml:verify"]);
+});
+
 test("first-publication version and artifact bindings agree across all release entrypoints", () => {
   const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url))).version;
   // The current package may advance; the bootstrap remains bound to its first tag.
