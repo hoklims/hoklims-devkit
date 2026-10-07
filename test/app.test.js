@@ -3,6 +3,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { execute, parseArgs } from "../src/app.js";
 
+function coherentSemctxHealth(partial = false) {
+  const negativeEvidenceEligible = !partial;
+  const gates = { discoveryAndScope: "passed", bindingAndIntegrity: "passed", currentFreshness: "passed", capabilityMatch: "passed", negativeCompleteness: partial ? "failed" : "passed", taskRelativeAuthority: "passed" };
+  return { schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: "FRESH", canRunHighRiskControl: true }, coverage: { status: partial ? "partial" : "complete", candidates: 1, selected: 1, excluded: 0, analyzed: 1, unsupported: 0, disabled: 0, failed: 0 }, reasonSummary: partial ? ["NEGATIVE_COMPLETENESS_MISSING"] : [], capabilities: [{ language: "typescript", factKind: "module", completenessClaim: "producer-declared", negativeEvidenceEligible }], candidates: [{ candidateIdentity: "typescript:index.ts", path: "index.ts", language: "typescript", selectionDecision: "selected", analysisOutcome: "analyzed", negativeEvidenceEligible }], evaluations: { schemaVersion: 1, decisions: [{ candidateIdentity: "typescript:index.ts", factKind: "module", scope: { language: "typescript", selectedPaths: ["index.ts"] }, admissible: !partial, gates }] } };
+}
+
 function compassInstallReport(argv, { installed = false, configured = false } = {}) {
   const host = argv[argv.indexOf("--host") + 1];
   const hostRoot = join(homedir(), `.${host}`);
@@ -104,7 +110,7 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
         checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({ name, ok: true, ...(name === "index" ? { status: "healthy" } : {}) })),
       } : { ok: true }), stderr: "" };
       if (argv.includes("index-health")) return workspaceReady
-        ? { code: 0, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: "FRESH", canRunHighRiskControl: true }, coverage: { status: "complete", candidates: 1, selected: 1, excluded: 0, analyzed: 1, unsupported: 0, disabled: 0, failed: 0 }, reasonSummary: [], capabilities: [], candidates: [{selectionDecision:"selected",analysisOutcome:"analyzed",negativeEvidenceEligible:false}], evaluations:{decisions:[]} }), stderr: "" }
+        ? { code: 0, stdout: JSON.stringify(coherentSemctxHealth()), stderr: "" }
         : { code: 2, stdout: JSON.stringify({ coverage: { status: "partial" } }), stderr: "" };
       if (argv.includes("install")) {
         if (!argv.includes("--dry-run")) semctxInstalledVersion = version;
@@ -137,7 +143,7 @@ test("partial positive native readiness configures repeated setup without certif
   const rt = fakeRuntime({ state, workspaceReady: true }); const exec = rt.exec;
   rt.exec = async argv => {
     if (argv.includes("doctor")) return { code: 1, stderr: "", stdout: JSON.stringify({ version: "0.3.4", healthy: false, checks: ["cli", "workspace", "config", "index", "runtime"].map(name => ({ name, ok: name !== "index", ...(name === "index" ? { status: "degraded" } : {}) })) }) };
-    if (argv.includes("index-health")) return { code: 2, stderr: "", stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: "FRESH", canRunHighRiskControl: true }, coverage: { status: "partial", candidates: 1, selected: 1, excluded: 0, analyzed: 1, unsupported: 0, disabled: 0, failed: 0 }, reasonSummary: ["NEGATIVE_COMPLETENESS_MISSING"], capabilities: [], candidates: [{ selectionDecision: "selected", analysisOutcome: "analyzed", negativeEvidenceEligible: false }], evaluations: { decisions: [{ admissible: false, gates: { negativeCompleteness: "failed" } }] } }) };
+    if (argv.includes("index-health")) return { code: 2, stderr: "", stdout: JSON.stringify(coherentSemctxHealth(true)) };
     return exec(argv);
   };
   const diagnostic = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
@@ -155,13 +161,13 @@ for (const fault of ["none", "transport", "malformed", "native-errors", "dirty"]
   rt.exec = async argv => {
     if (argv.includes("setup") && !argv.includes("--dry-run")) return { code: fault === "transport" ? 5 : 1, stderr: "", stdout: JSON.stringify({ schemaVersion: 1, kind: "setup", repositoryRoot: "/repo", verdict: "SETUP_NOT_READY", setupReady: false, analysisReady: false, ...(fault === "malformed" ? {} : { check: { ok: false, errors: fault === "native-errors" ? 1 : 0 } }) }) };
     if (argv.includes("doctor")) return { code: 1, stderr: "", stdout: JSON.stringify({ version: "0.3.4", healthy: false, checks: ["cli", "workspace", "config", "index", "runtime"].map(name => ({ name, ok: name !== "index", ...(name === "index" ? { status: "degraded" } : {}) })) }) };
-    if (argv.includes("index-health")) return { code: 2, stderr: "", stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: fault === "dirty" ? "DIRTY_KNOWN" : "FRESH", canRunHighRiskControl: true }, coverage: { status: "partial", candidates: 1, selected: 1, excluded: 0, analyzed: 1, unsupported: 0, disabled: 0, failed: 0 }, reasonSummary: ["NEGATIVE_COMPLETENESS_MISSING"], capabilities: [], candidates: [{ selectionDecision: "selected", analysisOutcome: "analyzed", negativeEvidenceEligible: false }], evaluations: { decisions: [{ admissible: false, gates: { negativeCompleteness: "failed" } }] } }) };
+    if (argv.includes("index-health")) return { code: 2, stderr: "", stdout: JSON.stringify({ ...coherentSemctxHealth(true), freshness: { verdict: fault === "dirty" ? "DIRTY_KNOWN" : "FRESH", canRunHighRiskControl: true } }) };
     return nativeExec(argv);
   };
   const first = await execute(setupOptions(), rt);
   if (fault === "dirty") {
     expect(first.ok).toBe(false);
-    expect(first.components[0]).toMatchObject({ configured: "unknown", semanticQualification: { status: "blocked" } });
+    expect(first.components[0]).toMatchObject({ configured: "no", semanticQualification: { status: "blocked" } });
     expect(first.nextActions.join(" ")).toContain("DIRTY_KNOWN");
     expect(first.nextActions.join(" ")).toContain("requires FRESH");
     return;
@@ -1231,4 +1237,22 @@ describe("public CLI", () => {
     expect(report.conflicts.map((item) => item.code)).toContain("SEMCTX_NOT_READY");
     expect(rt.writes).toHaveLength(2);
   });
+});
+
+test("later AssertLedger repository writes invalidate the final Semctx readiness", async () => {
+  const files = { [join("/repo", "package.json")]: JSON.stringify({ name: "fixture", private: true, packageManager: "npm@10.9.8" }), [join("/repo", "node_modules", "assertledger", "package.json")]: JSON.stringify({ version: "1.2.0" }), [join("/repo", "node_modules", "assertledger", "dist", "cli.js")]: "cli" };
+  const rt = fakeRuntime({ tools: ["node", "npm"], files }), nativeExec = rt.exec; let dirty = false;
+  rt.exec = async (argv, cwd) => {
+    const result = await nativeExec(argv, cwd);
+    if (argv[0] === "node" && argv.includes("setup") && argv.includes("--write")) dirty = true;
+    if (dirty && argv.includes("doctor")) { const report = JSON.parse(result.stdout); report.healthy = false; Object.assign(report.checks.find(c => c.name === "index"), { ok: false, status: "degraded" }); return { code: 1, stdout: JSON.stringify(report), stderr: "" }; }
+    if (dirty && argv.includes("index-health")) { const report = coherentSemctxHealth(true); report.freshness.verdict = "DIRTY_KNOWN"; return { code: 2, stdout: JSON.stringify(report), stderr: "" }; }
+    return result;
+  };
+  const report = await execute({ ...setupOptions(), with: ["assertledger"] }, rt);
+  expect(dirty).toBe(true); expect(report.ok).toBe(false);
+  expect(report.components.find(c => c.name === "semctx")).toMatchObject({ installed: "yes", configured: "no", state: "needs-attention", semanticQualification: { status: "blocked" } });
+  expect(report.components.find(c => c.name === "assertledger")).toMatchObject({ installed: "yes", configured: "yes" });
+  expect(report.conflicts.some(c => c.code === "SEMCTX_NOT_READY")).toBe(true);
+  expect(rt.calls.some(argv => argv.includes("index"))).toBe(false);
 });

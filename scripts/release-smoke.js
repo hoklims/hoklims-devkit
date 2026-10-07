@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
 import { proofProfileSmoke } from "./proof-profile-smoke.js";
-import { canonicalFixtureRoot, commitGeneratedFixtureSources, prepareFixtureScope, qualifyInstalledFixture } from "./fixture-readiness.js";
+import { canonicalFixtureRoot, commitGeneratedFixtureSources, isAttributableDirtyFixtureInstall, prepareFixtureScope, qualifyInstalledFixture } from "./fixture-readiness.js";
 
 const consumer = process.argv[2];
 if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "bin", "hoklims-devkit.js"))) {
@@ -132,13 +132,21 @@ for (const host of ["codex", "claude", "all"]) {
     const scenarioProtectedPaths = protectedProfilePaths(scenarioHome);
     const selectors = ["--host", host, ...withTools, "--json"];
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
-    const installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
+    const firstInstall = run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv, { acceptedCodes: [0, 3], captureResult: true });
+    let installed = JSON.parse(firstInstall.stdout);
+    const dirtyFixture = firstInstall.code === 3 && isAttributableDirtyFixtureInstall(installed, firstInstall.code, expected);
+    if (firstInstall.code === 3 && !dirtyFixture) throw new Error(`Unattributable fixture installation failure: ${JSON.stringify(installed)}`);
+    if (dirtyFixture) {
+      // Only this owned fixture is stabilized. User setup retains its refusal.
+      qualifyInstalledFixture((argv, options) => run(argv, consumer, scenarioEnv, options), scenarioRepository);
+      installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
+    }
     if (installed.ok !== true || JSON.stringify(installed.components.map((item) => item.name)) !== JSON.stringify(expected)
       || installed.components.some((item) => item.state !== "configured" || item.installed !== "yes" || item.configured !== "yes")) {
       throw new Error(`Unexpected ${host} installation: ${JSON.stringify(installed)}`);
     }
     run(["git", "-C", scenarioRepository, "status", "--porcelain"], consumer, scenarioEnv);
-    qualifyInstalledFixture((argv, options) => run(argv, consumer, scenarioEnv, options), scenarioRepository);
+    if (!dirtyFixture) qualifyInstalledFixture((argv, options) => run(argv, consumer, scenarioEnv, options), scenarioRepository);
     const targets = [scenarioRepository, ...scenarioProtectedPaths];
     const installedSnapshot = targets.map(snapshot);
     const repeated = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));

@@ -5,6 +5,22 @@ import { semctxReadiness } from "../src/semctx-readiness.js";
 
 const semctx = ["bunx", `semctx@${PROOF_PINS.semctx}`];
 
+export function isAttributableDirtyFixtureInstall(report, exitCode, expected) {
+  if (exitCode !== 3 || report?.exitCode !== 3 || report.ok !== false
+    || !Array.isArray(report.conflicts) || report.conflicts.length !== 1 || report.conflicts[0].code !== "SEMCTX_NOT_READY"
+    || !Array.isArray(report.components) || JSON.stringify(report.components.map(item => item.name)) !== JSON.stringify(expected)) return false;
+  const component = report.components.find(item => item.name === "semctx");
+  const qualification = component?.semanticQualification;
+  const checks = component?.checks;
+  return component?.installed === "yes" && component.configured === "no" && component.state === "needs-attention"
+    && qualification?.binding?.status === "valid" && qualification.freshness?.verdict === "DIRTY_KNOWN"
+    && qualification.freshness.canRunHighRiskControl === true
+    && qualification.coverage?.unsupported === 0 && qualification.coverage.failed === 0 && qualification.coverage.disabled === 0
+    && Array.isArray(checks) && checks.some(item => item.command === "doctor" && [0, 1].includes(item.exitCode))
+    && checks.some(item => item.command === "index-health" && [0, 2, 3].includes(item.exitCode))
+    && report.components.filter(item => item.name !== "semctx").every(item => item.installed === "yes" && item.configured === "yes" && item.state === "configured");
+}
+
 export function canonicalFixtureRoot(run, repository) {
   return dirname(realpathSync(run(["git", "-C", repository, "rev-parse", "--show-toplevel"]).trim()));
 }

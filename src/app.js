@@ -950,6 +950,26 @@ export async function execute(options, rt = createRuntime()) {
     }
     catch (error) { problem(report, "WORKFLOW_PLUGIN_CONFLICT", String(error.message ?? error)); }
   }
+  const finalSemctx = report.components.find(component => component.name === "semctx");
+  if (finalSemctx?.installed === "yes") {
+    try {
+      // Later native components and the common plugin may mutate repository
+      // files. Re-read after every selected write, never reuse earlier freshness.
+      const diagnostic = await diagnoseSemctx(rt, root, hosts, versions.semctx);
+      const { ready, ...current } = diagnostic;
+      current.semanticQualification = { ...current.semanticQualification, nativeSetup: finalSemctx.semanticQualification?.nativeSetup ?? null };
+      Object.assign(finalSemctx, current, { state: ready ? "configured" : "needs-attention" });
+      if (!ready && !report.conflicts.some(item => item.code === "SEMCTX_NOT_READY")) {
+        problem(report, "SEMCTX_NOT_READY", "Semctx configuration could not be verified after all selected writes", 3);
+      }
+      const health = diagnostic.checks.find(check => check.command === "index-health")?.report;
+      if (health?.freshness?.verdict === "DIRTY_KNOWN") report.nextActions.push("Semctx reports DIRTY_KNOWN after selected writes. Review generated repository files and stabilize them under the project's rules, then explicitly refresh its native index and rerun setup/doctor. Devkit never commits or indexes the user repository implicitly; FRESH is required.");
+    } catch (error) {
+      finalSemctx.state = "needs-attention"; finalSemctx.configured = "unknown";
+      finalSemctx.semanticQualification = { status: "unknown", coverage: null, nativeReasons: null, negativeEvidenceEligible: null };
+      problem(report, "SEMCTX_FINAL_READBACK_FAILED", String(error.message ?? error), 3);
+    }
+  }
   report.ok = report.conflicts.length === 0;
   return report;
 }
