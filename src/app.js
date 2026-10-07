@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import packageJson from "../package.json" with { type: "json" };
 import { createRuntime, parseJsonOutput, shortError, validateState } from "./runtime.js";
 import { prepareWorkflow } from "./workflow.js";
+import { semctxReadiness } from "./semctx-readiness.js";
 import { applyPlugin, installNativePlugin, pluginPlan, preflightNativePlugin, PROOF_PINS } from "./proof-plugin.js";
 
 const COMPONENTS = ["semctx", "assertledger", "latent-compass"];
@@ -364,35 +365,12 @@ function semctxStatusHasHosts(rt, status, root, hosts) {
       && [true, false, null].includes(status.hosts[host].marketplace?.matchesSemctx));
 }
 
+function semctxWorkspaceReadiness(rt, root, doctorResult, healthResult, version) {
+  return semctxReadiness({ ...doctorResult, report: doctorResult.report ?? parseJsonOutput(doctorResult) },
+    { ...healthResult, report: healthResult.report ?? parseJsonOutput(healthResult) }, version, root, rt.realpath);
+}
 function semctxWorkspaceStatus(rt, root, doctorResult, healthResult, version) {
-  const doctor = doctorResult.report ?? parseJsonOutput(doctorResult);
-  const health = healthResult.report ?? parseJsonOutput(healthResult);
-  for (const candidate of [doctor?.repositoryRoot, health?.repositoryRoot]) {
-    if (candidate === undefined) continue;
-    try {
-      if (typeof candidate !== "string" || rt.realpath(candidate) !== root) return "unknown";
-    } catch {
-      return "unknown";
-    }
-  }
-  const doctorCode = doctorResult.exitCode ?? doctorResult.code;
-  const healthCode = healthResult.exitCode ?? healthResult.code;
-  const requiredChecks = ["cli", "workspace", "config", "index", "runtime"];
-  const doctorStructured = [0, 1].includes(doctorCode) && typeof doctor?.healthy === "boolean"
-    && doctor.version === version && Array.isArray(doctor.checks)
-    && requiredChecks.every((name) => doctor.checks.some((check) => check.name === name && typeof check.ok === "boolean"));
-  const healthStructured = [0, 2, 3].includes(healthCode) && health?.schemaVersion === 1
-    && health.kind === "index_health" && ["valid", "invalid", "absent"].includes(health.binding?.status)
-    && typeof health.freshness?.canRunHighRiskControl === "boolean"
-    && ["complete", "partial", "insufficient"].includes(health.coverage?.status);
-  if (!doctorStructured || !healthStructured) return "unknown";
-  const doctorReady = doctorCode === 0 && doctor?.healthy === true && doctor.version === version
-    && Array.isArray(doctor.checks) && requiredChecks.every((name) => doctor.checks.some((check) =>
-      check.name === name && check.ok === true && (name !== "index" || check.status === "healthy")));
-  const indexReady = healthCode === 0 && health?.schemaVersion === 1 && health.kind === "index_health"
-    && health.binding?.status === "valid" && health.freshness?.canRunHighRiskControl === true
-    && health.coverage?.status === "complete";
-  return doctorReady && indexReady ? "yes" : "no";
+  return semctxWorkspaceReadiness(rt, root, doctorResult, healthResult, version).configuration;
 }
 
 async function resolveComponents(rt, options, state, root, report) {
@@ -484,14 +462,16 @@ async function preflightSemctx(rt, root, hosts, version, previous, command, repo
     }
   }
   let skipSetup = false;
+  let workspaceReadiness;
   if (previous && !hostInstallNeeded && Array.isArray(setupJson.plannedChanges)
     && setupJson.plannedChanges.length === 0 && report.conflicts.length === 0) {
     const doctor = await rt.exec(["bunx", `semctx@${version}`, "doctor", ...args], root);
     const health = await rt.exec(["bunx", `semctx@${version}`, "index-health", ...args], root);
-    skipSetup = semctxWorkspaceStatus(rt, root, doctor, health, version) === "yes";
+    workspaceReadiness = semctxWorkspaceReadiness(rt, root, doctor, health, version);
+    skipSetup = workspaceReadiness.configuration === "yes";
   }
   report.plannedChanges.push({ component: "semctx", workspace: setupJson, hosts: hostJson.hosts });
-  return { setup: setupJson, host: hostJson, hostInstallNeeded, skipSetup };
+  return { setup: setupJson, host: hostJson, hostInstallNeeded, skipSetup, workspaceReadiness };
 }
 
 async function preflightAssert(rt, root, hosts, version, previous, command, report) {
@@ -604,11 +584,13 @@ async function applySemctx(rt, root, hosts, version, preflight) {
     const parsed = parseJsonOutput(install);
     if (install.code !== 0 || parsed?.ok !== true || parsed?.dryRun !== false) throw new Error(`Semctx host install: ${shortError(install)}`);
   }
-  let ready = true;
+  let nativeSetup = null;
   if (!preflight.skipSetup) {
     const setup = await rt.exec(["bunx", `semctx@${version}`, "setup", ...args], root);
     const setupReport = parseJsonOutput(setup);
     if (setupReport?.schemaVersion !== 1 || setupReport.kind !== "setup" || setupReport.repositoryRoot !== root
+      || typeof setupReport.setupReady !== "boolean" || typeof setupReport.analysisReady !== "boolean"
+      || typeof setupReport.check?.ok !== "boolean"
       || !["SETUP_READY", "SETUP_NOT_READY"].includes(setupReport.verdict)
       || (setupReport.verdict === "SETUP_READY") !== (setupReport.setupReady === true && setupReport.analysisReady === true && setupReport.check?.ok === true)
       || (setup.code !== 0 && setup.code !== 1)) {
@@ -617,8 +599,9 @@ async function applySemctx(rt, root, hosts, version, preflight) {
     if (setup.code === 1 && setupReport.setupReady !== false) {
       throw new Error(`Semctx workspace setup failed unexpectedly: ${shortError(setup)}`);
     }
-    ready = setupReport.verdict === "SETUP_READY" && setupReport.setupReady === true
-      && setupReport.analysisReady === true && setupReport.check.ok === true;
+    if (setupReport.check.errors !== undefined && (!Number.isSafeInteger(setupReport.check.errors)
+      || setupReport.check.errors !== 0)) throw new Error("Semctx workspace setup reported native errors");
+    nativeSetup = setupReport;
   }
   const status = await rt.exec(["bunx", `semctx@${version}`, "plugin-status", "--host", hostMode, ...args], root);
   const delivery = parseJsonOutput(status);
@@ -628,12 +611,22 @@ async function applySemctx(rt, root, hosts, version, preflight) {
       || delivery.hosts[host].installed.contentMatchesSnapshot !== true)) {
     throw new Error("Semctx installation could not be verified from plugin-status; inspect the native report before retrying");
   }
+  const doctor = await rt.exec(["bunx", `semctx@${version}`, "doctor", ...args], root);
+  const health = await rt.exec(["bunx", `semctx@${version}`, "index-health", ...args], root);
+  const readiness = semctxWorkspaceReadiness(rt, root, doctor, health, version);
+  const ready = readiness.configuration === "yes";
+  const nativeFreshness = (health.report ?? parseJsonOutput(health))?.freshness?.verdict;
+  const semanticQualification = { ...readiness.semanticQualification, nativeSetup };
+  if (nativeSetup?.verdict === "SETUP_NOT_READY") semanticQualification.status = "blocked";
   return {
+    semanticQualification,
     activation: "unknown",
     ready,
     next: ready
       ? preflight.skipSetup ? [] : ["Open a new Codex task or reload Claude plugins; then verify tool visibility"]
-      : ["Semctx setup reported incomplete analysis; run semctx doctor and index-health before relying on it"],
+      : nativeFreshness === "DIRTY_KNOWN"
+        ? ["Semctx reports DIRTY_KNOWN. Review generated repository files and stabilize the source under the project's rules, then explicitly refresh its native index and rerun setup/doctor. Configuration readiness requires FRESH."]
+        : ["Semctx configuration could not be verified; run semctx doctor and index-health before relying on it"],
   };
 }
 
@@ -714,12 +707,13 @@ async function diagnoseSemctx(rt, root, hosts, version) {
     return item?.installed?.version === version && item?.marketplace?.matchesSemctx === true
       && item?.installed?.contentMatchesSnapshot === true;
   });
-  const workspaceStatus = semctxWorkspaceStatus(rt, root, checks[1], checks[2], version);
+  const readiness = semctxWorkspaceReadiness(rt, root, checks[1], checks[2], version);
+  const workspaceStatus = readiness.configuration;
   const loaded = validDelivery && hosts.every((host) => delivery.hosts[host]?.session?.status === "observed") ? "yes" : "unknown";
   const installed = validDelivery ? "yes"
     : validStatus && hosts.every((host) => delivery.hosts[host].installed.version === null) ? "no" : "unknown";
   return {
-    name: "semctx", version, installed,
+    name: "semctx", version, installed, semanticQualification: readiness.semanticQualification,
     configured: workspaceStatus, loaded, approved: "unknown", observed: "unknown",
     checks, ready: validDelivery && workspaceStatus === "yes",
   };
@@ -871,7 +865,7 @@ export async function execute(options, rt = createRuntime()) {
     if (name === "semctx") previews[name] = await preflightSemctx(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions.semctx);
     else if (name === "assertledger") previews[name] = await preflightAssert(rt, root, hosts, version, previous, options.command, report);
     else previews[name] = await preflightCompass(rt, root, hosts, version, previous, options.command, report, state?.inProgress?.versions["latent-compass"]);
-    report.components.push({ name, version, state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
+    report.components.push({ name, version, ...(name === "semctx" ? { semanticQualification: previews[name]?.workspaceReadiness?.semanticQualification ?? { status: "unknown", coverage: null, nativeReasons: null, negativeEvidenceEligible: null } } : {}), state: "planned", installed: "unknown", configured: "unknown", loaded: "unknown", approved: "unknown", observed: "unknown" });
   }
   if (report.conflicts.length || options.dryRun) {
     if (state?.inProgress && !options.refreshPending
@@ -923,9 +917,10 @@ export async function execute(options, rt = createRuntime()) {
         component.installed = "yes";
         component.configured = result.ready === false ? "unknown" : "yes";
         component.loaded = result.activation;
+        if (name === "semctx") component.semanticQualification = result.semanticQualification;
         report.nextActions.push(...result.next);
         if (result.ready === false) {
-          problem(report, "SEMCTX_NOT_READY", "Semctx installed but its workspace analysis is incomplete", 3);
+          problem(report, "SEMCTX_NOT_READY", "Semctx installed but its configuration could not be verified", 3);
           break;
         }
       } catch (error) {
@@ -954,6 +949,26 @@ export async function execute(options, rt = createRuntime()) {
       report.nextActions.push("Open a fresh trusted Codex session and verify proof-workflow skill visibility; loaded, approved and observed remain unknown until checked");
     }
     catch (error) { problem(report, "WORKFLOW_PLUGIN_CONFLICT", String(error.message ?? error)); }
+  }
+  const finalSemctx = report.components.find(component => component.name === "semctx");
+  if (finalSemctx?.installed === "yes") {
+    try {
+      // Later native components and the common plugin may mutate repository
+      // files. Re-read after every selected write, never reuse earlier freshness.
+      const diagnostic = await diagnoseSemctx(rt, root, hosts, versions.semctx);
+      const { ready, ...current } = diagnostic;
+      current.semanticQualification = { ...current.semanticQualification, nativeSetup: finalSemctx.semanticQualification?.nativeSetup ?? null };
+      Object.assign(finalSemctx, current, { state: ready ? "configured" : "needs-attention" });
+      if (!ready && !report.conflicts.some(item => item.code === "SEMCTX_NOT_READY")) {
+        problem(report, "SEMCTX_NOT_READY", "Semctx configuration could not be verified after all selected writes", 3);
+      }
+      const health = diagnostic.checks.find(check => check.command === "index-health")?.report;
+      if (health?.freshness?.verdict === "DIRTY_KNOWN") report.nextActions.push("Semctx reports DIRTY_KNOWN after selected writes. Review generated repository files and stabilize them under the project's rules, then explicitly refresh its native index and rerun setup/doctor. Devkit never commits or indexes the user repository implicitly; FRESH is required.");
+    } catch (error) {
+      finalSemctx.state = "needs-attention"; finalSemctx.configured = "unknown";
+      finalSemctx.semanticQualification = { status: "unknown", coverage: null, nativeReasons: null, negativeEvidenceEligible: null };
+      problem(report, "SEMCTX_FINAL_READBACK_FAILED", String(error.message ?? error), 3);
+    }
   }
   report.ok = report.conflicts.length === 0;
   return report;
@@ -998,7 +1013,10 @@ export async function main(argv, rt = createRuntime(), out = process.stdout, err
     out.write(`${report.kind === "workflow_plan" ? report.verdict : report.ok ? "OK" : "BLOCKED"} ${options.command} ${report.projectRoot ?? options.project}\n`);
     for (const check of report.checks ?? []) out.write(`  Check: ${check.id} (${check.status})\n`);
     if (report.unprovenObligationIds) out.write(`  Unproven obligations: ${report.unprovenObligationIds.length}\n`);
-    for (const component of report.components) out.write(`  ${component.name} ${component.version ?? ""} ${component.state ?? component.configured ?? "unknown"}\n`);
+    for (const component of report.components) {
+      out.write(`  ${component.name} ${component.version ?? ""} ${component.state ?? component.configured ?? "unknown"}\n`);
+      if (component.semanticQualification) out.write(`    Semantic qualification: ${component.semanticQualification.status}; coverage=${component.semanticQualification.coverage?.status ?? "unknown"}; negativeEvidenceEligible=${component.semanticQualification.negativeEvidenceEligible ?? "unknown"}\n`);
+    }
     for (const conflict of report.conflicts) err.write(`  ${conflict.code}: ${conflict.detail}\n`);
     for (const next of [...new Set(report.nextActions)]) out.write(`Next: ${next}\n`);
   }

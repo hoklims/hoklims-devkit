@@ -7,7 +7,7 @@ la préparation et le replay n'exécutent aucun test candidat. Le
 
 Hoklims Devkit prépare un dépôt Git pour [Semctx](https://github.com/hoklims/semctx), avec [AssertLedger](https://github.com/hoklims/assertledger) et [Latent Compass](https://github.com/hoklims/latent-compass) en option. Il appelle les installateurs propres à chaque projet et conserve leurs données séparées.
 
-**Disponibilité :** vérifier `npm view hoklims-devkit@0.1.2 version` avant d'utiliser les commandes publiques ci-dessous. Une version est prête seulement après vérification de sa release et de son installation depuis npm. Pendant le développement, utiliser `bun bin/hoklims-devkit.js` depuis ce dépôt.
+**Disponibilité :** vérifier `npm view hoklims-devkit@0.1.3 version` avant d'utiliser les commandes publiques ci-dessous. Une version est prête seulement après vérification de sa release et de son installation depuis npm. Pendant le développement, utiliser `bun bin/hoklims-devkit.js` depuis ce dépôt.
 
 ## Prérequis
 
@@ -49,6 +49,8 @@ bunx hoklims-devkit@latest setup .
 
 Cette commande sélectionne Semctx ainsi que les hôtes Codex et Claude détectés. `--dry-run --json` affiche le plan sans modifier le dépôt, la configuration des hôtes ni l'état du lanceur. Bun, npm et uv peuvent toutefois remplir leurs caches de téléchargement. `--with assertledger`, `--with latent-compass` ou les deux activent les parcours facultatifs. `--host codex` et `--host claude` ciblent un seul hôte.
 
+Le premier setup peut générer des fichiers dans le dépôt et laisser Semctx en `DIRTY_KNOWN`. L'installation peut alors être présente sans que la configuration soit déclarée prête : celle-ci exige un binding valide et la fraîcheur native `FRESH`, même si le contrôle positif est autorisé. Examinez les fichiers générés et stabilisez les sources selon les règles du projet ; Devkit ne committe jamais à votre place. Après une indexation native explicitement décidée sur cet état, relancez le même setup puis doctor. Ne committez pas les bases mutables. Une configuration prête ne qualifie pas les preuves négatives.
+
 ```sh
 bunx hoklims-devkit@latest setup . --host codex --with assertledger,latent-compass --dry-run --json
 bunx hoklims-devkit@latest doctor . --json
@@ -82,3 +84,5 @@ Il n'est pas nécessaire d'utiliser les trois outils à chaque tâche.
 Cette version n'a pas de commande de désinstallation commune. `assertledger disconnect . --client codex|claude-code --write` retire uniquement ses fichiers encore identiques. `latent-compass host remove --project-root . --host codex|claude` retire l'inscription du projet sans toucher aux autres. Le plugin Semctx est partagé entre dépôts : ne le retirer de Codex ou Claude que lorsqu'aucun autre dépôt ne l'utilise. Les fichiers métier `.semctx` et les preuves sont conservés.
 
 Pour contribuer, lancer `bun test` puis `bun run check`. npm impose une première publication authentifiée avant de pouvoir configurer un éditeur de confiance ; les versions suivantes utiliseront OIDC. La [procédure de publication](docs/releasing.md) lie les essais aux paquets installés hors checkout. La commande publique ne sera annoncée qu'après vérification sur le registre.
+
+La readiness d’installation/configuration est distincte de la qualification sémantique. `doctor` expose les deux : une analyse Semctx PARTIAL ou non éligible ne valide jamais de preuve négative, même si l’installation est configurée et fraîche. L’idempotence suppose un dépôt stabilisé et frais ; un état natif périmé ou invalide reste bloquant.

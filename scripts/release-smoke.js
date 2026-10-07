@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
 import { proofProfileSmoke } from "./proof-profile-smoke.js";
+import { canonicalFixtureRoot, commitGeneratedFixtureSources, isAttributableDirtyFixtureInstall, prepareFixtureScope, qualifyInstalledFixture } from "./fixture-readiness.js";
 
 const consumer = process.argv[2];
 if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "bin", "hoklims-devkit.js"))) {
@@ -18,6 +19,7 @@ const repository = join(root, "repository");
 const home = join(root, "home");
 const cache = join(root, "cache");
 mkdirSync(repository);
+writeFileSync(join(repository, ".gitignore"), "node_modules/\n");
 mkdirSync(cache);
 mkdirSync(join(home, ".codex"), { recursive: true });
 mkdirSync(join(home, ".claude"), { recursive: true });
@@ -63,12 +65,12 @@ const env = {
   BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(cache, "bun-runtime"),
 };
 
-function run(argv, cwd = consumer, runEnv = env) {
+function run(argv, cwd = consumer, runEnv = env, { acceptedCodes = [0], captureResult = false } = {}) {
   const result = Bun.spawnSync({ cmd: argv, cwd, env: runEnv, stdout: "pipe", stderr: "pipe" });
   const stdout = result.stdout.toString();
   const stderr = result.stderr.toString();
-  if (result.exitCode !== 0) throw new Error(`${argv.join(" ")} exited ${result.exitCode}\n${stdout}\n${stderr}`);
-  return stdout;
+  if (!acceptedCodes.includes(result.exitCode)) throw new Error(`${argv.join(" ")} exited ${result.exitCode}\n${stdout}\n${stderr}`);
+  return captureResult ? { code: result.exitCode, stdout, stderr } : stdout;
 }
 
 run(["git", "init", "-b", "main", repository]);
@@ -76,6 +78,9 @@ run(["git", "-C", repository, "add", "."]);
 run(["git", "-C", repository, "-c", "user.name=Devkit Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-m", "fixture"]);
 run(["git", "-C", repository, "status", "--porcelain"]);
 const canonicalRepository = realpathSync(run(["git", "-C", repository, "rev-parse", "--show-toplevel"]).trim());
+const fixtureRoot = canonicalFixtureRoot(run, repository);
+prepareFixtureScope((argv, options) => run(argv, consumer, env, options), canonicalRepository);
+commitGeneratedFixtureSources(run, repository);
 const repositoryBefore = snapshot(repository);
 
 const protectedPaths = protectedProfilePaths(home);
@@ -103,8 +108,8 @@ for (const host of ["codex", "claude", "all"]) {
 for (const host of ["codex", "claude", "all"]) {
   for (const withTools of [[], ["--with", "assertledger,latent-compass"]]) {
     const scenario = `${host}-${withTools.length ? "full" : "default"}`;
-    const scenarioRepository = join(root, `repository-${scenario}`);
-    const scenarioHome = join(root, `home-${scenario}`);
+    const scenarioRepository = join(fixtureRoot, `repository-${scenario}`);
+    const scenarioHome = join(fixtureRoot, `home-${scenario}`);
     const scenarioCache = cache;
     cpSync(repository, scenarioRepository, { recursive: true });
     mkdirSync(join(scenarioHome, ".codex"), { recursive: true });
@@ -127,12 +132,24 @@ for (const host of ["codex", "claude", "all"]) {
     const scenarioProtectedPaths = protectedProfilePaths(scenarioHome);
     const selectors = ["--host", host, ...withTools, "--json"];
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
-    const installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
+    const firstInstall = run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv, { acceptedCodes: [0, 3], captureResult: true });
+    let installed = JSON.parse(firstInstall.stdout);
+    if (readFileSync(join(scenarioRepository, "index.ts"), "utf8") !== readFileSync(join(repository, "index.ts"), "utf8")) {
+      throw new Error("Installation changed the selected fixture source");
+    }
+    const dirtyFixture = firstInstall.code === 3 && isAttributableDirtyFixtureInstall(installed, firstInstall.code, expected);
+    if (firstInstall.code === 3 && !dirtyFixture) throw new Error(`Unattributable fixture installation failure: ${JSON.stringify(installed)}`);
+    if (dirtyFixture) {
+      // Only this owned fixture is stabilized. User setup retains its refusal.
+      qualifyInstalledFixture((argv, options) => run(argv, consumer, scenarioEnv, options), scenarioRepository);
+      installed = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));
+    }
     if (installed.ok !== true || JSON.stringify(installed.components.map((item) => item.name)) !== JSON.stringify(expected)
       || installed.components.some((item) => item.state !== "configured" || item.installed !== "yes" || item.configured !== "yes")) {
       throw new Error(`Unexpected ${host} installation: ${JSON.stringify(installed)}`);
     }
     run(["git", "-C", scenarioRepository, "status", "--porcelain"], consumer, scenarioEnv);
+    if (!dirtyFixture) qualifyInstalledFixture((argv, options) => run(argv, consumer, scenarioEnv, options), scenarioRepository);
     const targets = [scenarioRepository, ...scenarioProtectedPaths];
     const installedSnapshot = targets.map(snapshot);
     const repeated = JSON.parse(run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv));

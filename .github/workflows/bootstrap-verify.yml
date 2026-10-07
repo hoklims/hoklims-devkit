@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: v0.1.2
+          ref: v0.1.3
           fetch-depth: 0
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -45,26 +45,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERIFY_RUN_ID: ${{ inputs.verified_run_id }}
         run: |
-          git fetch --no-tags origin "+refs/tags/v0.1.2:refs/tags/v0.1.2"
+          git fetch --no-tags origin "+refs/tags/v0.1.3:refs/tags/v0.1.3"
           [[ "$VERIFY_RUN_ID" =~ ^[0-9]+$ ]]
-          test "$(git cat-file -t refs/tags/v0.1.2)" = "tag"
-          test "$(git rev-list -n 1 refs/tags/v0.1.2)" = "$(git rev-parse HEAD)"
+          test "$(git cat-file -t refs/tags/v0.1.3)" = "tag"
+          test "$(git rev-list -n 1 refs/tags/v0.1.3)" = "$(git rev-parse HEAD)"
           git merge-base --is-ancestor HEAD origin/main
-          test "$(node -p 'require("./package.json").version')" = "0.1.2"
+          test "$(node -p 'require("./package.json").version')" = "0.1.3"
           run_json="$(gh run view "$VERIFY_RUN_ID" --repo hoklims/hoklims-devkit --json workflowName,headSha,event,conclusion)"
           test "$(jq -r '.workflowName' <<< "$run_json")" = "Publish npm release"
           test "$(jq -r '.headSha' <<< "$run_json")" = "$(git rev-parse HEAD)"
           test "$(jq -r '.event' <<< "$run_json")" = "push"
           test "$(jq -r '.conclusion' <<< "$run_json")" = "success"
           gh run download "$VERIFY_RUN_ID" --repo hoklims/hoklims-devkit --name tested-npm-tarball --dir tested-package
-          tarball="tested-package/hoklims-devkit-0.1.2.tgz"
+          tarball="tested-package/hoklims-devkit-0.1.3.tgz"
           test -f "$tarball"
           integrity="sha512-$(node -e 'const fs=require("node:fs"),crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "$tarball")"
-          test "$(npm view hoklims-devkit@0.1.2 version)" = "0.1.2"
-          test "$(npm view hoklims-devkit@0.1.2 dist.integrity)" = "$integrity"
+          test "$(npm view hoklims-devkit@0.1.3 version)" = "0.1.3"
+          test "$(npm view hoklims-devkit@0.1.3 dist.integrity)" = "$integrity"
           bun run check
           consumer="$(mktemp -d)"
-          npm install --prefix "$consumer" --ignore-scripts hoklims-devkit@0.1.2 # zizmor: ignore[adhoc-packages] verify exact public bootstrap
+          npm install --prefix "$consumer" --ignore-scripts hoklims-devkit@0.1.3 # zizmor: ignore[adhoc-packages] verify exact public bootstrap
           bun scripts/release-smoke.js "$consumer"
 
   release:
@@ -75,10 +75,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: v0.1.2
+          ref: v0.1.3
           persist-credentials: false
       - name: Create GitHub release after public registry verification
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: hoklims/hoklims-devkit
-        run: gh release view v0.1.2 >/dev/null 2>&1 || gh release create v0.1.2 --verify-tag --generate-notes
+        run: gh release view v0.1.3 >/dev/null 2>&1 || gh release create v0.1.3 --verify-tag --generate-notes
