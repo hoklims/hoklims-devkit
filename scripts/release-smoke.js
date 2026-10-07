@@ -19,6 +19,7 @@ const repository = join(root, "repository");
 const home = join(root, "home");
 const cache = join(root, "cache");
 mkdirSync(repository);
+writeFileSync(join(repository, ".gitignore"), "node_modules/\n");
 mkdirSync(cache);
 mkdirSync(join(home, ".codex"), { recursive: true });
 mkdirSync(join(home, ".claude"), { recursive: true });

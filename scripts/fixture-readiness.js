@@ -43,9 +43,10 @@ export function requireFixtureReady(doctor, health, root = "") {
 export function commitGeneratedFixtureSources(run, repository) {
   run(["git", "-C", repository, "add", "."]);
   const staged = run(["git", "-C", repository, "diff", "--cached", "--name-only", "-z"]).split("\0").filter(Boolean);
-  if (staged.some(path => /(?:^|\/)(?:\.git|node_modules)(?:\/|$)/u.test(path)
-    || /^\.semctx\/(?:.*\.(?:db|sqlite)(?:-|$)|cache(?:\/|$))/u.test(path))) {
-    throw new Error("Fixture commit must not include database, Git internals or dependency caches");
+  const forbidden = staged.filter(path => /(?:^|\/)(?:\.git|node_modules)(?:\/|$)/u.test(path)
+    || /^\.semctx\/(?:.*\.(?:db|sqlite)(?:-|$)|cache(?:\/|$))/u.test(path));
+  if (forbidden.length) {
+    throw new Error(`Fixture commit must not include database, Git internals or dependency caches: ${forbidden.slice(0, 5).join(", ")}`);
   }
   if (staged.length) run(["git", "-C", repository, "-c", "user.name=Devkit Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-m", "qualified generated fixture sources"]);
 }
