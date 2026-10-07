@@ -32,7 +32,7 @@ export function semctxReadiness(doctorResult, healthResult, version, root, realp
     || !["complete", "partial", "insufficient"].includes(health.coverage?.status)
     || !Array.isArray(health.reasonSummary) || health.reasonSummary.some(reason => typeof reason !== "string")
     || !Array.isArray(health.candidates) || !Array.isArray(health.capabilities)
-    || !Array.isArray(health.evaluations?.decisions)) return result("unknown");
+    || health.evaluations?.schemaVersion !== 1 || !Array.isArray(health.evaluations.decisions)) return result("unknown");
   const requiredGates = ["discoveryAndScope", "bindingAndIntegrity", "currentFreshness", "capabilityMatch", "negativeCompleteness", "taskRelativeAuthority"];
   if (selected.length && (!health.capabilities.length || !health.evaluations.decisions.length)
     || selected.some(candidate => ["candidateIdentity", "path", "language"].some(key => typeof candidate[key] !== "string" || !candidate[key]))
