@@ -12,7 +12,7 @@ for (const foreign of [false, true]) test(`release entrypoint compares canonical
   const fixtureHelper = new URL("../scripts/fixture-readiness.js", import.meta.url).href;
   const code = `import {mock} from "bun:test"; import * as path from "node:path"; import {realpathSync} from "node:fs";
     mock.module(${JSON.stringify(helper)},()=>({proofProfileSmoke:async()=>{}}));
-    mock.module(${JSON.stringify(fixtureHelper)},()=>({prepareFixtureScope:()=>{},commitGeneratedFixtureSources:()=>{},qualifyInstalledFixture:()=>{},canonicalFixtureRoot:()=>${JSON.stringify(root)}}));
+    mock.module(${JSON.stringify(fixtureHelper)},()=>({isAttributableDirtyFixtureInstall:()=>false,prepareFixtureScope:()=>{},commitGeneratedFixtureSources:()=>{},qualifyInstalledFixture:()=>{},canonicalFixtureRoot:()=>${JSON.stringify(root)}}));
     const originalResolve=path.resolve; mock.module("node:path",()=>({...path,resolve:(...args)=>originalResolve(...args)+"/.",}));
     const spawn=Bun.spawnSync.bind(Bun); Bun.spawnSync=options=>{
       const argv=options.cmd;
