@@ -112,7 +112,7 @@ jobs:
             '    catch (originalError) {',
             '      for (const command of ["doctor", "index-health"]) {',
             '        const result = Bun.spawnSync({cmd:["bunx","semctx@0.4.2",command,"--root",scenarioRepository,"--json"],cwd:consumer,env:scenarioEnv,stdout:"pipe",stderr:"pipe"});',
-            '        process.stderr.write("NATIVE_READINESS_DIAGNOSTIC " + JSON.stringify({scenario,command,exitCode:result.exitCode,stdout:result.stdout.toString(),stderr:result.stderr.toString()}) + "\n");',
+            '        process.stderr.write("NATIVE_READINESS_DIAGNOSTIC " + JSON.stringify({scenario,command,exitCode:result.exitCode,stdout:result.stdout.toString(),stderr:result.stderr.toString()}) + String.fromCharCode(10));',
             '      }',
             '      throw originalError;',
             '    }',
