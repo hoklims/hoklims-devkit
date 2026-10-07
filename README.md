@@ -39,6 +39,8 @@ bunx hoklims-devkit@latest setup .
 
 This selects Semctx and detected Codex/Claude hosts. `--dry-run --json` shows the plan without changing the repository, host configuration, or launcher state. Bun, npm, and uv may still populate download caches. To enable the optional tools, use `--with assertledger`, `--with latent-compass`, or both as a comma-separated list. To target one host, use `--host codex` or `--host claude`.
 
+The first setup can generate repository files and leave Semctx in `DIRTY_KNOWN`. Installation may then be present while configuration remains unverified: readiness requires a valid binding and native `FRESH`, even when positive control is permitted. Review the generated files and stabilize the source according to your project's rules; Devkit never commits the project for you. After explicitly refreshing the native index on that state, rerun the same setup and doctor. Keep mutable databases out of source commits. Configuration readiness does not qualify negative evidence.
+
 ```sh
 bunx hoklims-devkit@latest setup . --host codex --with assertledger,latent-compass --dry-run --json
 bunx hoklims-devkit@latest doctor . --json

@@ -150,6 +150,34 @@ test("partial positive native readiness configures repeated setup without certif
   expect(rt.writes).toHaveLength(0);
 });
 
+for (const fault of ["none", "transport", "malformed", "native-errors", "dirty"]) test(`first native SETUP_NOT_READY uses verified configuration readback: ${fault}`, async () => {
+  const rt = fakeRuntime({ state: null }); const nativeExec = rt.exec;
+  rt.exec = async argv => {
+    if (argv.includes("setup") && !argv.includes("--dry-run")) return { code: fault === "transport" ? 5 : 1, stderr: "", stdout: JSON.stringify({ schemaVersion: 1, kind: "setup", repositoryRoot: "/repo", verdict: "SETUP_NOT_READY", setupReady: false, analysisReady: false, ...(fault === "malformed" ? {} : { check: { ok: false, errors: fault === "native-errors" ? 1 : 0 } }) }) };
+    if (argv.includes("doctor")) return { code: 1, stderr: "", stdout: JSON.stringify({ version: "0.3.4", healthy: false, checks: ["cli", "workspace", "config", "index", "runtime"].map(name => ({ name, ok: name !== "index", ...(name === "index" ? { status: "degraded" } : {}) })) }) };
+    if (argv.includes("index-health")) return { code: 2, stderr: "", stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: fault === "dirty" ? "DIRTY_KNOWN" : "FRESH", canRunHighRiskControl: true }, coverage: { status: "partial", candidates: 1, selected: 1, excluded: 0, analyzed: 1, unsupported: 0, disabled: 0, failed: 0 }, reasonSummary: ["NEGATIVE_COMPLETENESS_MISSING"], capabilities: [], candidates: [{ selectionDecision: "selected", analysisOutcome: "analyzed", negativeEvidenceEligible: false }], evaluations: { decisions: [{ admissible: false, gates: { negativeCompleteness: "failed" } }] } }) };
+    return nativeExec(argv);
+  };
+  const first = await execute(setupOptions(), rt);
+  if (fault === "dirty") {
+    expect(first.ok).toBe(false);
+    expect(first.components[0]).toMatchObject({ configured: "unknown", semanticQualification: { status: "blocked" } });
+    expect(first.nextActions.join(" ")).toContain("DIRTY_KNOWN");
+    expect(first.nextActions.join(" ")).toContain("requires FRESH");
+    return;
+  }
+  if (fault !== "none") { expect(first.ok).toBe(false); expect(first.conflicts.some(c => c.code === "APPLY_FAILED")).toBe(true); return; }
+  expect(first.ok).toBe(true);
+  expect(first.components[0]).toMatchObject({ installed: "yes", configured: "yes", semanticQualification: { status: "blocked", negativeEvidenceEligible: false } });
+  const writes = rt.writes.length, setupCalls = rt.calls.filter(argv => argv.includes("setup") && !argv.includes("--dry-run")).length;
+  const repeated = await execute(setupOptions(), rt);
+  expect(repeated.ok).toBe(true); expect(repeated.components[0].semanticQualification.status).toBe("blocked");
+  expect(rt.writes).toHaveLength(writes);
+  expect(rt.calls.filter(argv => argv.includes("setup") && !argv.includes("--dry-run"))).toHaveLength(setupCalls);
+  const diagnosed = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+  expect(diagnosed.ok).toBe(true); expect(diagnosed.components[0].semanticQualification.status).toBe("blocked");
+});
+
 for (const command of ["setup", "upgrade", "doctor"]) test(`the ${command} entrypoint respects safe uv inventory refusal`, async () => {
   const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] }, "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };
   const rt = fakeRuntime({ tools: ["uv"], state });

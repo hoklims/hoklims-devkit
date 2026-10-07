@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot.js";
 import { proofProfileSmoke } from "./proof-profile-smoke.js";
-import { canonicalFixtureRoot, commitGeneratedFixtureSources, initializeFixtureScope, qualifyInstalledFixture } from "./fixture-readiness.js";
+import { canonicalFixtureRoot, commitGeneratedFixtureSources, prepareFixtureScope, qualifyInstalledFixture } from "./fixture-readiness.js";
 
 const consumer = process.argv[2];
 if (!consumer || !existsSync(join(consumer, "node_modules", "hoklims-devkit", "bin", "hoklims-devkit.js"))) {
@@ -78,7 +78,7 @@ run(["git", "-C", repository, "-c", "user.name=Devkit Smoke", "-c", "user.email=
 run(["git", "-C", repository, "status", "--porcelain"]);
 const canonicalRepository = realpathSync(run(["git", "-C", repository, "rev-parse", "--show-toplevel"]).trim());
 const fixtureRoot = canonicalFixtureRoot(run, repository);
-initializeFixtureScope(run, canonicalRepository);
+prepareFixtureScope((argv, options) => run(argv, consumer, env, options), canonicalRepository);
 commitGeneratedFixtureSources(run, repository);
 const repositoryBefore = snapshot(repository);
 

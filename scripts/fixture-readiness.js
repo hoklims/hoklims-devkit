@@ -19,6 +19,21 @@ export function initializeFixtureScope(run, repository) {
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
 }
 
+export function prepareFixtureScope(run, repository) {
+  initializeFixtureScope(run, repository);
+  // Bootstrap repository files before the first real host installation. Native
+  // semantic incompleteness is retained; only a fresh positive readback can pass.
+  const prepared = run([...semctx, "setup", "--root", repository, "--json"], { acceptedCodes: [0, 1], captureResult: true });
+  const report = JSON.parse(prepared.stdout);
+  if (![0, 1].includes(prepared.code) || report.schemaVersion !== 1 || report.kind !== "setup"
+    || report.repositoryRoot !== repository || !["SETUP_READY", "SETUP_NOT_READY"].includes(report.verdict)
+    || typeof report.check?.ok !== "boolean"
+    || (report.check.errors !== undefined && report.check.errors !== 0)) {
+    throw new Error("Native fixture repository preparation failed");
+  }
+  return qualifyInstalledFixture(run, repository);
+}
+
 export function requireFixtureReady(doctor, health, root = "") {
   const readiness = semctxReadiness(doctor, health, PROOF_PINS.semctx, root, realpathSync);
   if (readiness.configuration !== "yes") throw new Error("Fixture requires verified positive configuration readiness");
