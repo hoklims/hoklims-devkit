@@ -1,6 +1,6 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { assertSnapshotUnchanged, protectedProfilePaths, snapshot } from "./profile-snapshot-diagnostic.js";
 import { proofProfileSmoke } from "./proof-profile-smoke.js";
 
@@ -13,7 +13,7 @@ await proofProfileSmoke(consumer);
 
 // macOS exposes temporary directories through /var, a symlink to /private/var.
 // Pass the canonical fixture home to installers that reject linked ancestors.
-const root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-release-smoke-")));
+let root = realpathSync(mkdtempSync(join(tmpdir(), "hoklims-devkit-release-smoke-")));
 const repository = join(root, "repository");
 const home = join(root, "home");
 const cache = join(root, "cache");
@@ -77,6 +77,8 @@ run(["git", "-C", repository, "add", "."]);
 run(["git", "-C", repository, "-c", "user.name=Devkit Smoke", "-c", "user.email=smoke@example.invalid", "commit", "-m", "fixture"]);
 run(["git", "-C", repository, "status", "--porcelain"]);
 const canonicalRepository = realpathSync(run(["git", "-C", repository, "rev-parse", "--show-toplevel"]).trim());
+root = dirname(canonicalRepository); // Reuse the native Git spelling for every scenario HOME.
+
 const repositoryBefore = snapshot(repository);
 
 const protectedPaths = protectedProfilePaths(home);
