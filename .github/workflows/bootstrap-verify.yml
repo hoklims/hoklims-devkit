@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 41efe2fb3fe617f9ebf41663acfe57eaf059abda
+          ref: 09adbfeb383a3322c8f5aa1f6c7cb75f375ff750
           fetch-depth: 0
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -36,7 +36,7 @@ jobs:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
-          test "$CANDIDATE_SHA" = "41efe2fb3fe617f9ebf41663acfe57eaf059abda"
+          test "$CANDIDATE_SHA" = "09adbfeb383a3322c8f5aa1f6c7cb75f375ff750"
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           test "$(node -p 'require("./package.json").version')" = "0.1.3"
           bun build ./bin/hoklims-devkit.js --target=bun --outdir=dist
@@ -61,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 41efe2fb3fe617f9ebf41663acfe57eaf059abda
+          ref: 09adbfeb383a3322c8f5aa1f6c7cb75f375ff750
           fetch-depth: 0
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -92,7 +92,7 @@ jobs:
           EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
         run: |
           set -euo pipefail
-          test "$CANDIDATE_SHA" = "41efe2fb3fe617f9ebf41663acfe57eaf059abda"
+          test "$CANDIDATE_SHA" = "09adbfeb383a3322c8f5aa1f6c7cb75f375ff750"
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           test "$(node -p 'require("./package.json").version')" = "0.1.3"
           tarball="tested-package/hoklims-devkit-0.1.3.tgz"
