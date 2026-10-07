@@ -134,6 +134,9 @@ for (const host of ["codex", "claude", "all"]) {
     const expected = withTools.length ? ["semctx", "assertledger", "latent-compass"] : ["semctx"];
     const firstInstall = run(["bunx", "--no-install", "hoklims-devkit", "setup", scenarioRepository, ...selectors], consumer, scenarioEnv, { acceptedCodes: [0, 3], captureResult: true });
     let installed = JSON.parse(firstInstall.stdout);
+    if (readFileSync(join(scenarioRepository, "index.ts"), "utf8") !== readFileSync(join(repository, "index.ts"), "utf8")) {
+      throw new Error("Installation changed the selected fixture source");
+    }
     const dirtyFixture = firstInstall.code === 3 && isAttributableDirtyFixtureInstall(installed, firstInstall.code, expected);
     if (firstInstall.code === 3 && !dirtyFixture) throw new Error(`Unattributable fixture installation failure: ${JSON.stringify(installed)}`);
     if (dirtyFixture) {

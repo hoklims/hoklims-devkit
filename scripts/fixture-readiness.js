@@ -12,9 +12,23 @@ export function isAttributableDirtyFixtureInstall(report, exitCode, expected) {
   const component = report.components.find(item => item.name === "semctx");
   const qualification = component?.semanticQualification;
   const checks = component?.checks;
+  const initial = qualification?.nativeSetup;
+  const knownWorkingChange = qualification?.freshness?.verdict === "DIRTY_KNOWN"
+    && qualification.freshness.canRunHighRiskControl === true;
+  const knownStaleChange = qualification?.freshness?.verdict === "STALE"
+    && qualification.freshness.canRunHighRiskControl === false
+    && Array.isArray(qualification.freshness.reasons) && qualification.freshness.reasons.length === 1
+    && qualification.freshness.reasons[0] === "WORKING_DIFF_MISMATCH"
+    && initial?.schemaVersion === 1 && initial.kind === "setup" && initial.repositoryRoot === report.projectRoot
+    && initial.check?.ok === true && initial.check.errors === 0
+    && initial.indexHealth?.binding?.status === "valid"
+    && /^sha256:[a-f0-9]{64}$/u.test(qualification.binding?.sidecarDigest ?? "")
+    && /^sha256:[a-f0-9]{64}$/u.test(qualification.binding?.workspaceDigest ?? "")
+    && initial.indexHealth.binding.sidecarDigest === qualification.binding.sidecarDigest
+    && initial.indexHealth.binding.workspaceDigest === qualification.binding.workspaceDigest
+    && initial.indexHealth.freshness?.verdict === "FRESH" && initial.indexHealth.freshness.canRunHighRiskControl === true;
   return component?.installed === "yes" && component.configured === "no" && component.state === "needs-attention"
-    && qualification?.binding?.status === "valid" && qualification.freshness?.verdict === "DIRTY_KNOWN"
-    && qualification.freshness.canRunHighRiskControl === true
+    && qualification?.binding?.status === "valid" && (knownWorkingChange || knownStaleChange)
     && qualification.coverage?.unsupported === 0 && qualification.coverage.failed === 0 && qualification.coverage.disabled === 0
     && Array.isArray(checks) && checks.some(item => item.command === "doctor" && [0, 1].includes(item.exitCode))
     && checks.some(item => item.command === "index-health" && [0, 2, 3].includes(item.exitCode))
