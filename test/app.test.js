@@ -100,11 +100,11 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
         return { code: setup.kind === "setup_plan" ? 0 : 4, stdout: JSON.stringify(setup), stderr: "" };
       }
       if (argv.includes("doctor")) return { code: 0, stdout: JSON.stringify(workspaceReady ? {
-        healthy: true, version,
+        healthy: true, version: argv[1]?.startsWith("semctx@") ? argv[1].slice("semctx@".length) : version,
         checks: ["cli", "workspace", "config", "index", "runtime"].map((name) => ({ name, ok: true, ...(name === "index" ? { status: "healthy" } : {}) })),
       } : { ok: true }), stderr: "" };
       if (argv.includes("index-health")) return workspaceReady
-        ? { code: 0, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { canRunHighRiskControl: true }, coverage: { status: "complete" } }), stderr: "" }
+        ? { code: 0, stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: "FRESH", canRunHighRiskControl: true }, coverage: { status: "complete", candidates: 1, selected: 1, excluded: 0, analyzed: 1, unsupported: 0, disabled: 0, failed: 0 }, reasonSummary: [], capabilities: [], candidates: [{selectionDecision:"selected",analysisOutcome:"analyzed",negativeEvidenceEligible:false}], evaluations:{decisions:[]} }), stderr: "" }
         : { code: 2, stdout: JSON.stringify({ coverage: { status: "partial" } }), stderr: "" };
       if (argv.includes("install")) {
         if (!argv.includes("--dry-run")) semctxInstalledVersion = version;
@@ -116,11 +116,11 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
           },
         }), stderr: "" };
       }
-      if (argv.includes("setup")) return { code: setupReady ? 0 : 1, stdout: JSON.stringify({
+      if (argv.includes("setup")) { if (setupReady) workspaceReady = true; return { code: setupReady ? 0 : 1, stdout: JSON.stringify({
         schemaVersion: 1, kind: "setup", repositoryRoot: "/repo",
         verdict: setupReady ? "SETUP_READY" : "SETUP_NOT_READY", setupReady, analysisReady: setupReady,
         check: { ok: setupReady },
-      }), stderr: "" };
+      }), stderr: "" }; }
       throw new Error(`Unexpected command: ${argv.join(" ")}`);
     },
     exists: (path) => Object.hasOwn(files, path),
@@ -131,6 +131,24 @@ function fakeRuntime({ version = "0.3.4", stable = version, setup = semctxSetupP
 }
 
 const setupOptions = () => parseArgs(["setup", "/repo", "--host", "codex"]);
+
+test("partial positive native readiness configures repeated setup without certifying semantics", async () => {
+  const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] } } };
+  const rt = fakeRuntime({ state, workspaceReady: true }); const exec = rt.exec;
+  rt.exec = async argv => {
+    if (argv.includes("doctor")) return { code: 1, stderr: "", stdout: JSON.stringify({ version: "0.3.4", healthy: false, checks: ["cli", "workspace", "config", "index", "runtime"].map(name => ({ name, ok: name !== "index", ...(name === "index" ? { status: "degraded" } : {}) })) }) };
+    if (argv.includes("index-health")) return { code: 2, stderr: "", stdout: JSON.stringify({ schemaVersion: 1, kind: "index_health", binding: { status: "valid" }, freshness: { verdict: "FRESH", canRunHighRiskControl: true }, coverage: { status: "partial", candidates: 1, selected: 1, excluded: 0, analyzed: 1, unsupported: 0, disabled: 0, failed: 0 }, reasonSummary: ["NEGATIVE_COMPLETENESS_MISSING"], capabilities: [], candidates: [{ selectionDecision: "selected", analysisOutcome: "analyzed", negativeEvidenceEligible: false }], evaluations: { decisions: [{ admissible: false, gates: { negativeCompleteness: "failed" } }] } }) };
+    return exec(argv);
+  };
+  const diagnostic = await execute(parseArgs(["doctor", "/repo", "--host", "codex"]), rt);
+  expect(diagnostic.ok).toBe(true);
+  expect(diagnostic.components[0]).toMatchObject({ installed: "yes", configured: "yes", semanticQualification: { status: "blocked", negativeEvidenceEligible: false } });
+  const repeated = await execute(setupOptions(), rt);
+  expect(repeated.ok).toBe(true);
+  expect(repeated.components[0].semanticQualification.status).toBe("blocked");
+  expect(rt.calls.some(argv => argv.includes("setup") && !argv.includes("--dry-run"))).toBe(false);
+  expect(rt.writes).toHaveLength(0);
+});
 
 for (const command of ["setup", "upgrade", "doctor"]) test(`the ${command} entrypoint respects safe uv inventory refusal`, async () => {
   const state = { schemaVersion: 1, projectRoot: "/repo", components: { semctx: { version: "0.3.4", hosts: ["codex"] }, "latent-compass": { version: "0.3.0", hosts: ["codex"] } } };

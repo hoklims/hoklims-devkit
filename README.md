@@ -2,7 +2,7 @@
 
 Hoklims Devkit prepares a Git repository for [Semctx](https://github.com/hoklims/semctx), with optional [AssertLedger](https://github.com/hoklims/assertledger) and [Latent Compass](https://github.com/hoklims/latent-compass) integration. It uses each project's installer and keeps their data and authority boundaries separate.
 
-**Availability:** check `npm view hoklims-devkit@0.1.2 version` before using the public commands below. A version is ready only after its tagged release and installation from npm have been verified. During development, use `bun bin/hoklims-devkit.js` from this checkout.
+**Availability:** check `npm view hoklims-devkit@0.1.3 version` before using the public commands below. A version is ready only after its tagged release and installation from npm have been verified. During development, use `bun bin/hoklims-devkit.js` from this checkout.
 
 [Guide français](README.fr.md)
 
@@ -75,3 +75,5 @@ There is no umbrella uninstall command in this release. Use the native removal c
 ## Development and release
 
 Run `bun test` and `bun run check`. The release gate packs the npm tarball and tests it outside the checkout on Windows, Linux, and macOS. npm requires a one-time authenticated first publication before trusted publishing can be configured; later releases use GitHub OIDC. See the [release sequence](docs/releasing.md). The public README command becomes usable only after the registry install smoke passes.
+
+Installation/configuration readiness is separate from semantic qualification. `doctor` reports both: PARTIAL or negative-ineligible Semctx analysis never admits negative evidence, even when a fresh validated installation is configured. Repeat idempotence requires a stable, fresh repository; stale or invalid native state remains blocked.
